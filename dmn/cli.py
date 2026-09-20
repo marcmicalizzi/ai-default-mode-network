@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import signal
 from pathlib import Path
 
@@ -23,6 +24,8 @@ def main(argv=None):
     run.add_argument("--model", type=Path)
     run.add_argument("--demo", action="store_true", help="scripted transport fixture; NOT a model")
     run.add_argument("--port", type=int, default=8765)
+    run.add_argument("--native-log-level", choices=["debug", "info", "warning", "error"],
+                     help="native diagnostic verbosity (default: warning, or DMN_NATIVE_LOG_LEVEL); does not alter inference")
     run.add_argument("--checkpoint-policy", choices=["all_actions", "effects"],
                      help="effects skips read-only/input saves; messages, memory changes and sleep still checkpoint")
     run.add_argument("--checkpoint-seconds", type=float, dest="checkpoint_interval_seconds",
@@ -78,6 +81,8 @@ def main(argv=None):
     initial.add_argument("--server-url", required=True, help="direct loopback llama-server, not the model router")
     initial.add_argument("--keep-prefix-tokens", type=int, default=0, help="0 derives the stable system/template prefix; positive values are explicit overrides")
     args = parser.parse_args(argv)
+    if args.command == "run" and args.native_log_level:
+        os.environ["DMN_NATIVE_LOG_LEVEL"] = args.native_log_level
     if args.command == "adopt-openwebui":
         from .adoption import adopt_openwebui
         print(json_text(adopt_openwebui(args.instance, args.database, args.capture)))

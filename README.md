@@ -73,6 +73,11 @@ do not update a running DMN instance.
 initialization without generation, explicit source-chat adoption, a separate
 command window, and model-chosen restart holds with ZIP/TAR/no-archive choices.
 
+[Performance preflight](docs/performance.md) covers an interactive disposable
+trial before adoption, diagnostic logging, separate sampling/decode timings,
+and the remaining compact-cache retirement and conversion work. Test response
+and shutdown latency as well as checkpoint correctness before a valuable import.
+
 [Weight learning during sleep](docs/sleep-consolidation.md) explores optional,
 model-directed LoRA training while inference is unloaded, including resource
 costs and the unresolved effect of changed weights on saved KV. This is a

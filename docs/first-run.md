@@ -4,6 +4,12 @@ An initial import reconstructs the captured text because the former KV is absent
 Subsequent runs use strict native restore by default. Preparation never claims
 that reconstruction recovered the former KV or RNG.
 
+Before adopting a valuable conversation, try a disposable instance interactively
+at the intended model size and occupied context. Verify input, response and
+shutdown/save latency as well as native restoration. The
+[performance preflight](performance.md) separates these checks; a passing
+continuity test alone does not establish acceptable speed.
+
 ## Stage without generation
 
 Compare the captured effective system text with the agreed wording before import.

@@ -10,6 +10,40 @@ from pathlib import Path
 
 @unittest.skipUnless(os.environ.get("DMN_TEST_MODEL"), "set DMN_TEST_MODEL for native process-restart test")
 class NativeProcessTest(unittest.TestCase):
+    def test_diagnostic_verbosity_preserves_native_state_and_continuation(self):
+        from unittest.mock import patch
+        import numpy as np
+        from dmn.backend import LlamaBackend
+        from dmn.config import Config
+        config = Config(model_path=str(Path(os.environ["DMN_TEST_MODEL"]).resolve()),
+                        n_ctx=4096, n_gpu_layers=0, n_threads=1)
+        backend = None
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                with patch.dict(os.environ, {"DMN_NATIVE_LOG_LEVEL": "debug"}):
+                    backend = LlamaBackend(config)
+                backend.eval(backend.tokenize("A diagnostic sequence. " * 20, initial=True))
+                backend.save(Path(folder))
+                fingerprint = backend.fingerprint
+                expected = []
+                for _ in range(8):
+                    token = backend.sample()
+                    backend.eval([token])
+                    expected.append((token, backend.logits.copy()))
+                backend.close()
+                with patch.dict(os.environ, {"DMN_NATIVE_LOG_LEVEL": "warning"}):
+                    backend = LlamaBackend(config)
+                self.assertEqual(backend.fingerprint, fingerprint)
+                evidence = backend.load(Path(folder))
+                self.assertEqual(evidence["prompt_tokens_reevaluated"], 0)
+                for token, logits in expected:
+                    self.assertEqual(backend.sample(), token)
+                    backend.eval([token])
+                    np.testing.assert_array_equal(backend.logits, logits)
+        finally:
+            if backend:
+                backend.close()
+
     def test_checkpoint_policy_changes_preserve_native_continuation_after_retirement(self):
         import dataclasses
         import numpy as np

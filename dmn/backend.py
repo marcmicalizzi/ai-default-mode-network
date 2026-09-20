@@ -28,6 +28,19 @@ def tuples(value):
     return tuple(tuples(x) for x in value) if isinstance(value, list) else value
 
 
+def top_k_candidates(np, scores, top_k):
+    """Match stable full-sort ordering, including ties at the top-k boundary."""
+    if not top_k or top_k >= len(scores):
+        return np.argsort(-scores, kind="stable")
+    cutoff = np.partition(scores, len(scores) - top_k)[len(scores) - top_k]
+    greater = np.flatnonzero(scores > cutoff)
+    tied = np.flatnonzero(scores == cutoff)[:top_k - len(greater)]
+    candidates = np.concatenate((greater, tied))
+    # flatnonzero gives ascending token IDs for equal scores. Keep that order
+    # exactly as the former stable vocabulary-wide sort did.
+    return candidates[np.argsort(-scores[candidates], kind="stable")]
+
+
 class LlamaBackend:
     """One model, one native context, sequence 0. Never calls a completion API.
 
@@ -42,7 +55,9 @@ class LlamaBackend:
         import llama_cpp as package
         import llama_cpp.llama_cpp as api
         import numpy as np
+        from .native_logging import configure_native_logging
 
+        configure_native_logging(api)
         self.api, self.np, self.config = api, np, config
         if config.pack_checkpoints:
             self.native_layout_policy = "pack_after_retirement_and_before_checkpoint_v1"
@@ -242,9 +257,7 @@ class LlamaBackend:
                 scores[token] = scores[token] / c.repeat_penalty if scores[token] > 0 else scores[token] * c.repeat_penalty
         if c.temperature == 0:
             return int(np.argmax(scores))
-        order = np.argsort(-scores, kind="stable")
-        if c.top_k:
-            order = order[:c.top_k]
+        order = top_k_candidates(np, scores, c.top_k)
         # Preserve existing instances' ordering. llama-server's default chain
         # applies top-p/min-p before temperature, unlike the original DMN path.
         values = scores[order] / (c.temperature if c.sampler_order == "legacy_v1" else 1.0)
