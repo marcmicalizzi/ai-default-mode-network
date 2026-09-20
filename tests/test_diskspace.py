@@ -92,7 +92,9 @@ class StorageCapacityTest(unittest.TestCase):
         with self.assertRaises(InsufficientStorage):
             self.create()
         self.assertEqual(before, {p.name: p.read_bytes() for p in saved.iterdir()})
-        self.assertEqual(list((self.root / "checkpoints").iterdir()), [saved])
+        # Windows TEMP can use an 8.3 alias while Store resolves its root.
+        self.assertEqual([p.resolve() for p in (self.root / "checkpoints").iterdir()],
+                         [saved.resolve()])
         self.free = 10**12
         self.assertEqual(self.create().store.latest().parent, saved.parent)
 
