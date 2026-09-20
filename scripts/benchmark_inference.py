@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import time
 
@@ -40,6 +41,18 @@ def summary(values):
     return {"total_seconds": sum(values), "mean_ms": 1000 * sum(values) / len(values),
             "p50_ms": 1000 * ordered[len(ordered) // 2],
             "p95_ms": 1000 * ordered[math.ceil(len(ordered) * 0.95) - 1]}
+
+
+def gpu_snapshot():
+    try:
+        result = subprocess.run(["nvidia-smi",
+            "--query-gpu=index,memory.used,memory.free,utilization.gpu,power.draw", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=True)
+        return {"columns": ["index", "memory_used_mib", "memory_free_mib", "utilization_percent", "power_watts"],
+                "rows": [line.split(", ") for line in result.stdout.strip().splitlines()],
+                "scope": "instantaneous device totals, including other processes"}
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"unavailable": type(exc).__name__}
 
 
 def main(argv=None):
@@ -88,7 +101,9 @@ def main(argv=None):
         for _ in range(args.warmup):
             backend.eval([backend.sample()])
         report["warmup_seconds"] = time.perf_counter() - started
+        report["gpu_before_decode"] = gpu_snapshot()
         sampling, decoding = [], []
+        cpu_started = time.process_time()
         started = time.perf_counter()
         for _ in range(args.steps):
             before = time.perf_counter()
@@ -100,6 +115,9 @@ def main(argv=None):
             decoding.append(after - sampled)
         report.update(completed=True, steady_seconds=time.perf_counter() - started,
                       sampling=summary(sampling), native_decode_and_logit_copy=summary(decoding))
+        report["steady_cpu_seconds"] = time.process_time() - cpu_started
+        report["steady_cpu_core_equivalents"] = report["steady_cpu_seconds"] / report["steady_seconds"]
+        report["gpu_after_decode"] = gpu_snapshot()
         report["steady_tokens_per_second"] = args.steps / report["steady_seconds"]
         print(json.dumps({k: report[k] for k in ("load_seconds", "prefill_seconds", "warmup_seconds",
               "steady_tokens_per_second", "sampling", "native_decode_and_logit_copy", "native_retirement_supported")}, indent=2))
@@ -107,9 +125,11 @@ def main(argv=None):
         report["error"] = f"{type(exc).__name__}: {exc}"
         raise
     finally:
-        (args.output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        if backend:
-            backend.close()
+        try:
+            (args.output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        finally:
+            if backend:
+                backend.close()
 
 
 if __name__ == "__main__":

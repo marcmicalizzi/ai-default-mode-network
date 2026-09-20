@@ -20,6 +20,14 @@ changes when exact restoration is unavailable.
 The normal startup policy is `strict`: load native state or stop. A checkpoint
 file is not treated as expendable simply because the transcript survived.
 
+The explicit `--allow-placement-change` option permits only thread-count and
+GPU-layer changes within the same native environment. It reserializes the loaded
+native state and requires byte equality before any resume input or inference.
+Cache layout changes and reconstruction remain excluded. See
+[performance.md](performance.md) for the required disposable trials and the
+additional temporary snapshot write. Identical saved state does not imply
+identical future arithmetic across execution devices.
+
 ## Three separate recovery situations
 
 **Initial transfer from Open WebUI.** The user confirmed the original model is

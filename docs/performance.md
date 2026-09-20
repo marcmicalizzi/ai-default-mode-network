@@ -65,6 +65,70 @@ Compare the existing hybrid allocation, different CPU thread counts/placement,
 and compact-cache full GPU offload as separate experiments. The compact case is
 a diagnostic candidate, not a validated continuous-run configuration.
 
+### Sequential thread and placement trials
+
+`benchmark_matrix.py` writes a plan without loading a model by default. After an
+agreed shutdown, add `--execute` with a new output directory to measure it:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts/benchmark_matrix.py --config data/benchmark.local.json --output data/performance-plan --threads 8 12 --gpu-layers 27 30
+# Run only on an idle machine, using a fresh output directory:
+.\.venv-gpu\Scripts\python.exe scripts/benchmark_matrix.py --config data/benchmark.local.json --output data/performance-measured --threads 8 12 --gpu-layers 27 30 --execute
+```
+
+The default occupied context is 25K tokens, with eight warmup and 64 measured
+steps, repeated twice per case. The original configuration is included. Thread
+counts are compared first at the original placement; GPU-layer trials use the
+fastest measured thread count. A final original-baseline recheck exposes drift
+from changing background load or thermals. Large drift calls for investigation,
+not treating the fastest result as established. Each trial uses a fresh process,
+rechecks the runtime port, and frees its model before the next trial. A failed
+trial stops the matrix. Nothing promotes the winner or edits an instance.
+These repeated prefills can take substantial time; `--repeats 1` is a preliminary
+screen, not the same evidence as a repeated comparison. Individual reports now
+include CPU time/core equivalents and instantaneous GPU memory/utilization/power.
+
+For the measured 31B/60K layout, 24 to 30 GPU layers adds roughly 1.60 GiB of
+weights plus 2.68 GiB of KV, excluding changes in compute buffers and backend
+representation. This is a sizing estimate, not a verified fit or speedup.
+
+### Native restoration after a placement change
+
+An explicit `run --allow-placement-change --config ...` permits changes only to
+`n_threads` and `n_gpu_layers`, alongside the already supported scheduling
+settings. It requires strict recovery and the same model, native binaries,
+platform, cache types, capacity, batch size, prompt and sampler. Compact SWA,
+new kernels/builds, and other layout changes remain excluded. Hold/end gates
+still apply; this flag cannot claim a hold's `original_environment` condition.
+
+Before any resume input or inference, the loader restores native state and
+reserializes it to temporary storage. The complete native session file must
+match the original SHA256, and tokens, RNG, decoded-token count and logits must
+match their saved sidecars. Failure stops startup without reconstruction. The
+temporary file costs one additional snapshot-sized write and free-space reserve
+for this explicit verification. Ordinary strict restores do not add this write.
+The resume event records the changes and verification evidence. Preserving
+stored bytes does not guarantee identical future CPU/GPU floating-point results.
+
+First run a disposable probe with the intended winning placement:
+
+```powershell
+.\.venv-gpu\Scripts\python.exe scripts/probe_placement.py --config data/benchmark.local.json --output data/placement-check --threads 8 --gpu-layers 30
+```
+
+The numbers here are examples, not a selected winner. The probe creates only
+synthetic state, verifies byte-preserving native transfer without replay,
+reports numerical differences with identical subsequent token inputs, and
+tests three retirements plus restart under the target placement. It runs no
+runtime actions and never opens an instance. The heavy-run guard also applies.
+Only after this check and an interactive disposable trial should a measured
+placement be applied to valuable state. Preserve the original checkpoint and
+environment before migration.
+
+A tiny CPU fixture has passed thread-count migration, serialized-byte equality,
+zero replay, retirement and subsequent restart. GPU placement and 31B throughput
+still require the idle-machine trials; they are not established by that fixture.
+
 ## The Gemma compact-cache obstacle
 
 The 60K hybrid layout allocates about 26.8 GiB of Q8 KV across RAM and VRAM before
@@ -81,9 +145,11 @@ Removing this guard alone would not establish safe retirement.
 
 There is also a conversion problem: the [native state reader](https://github.com/ggml-org/llama.cpp/blob/4df29be4f4c3673f428170fda944a5b19f743bb8/src/llama-kv-cache.cpp)
 rejects a saved cache containing more cells than the destination allocation.
-Changing `swa_full` cannot directly load the existing full-cache checkpoint into
-the compact allocation. Strict restore currently refuses that configuration
-change even before attempting native load. It must not silently reconstruct.
+Whether a particular full-cache snapshot exceeds compact capacity depends on
+its serialized occupied cells, not its original allocated capacity. Small
+snapshot size alone does not prove compatibility. Strict restore refuses this
+configuration change even before attempting native load, including when the
+placement opt-in is used. It must not silently reconstruct.
 
 A candidate solution still needs these proofs on disposable state:
 
@@ -99,7 +165,10 @@ A candidate solution still needs these proofs on disposable state:
    its measured inference, input and snapshot costs are acceptable.
 
 No such conversion or native guard override is enabled by this performance patch.
-Existing-instance placement/cache changes still fail strict compatibility checks.
+See [compact-cache-research.md](compact-cache-research.md) for the bounded native
+retirement investigation. Ordinary placement changes still fail strict checks
+unless explicitly opted into the byte-verifying path above; cache changes always
+remain outside that path.
 
 ## Shutdown latency
 
@@ -107,7 +176,10 @@ Ordinary shutdown first delivers a maintenance request. Its input evaluation and
 the model's decision can take time; acceptance, deferral and refusal remain the
 model's choices. Once accepted, the runtime saves once and stops without further
 thought generation. The staged 31B run measured a roughly 60-second full save
-around 20K occupied tokens, and later saves may be larger/slower.
+around 20K occupied tokens. Later snapshots can also shrink as masked local-cache
+cells are reused: an observed 25.8K-token sleep checkpoint was 1.84 GB and took
+12.45 seconds. Occupied context alone is not enough to predict save size or time;
+the large preallocated KV buffers remain allocated even when snapshots shrink.
 
 Staged start and ordinary restore currently make full checkpoints too. Avoiding
 those writes requires a separately validated durability change; this patch does

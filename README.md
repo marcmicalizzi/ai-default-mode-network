@@ -155,6 +155,12 @@ Restart with the same instance directory; its saved configuration is reused:
 
 Restore loads the native state, verifies its retained positions and token history, restores the sampler RNG and parser, and appends a factual resume event. **Native restoration is the default and desired path.** The default `--kv-recovery strict` stops if it cannot restore native state. Model hash, native binary hashes, package versions and inference settings must match; pacing and checkpoint cadence can change without invalidating native restoration. A new build, OS or cache layout needs a native compatibility investigation before migration.
 
+For tested thread-count/GPU-layer changes only, `--allow-placement-change` provides
+an explicit strict restore path that verifies the reserialized native state byte
+for byte before resuming. It cannot change cache layout or fall back to replay.
+See [performance trials and placement verification](docs/performance.md) for the
+disposable benchmark/probe workflow, extra verification write, and validation limits.
+
 Explicit degraded recovery is available when a native snapshot is unavailable:
 
 ```powershell

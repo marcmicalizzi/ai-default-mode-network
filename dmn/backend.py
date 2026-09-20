@@ -350,6 +350,27 @@ class LlamaBackend:
                 "saved_native_layout_policy": engine.get("native_layout_policy", "legacy_unpacked_retirement"),
                 "layout_packs": self.layout_packs}
 
+    def verify_loaded_snapshot(self, directory: Path, expected_digest: str):
+        """Reserialize loaded state without decode, packing, sampling or replay."""
+        engine = json.loads((directory / "engine.json").read_text())
+        if (self.tokens != engine["tokens"] or self.rng.getstate() != tuples(engine["rng"])
+                or self.decoded_tokens != engine["decoded_tokens"]
+                or not self.np.array_equal(self.logits, self.np.load(directory / "logits.npy", allow_pickle=False))):
+            raise RuntimeError("placement restore changed token, RNG or logit sidecars")
+        scratch = Path(self._state_work_dir or directory.parent)
+        self.storage_guard(scratch, self.checkpoint_size_bytes(), "placement verification scratch")
+        before = self.decode_calls
+        with tempfile.TemporaryDirectory(prefix=".dmn-placement-", dir=scratch) as folder:
+            path = Path(folder) / "state.bin"
+            tokens = (self.api.llama_token * len(self.tokens))(*self.tokens)
+            if not self.api.llama_state_save_file(self.ctx, os.fsencode(path), tokens, len(tokens)):
+                raise RuntimeError("could not verify native state after placement change")
+            digest = sha256_file(path)
+        if digest != expected_digest or self.decode_calls != before:
+            raise RuntimeError("placement restore did not preserve serialized native state byte for byte")
+        return {"serialized_native_state_bytes_equal": True, "serialized_native_state_sha256": digest,
+                "future_continuation_bit_identical_guaranteed": False}
+
     def close(self):
         if self.batch is not None:
             self.api.llama_batch_free(self.batch)

@@ -35,9 +35,11 @@ class Runtime:
     """
     def __init__(self, root: Path, config: Config, backend=None, now=time.time, kv_recovery="strict", initial_context=None,
                  monotonic=time.monotonic, prepare_only=False, start_staged=False,
-                 release_hold=None, resume_condition=None, first_message=None):
+                 release_hold=None, resume_condition=None, first_message=None, allow_placement_change=False):
         if kv_recovery not in {"strict", "fallback", "rebuild"}:
             raise ValueError("unknown KV recovery policy")
+        if allow_placement_change and (kv_recovery != "strict" or resume_condition == "original_environment"):
+            raise ValueError("placement changes require strict recovery and cannot claim the original environment")
         self.root, self.config, self.now = root.resolve(), config, now
         self.monotonic = monotonic
         self.checkpoint_schedule = CheckpointSchedule(config, monotonic)
@@ -60,6 +62,8 @@ class Runtime:
             self.lifecycle.require_open()
             prior_state, _ = saved_state(self.root)
             check_hold(prior_state, release_hold, resume_condition, kv_recovery)
+            if allow_placement_change and not prior_state:
+                raise ValueError("placement changes require an existing instance")
             if prepare_only and prior_state:
                 raise ValueError("prepare-only requires a fresh instance")
             self.store = Store(self.root)
@@ -90,7 +94,7 @@ class Runtime:
             if saved:
                 if initial_context:
                     raise ValueError("initial-context import requires a fresh instance")
-                self.state, evidence = restore_checkpoint(self.backend, saved, kv_recovery)
+                self.state, evidence = restore_checkpoint(self.backend, saved, kv_recovery, allow_placement_change)
                 self.parser = ActionParser(config.max_action_bytes, self.state["parser"])
                 self.state["last_restore"] = evidence
                 self.last_checkpoint_generated = self.state["generated_tokens"]

@@ -74,7 +74,7 @@ class PreservationTest(unittest.TestCase):
 
     def test_hold_blocks_backend_loading_and_requires_matching_release(self):
         hold = self.hold()
-        for kwargs in ({}, {"release_hold": "wrong", "resume_condition": "server_ready"},
+        for kwargs in ({}, {"allow_placement_change": True}, {"release_hold": "wrong", "resume_condition": "server_ready"},
                        {"release_hold": hold["id"], "resume_condition": "server_ready", "kv_recovery": "fallback"}):
             with mock.patch("dmn.runtime.make_backend", side_effect=AssertionError("loaded")):
                 with self.assertRaises(InstanceHeld):

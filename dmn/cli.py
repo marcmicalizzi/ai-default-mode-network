@@ -45,6 +45,8 @@ def main(argv=None):
     run.add_argument("--resume-condition", choices=["server_ready", "explicit_release", "original_environment"])
     run.add_argument("--kv-recovery", choices=["strict", "fallback", "rebuild"], default="strict",
                      help="strict: require native state; fallback: rebuild if unavailable; rebuild: skip native load")
+    run.add_argument("--allow-placement-change", action="store_true",
+                     help="strict native restore with changed n_threads/n_gpu_layers; requires byte-identical state verification")
     inspect = commands.add_parser("inspect-instance", help="inspect committed state without loading a model")
     inspect.add_argument("--instance", type=Path, required=True)
     adopt = commands.add_parser("adopt-openwebui", help="explicitly bind a staged import to its unchanged source chat")
@@ -177,7 +179,8 @@ def main(argv=None):
     runtime = Runtime(args.instance, config, kv_recovery=args.kv_recovery, initial_context=args.initial_context,
                       prepare_only=args.prepare_only, start_staged=args.start_staged,
                       release_hold=args.release_hold, resume_condition=args.resume_condition,
-                      first_message=args.first_message.read_text(encoding="utf-8") if args.first_message else None)
+                      first_message=args.first_message.read_text(encoding="utf-8") if args.first_message else None,
+                      allow_placement_change=args.allow_placement_change)
     server = None
     try:
         if args.prepare_only:

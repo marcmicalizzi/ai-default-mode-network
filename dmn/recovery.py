@@ -12,6 +12,7 @@ PLACEMENT_SETTINGS = {"model_path", "n_ctx", "n_batch", "n_gpu_layers", "n_threa
                       "offload_kqv", "flash_attn", "type_k", "type_v", "swa_full"}
 SCHEDULING_SETTINGS = {"token_delay_seconds", "checkpoint_tokens", "checkpoint_interval_seconds",
                        "checkpoint_policy", "suspend_preparation_seconds", "checkpoint_reserve_bytes"}
+NATIVE_PLACEMENT_SETTINGS = {"n_threads", "n_gpu_layers"}
 
 
 def same_native_environment(saved, current):
@@ -36,9 +37,23 @@ def reconstruction_compatible(saved: dict, current: dict):
                          + ", ".join(sorted(differences - PLACEMENT_SETTINGS - SCHEDULING_SETTINGS)))
 
 
-def restore_checkpoint(backend, directory: Path, policy="strict"):
+def native_placement_changes(saved, current):
+    """A narrow opt-in; cache layout, native build, model and sampler stay strict."""
+    if saved.get("kind") != "native_llama_kv" or current.get("kind") != "native_llama_kv":
+        raise ValueError("placement changes require a native llama checkpoint")
+    left, right = Config(**saved["config"]).to_dict(), Config(**current["config"]).to_dict()
+    adjusted = {**current, "config": {**right, **{key: left[key] for key in NATIVE_PLACEMENT_SETTINGS}}}
+    if not same_native_environment(saved, adjusted):
+        raise ValueError("placement restore permits only n_threads and n_gpu_layers; other inference settings differ")
+    return {key: {"previous": left[key], "current": right[key]}
+            for key in sorted(NATIVE_PLACEMENT_SETTINGS) if left[key] != right[key]}
+
+
+def restore_checkpoint(backend, directory: Path, policy="strict", allow_placement_change=False):
     if policy not in {"strict", "fallback", "rebuild"}:
         raise ValueError("unknown KV recovery policy")
+    if allow_placement_change and policy != "strict":
+        raise ValueError("placement changes require strict recovery; reconstruction is not permitted")
     manifest = json.loads((directory / "manifest.json").read_text())
     files = manifest["files"]
     if not {"runtime.json", "engine.json"} <= files.keys():
@@ -58,7 +73,9 @@ def restore_checkpoint(backend, directory: Path, policy="strict"):
     if state.get("schema") != 1:
         raise ValueError("unsupported checkpoint schema")
     reasons = []
-    if not same_native_environment(manifest["fingerprint"], backend.fingerprint):
+    placement = (native_placement_changes(manifest["fingerprint"], backend.fingerprint)
+                 if allow_placement_change else None)
+    if placement is None and not same_native_environment(manifest["fingerprint"], backend.fingerprint):
         reasons.append("inference environment differs from checkpoint")
     if corrupt:
         reasons.append("checkpoint file integrity check failed: " + ", ".join(corrupt))
@@ -69,6 +86,11 @@ def restore_checkpoint(backend, directory: Path, policy="strict"):
     if policy != "rebuild" and not reasons:
         try:
             evidence = backend.load(directory)
+            if allow_placement_change:
+                if evidence.get("prompt_tokens_reevaluated") != 0 or evidence.get("decode_calls_during_load") != 0:
+                    raise RuntimeError("placement restore attempted prompt evaluation")
+                verification = backend.verify_loaded_snapshot(directory, files["state.bin"])
+                evidence.update(verification, placement_changes=placement)
             saved_config = Config(**manifest["fingerprint"]["config"]).to_dict()
             current_config = Config(**backend.fingerprint["config"]).to_dict()
             evidence["scheduling_changes"] = {
