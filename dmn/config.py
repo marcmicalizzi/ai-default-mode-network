@@ -35,7 +35,7 @@ class Config:
     checkpoint_interval_seconds: float = 0.0  # 0 disables the time threshold.
     checkpoint_policy: str = "all_actions"  # "effects" still commits effects with KV.
     checkpoint_reserve_bytes: int = 256 * 1024 * 1024
-    suspend_preparation_seconds: float | None = None  # None retains the token-only bound.
+    suspend_preparation_seconds: float | None = None  # Emergency/direct stops only; None keeps the token bound.
     clock_interval_seconds: float = 60.0
     token_delay_seconds: float = 0.0
     turnover_reserve: int = 1024

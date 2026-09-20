@@ -18,7 +18,7 @@ script = (
 )
 runtime = Runtime(Path(sys.argv[1]), config, DemoBackend(config, script))
 server = serve(runtime, int(sys.argv[2]))
-signal.signal(signal.SIGINT, lambda *_: runtime.control("shutdown"))
+signal.signal(signal.SIGINT, lambda *_: runtime.control("emergency_shutdown"))
 try:
     runtime.run()
 finally:

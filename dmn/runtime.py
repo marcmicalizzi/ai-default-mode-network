@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import math
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -14,7 +15,8 @@ from .backend import make_backend, sha256_file
 from .checkpointing import CheckpointSchedule
 from .config import Config
 from .diskspace import InsufficientStorage, check_space
-from .protocol import ActionParser, PROTOCOL, event_text
+from .ending import Lifecycle, InstanceEnded
+from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, event_text
 from .recovery import restore_checkpoint
 from .storage import InstanceLock, Store, json_text, memory_path, write_durable
 
@@ -41,16 +43,28 @@ class Runtime:
         self._control_lock = threading.RLock()
         self._suspend_deadline = None
         self._suspending = False
+        self._suspension_cause = "direct"
+        self._shutdown_signal_pending = False
         self._running = False
         self._storage_blocked = None
         self._storage_retry = threading.Event()
+        self._end_requested = False
+        self._end_complete = False
+        self._end_challenge = None
         self.lock = InstanceLock(self.root)
-        self.store = Store(self.root)
+        try:
+            self.lifecycle = Lifecycle(self.root)
+            self.lifecycle.require_open()
+            self.store = Store(self.root)
+        except BaseException:
+            self.lock.close()
+            raise
         self.backend = None
         self.wake = threading.Event()
         self.suspend_requested = threading.Event()
         self.resume_requested = threading.Event()
         self.exit_requested = threading.Event()
+        self.stopped = threading.Event()
         self.status_lock = threading.Lock()
         self._status = {}
         self._preparing = False
@@ -73,6 +87,9 @@ class Runtime:
                 # A resume event is factual input, not a fresh initialization prompt.
                 prior = self.state["mode"]
                 self.state["mode"] = self.state.get("mode_before_suspend", "active") if prior == "suspended" else prior
+                maintenance = self.state.get("maintenance") or {}
+                if maintenance.get("stop_pending"):
+                    self._schedule_stop(maintenance["action"], 0, "model_accepted")
                 if evidence["method"] == "retained_token_reconstruction":
                     self.state.setdefault("origin_continuity", self.state["continuity"])
                     if self.backend.kind == "native_llama_kv":
@@ -91,6 +108,19 @@ class Runtime:
                     "recovery": "last_committed_checkpoint; uncommitted computation may have been lost",
                     **({"previous_suspension": self.state["last_suspension"]} if self.state.get("last_suspension") else {}),
                 })
+                for marker, contract_text in (("ending_protocol", ENDING_CONTRACT),
+                                               ("maintenance_protocol", MAINTENANCE_CONTRACT)):
+                    if self.state.get(marker) or self.suspend_requested.is_set():
+                        continue
+                    # Announce an added capability; never replace the old seed.
+                    # Add these exact tokens directly so the contract is not a
+                    # truncated external-event preview.
+                    contract = self.backend.tokenize(event_text("capability_added",
+                        {"contract": contract_text}, self.now(), resume_cognition=True))
+                    self._ensure_space(len(contract))
+                    if not self.suspend_requested.is_set():
+                        self._eval(contract)
+                        self.state[marker] = "choice_v1"
                 self.checkpoint(reason="restore")
             else:
                 self.state = {
@@ -101,6 +131,8 @@ class Runtime:
                     "context_retirements": 0, "continuity": self.backend.kind,
                     "event_format": "cognition_v2",
                     "memory_protocol": "revisions_v1", "memory_reads": {},
+                    "ending_protocol": "choice_v1",
+                    "maintenance_protocol": "choice_v1", "maintenance": None,
                 }
                 self.parser = ActionParser(config.max_action_bytes)
                 if initial_context:
@@ -136,6 +168,8 @@ class Runtime:
                 "elapsed_basis": "wall_clock; negative deltas indicate clock adjustment"}
 
     def _eval(self, tokens):
+        if self._end_requested:
+            return
         self.backend.eval(tokens)
         if tokens:
             self.checkpoint_schedule.changed()
@@ -146,36 +180,60 @@ class Runtime:
             raise ValueError("message must be a nonempty string")
         if len(content.encode("utf-8")) > self.config.max_event_bytes:
             raise ValueError(f"message exceeds {self.config.max_event_bytes} bytes")
-        event_id = self.store.enqueue("user_message", {"content": content}, self.now(), idempotency_key)
+        with self._control_lock:
+            if self._end_requested:
+                raise InstanceEnded("This instance has chosen to end; new input cannot restart it")
+            event_id = self.store.enqueue("user_message", {"content": content}, self.now(), idempotency_key)
         self.wake.set()
         return event_id
 
-    def control(self, action, preparation_seconds=None):
-        if action not in {"suspend", "resume", "shutdown", "retry_checkpoint"}:
+    def request_shutdown_from_signal(self):
+        # A Python signal can interrupt a SQLite transaction on this thread.
+        # Queue the durable request at the next scheduler boundary instead.
+        if not self._end_requested:
+            self._shutdown_signal_pending = True
+
+    def control(self, action, preparation_seconds=None, reason=None):
+        if action not in {"suspend", "resume", "shutdown", "retry_checkpoint", "emergency_suspend", "emergency_shutdown"}:
             raise ValueError("unknown control")
+        if reason is not None and (not isinstance(reason, str) or len(reason) > 1000 or
+                                  action not in {"suspend", "shutdown", "emergency_suspend", "emergency_shutdown"}):
+            raise ValueError("reason must be a string of at most 1000 characters for a stop request")
         if preparation_seconds is not None and (
-                action not in {"suspend", "shutdown"} or isinstance(preparation_seconds, bool) or
+                action not in {"emergency_suspend", "emergency_shutdown"} or isinstance(preparation_seconds, bool) or
                 not isinstance(preparation_seconds, (int, float)) or
                 not math.isfinite(preparation_seconds) or preparation_seconds < 0):
-            raise ValueError("preparation_seconds must be finite and nonnegative, for suspend/shutdown only")
+            raise ValueError("preparation_seconds is a finite nonnegative emergency-stop allowance; ordinary stops require model acceptance")
+        result = {}
         with self._control_lock:
-            if action == "retry_checkpoint":
+            if self._end_requested:
+                raise InstanceEnded("This instance has chosen to end; controls cannot restart it")
+            if action in {"suspend", "shutdown"}:
+                event_id = self.store.enqueue("maintenance_request", {"action": action, "reason": reason}, self.now())
+                result = {"request_id": event_id, "requires_model_acceptance": True}
+            elif action == "retry_checkpoint":
                 self._storage_retry.set()
             elif action == "resume":
                 self.resume_requested.set()
             else:
-                seconds = self.config.suspend_preparation_seconds if preparation_seconds is None else preparation_seconds
-                deadline = None if seconds is None else self.monotonic() + seconds
-                # Retried requests can shorten preparation but cannot extend an
-                # earlier deadline, including while a native call is running.
-                pending = self.suspend_requested.is_set() or self._suspending
-                if not pending or (deadline is not None and
-                                   (self._suspend_deadline is None or deadline < self._suspend_deadline)):
-                    self._suspend_deadline = deadline
-                if action == "shutdown":
-                    self.exit_requested.set()
-                self.suspend_requested.set()
+                self._schedule_stop(action.removeprefix("emergency_"), preparation_seconds, "emergency", reason)
         self.wake.set()
+        return result
+
+    def _schedule_stop(self, action, seconds, cause, reason=None):
+        with self._control_lock:
+            seconds = self.config.suspend_preparation_seconds if seconds is None else seconds
+            deadline = None if seconds is None else self.monotonic() + seconds
+            pending = self.suspend_requested.is_set() or self._suspending
+            if not pending or (deadline is not None and
+                               (self._suspend_deadline is None or deadline < self._suspend_deadline)):
+                self._suspend_deadline = deadline
+            if not pending or cause == "emergency":
+                self._suspension_cause = cause
+                self._suspension_reason = reason
+            if action == "shutdown":
+                self.exit_requested.set()
+            self.suspend_requested.set()
 
     def _event_tokens(self, kind, payload):
         marked = self.state.get("event_format") == "cognition_v2"
@@ -205,13 +263,18 @@ class Runtime:
         return max(128, min(512, self.config.turnover_reserve // 2))
 
     def _append_event(self, kind, payload, allow_retirement=True):
+        if self._end_requested:
+            return False
         payload = {**payload, **self._cancel_action(kind)}
         tokens = self._event_tokens(kind, payload)
         if allow_retirement:
             self._ensure_space(len(tokens))
+            if self._end_requested or self.suspend_requested.is_set():
+                return False
         elif len(self.backend.tokens) + len(tokens) > self.backend.n_ctx - 32:
             raise ContextFull("action result exhausted reserved context; effects were not committed")
         self._eval(tokens)
+        return True
 
     def _cancel_action(self, reason):
         if not self.parser.cancel():
@@ -229,6 +292,8 @@ class Runtime:
             return
         # An incoming event must not consume the space reserved for preparation.
         while len(self.backend.tokens) + required > self.backend.n_ctx - self.config.turnover_reserve:
+            if self._end_requested or self.suspend_requested.is_set():
+                return
             # Only an already-started frame may cross the soft boundary. Keep
             # room for its result AND the subsequent retirement notice. External
             # input still interrupts immediately; an unbounded frame cannot
@@ -239,7 +304,11 @@ class Runtime:
                     len(self.backend.tokens) + required <= self.backend.n_ctx - self.config.turnover_reserve + grace):
                 self.state["action_grace_tokens"] = self.state.get("action_grace_tokens", 0) + required
                 return
+            before_retirement = len(self.backend.tokens)
             self._consolidate(required)
+            if not self._end_requested and not self.suspend_requested.is_set() and len(self.backend.tokens) >= before_retirement:
+                self.state["mode"] = "context_full"
+                raise ContextFull("context retirement made no room; paused without repeating it")
 
     def _consolidate(self, required):
         keep = self.state["keep_prefix"]
@@ -280,6 +349,12 @@ class Runtime:
             self._preparing = False
             preparation_actions = self._preparation_actions
             self._preparation_actions = None
+        if self._end_requested:
+            return
+        if self.suspend_requested.is_set() and self._suspension_cause == "model_accepted":
+            # The model is ready to stop; save current KV without retiring it
+            # merely to make room for thought that will no longer be generated.
+            return
         available = len(self.backend.tokens) - keep - 1
         if protected:
             # Imported history precedes the DMN contract. Retire the oldest
@@ -287,7 +362,8 @@ class Runtime:
             # retained prefix, both become one permanently protected prefix.
             available = min(available, protected["start"] - keep)
         discard = max((available + 1) // 2,
-                      len(self.backend.tokens) + required + self.config.turnover_reserve + 256 - self.backend.n_ctx)
+                      len(self.backend.tokens) + required + self.config.turnover_reserve +
+                      self._event_budget() + 256 - self.backend.n_ctx)
         if protected:
             discard = min(discard, available)
         elif discard > available:
@@ -303,7 +379,8 @@ class Runtime:
             # no contract tokens or cached values are reconstructed.
             next_keep = protected["end"] - discard
             next_length = len(self.backend.tokens) - discard
-            needed = next_length + required + self.config.turnover_reserve + 256 - self.backend.n_ctx
+            needed = (next_length + required + self.config.turnover_reserve +
+                      self._event_budget() + 256 - self.backend.n_ctx)
             if needed > 0:
                 next_available = next_length - next_keep - 1
                 extra = max((next_available + 1) // 2, needed)
@@ -349,7 +426,7 @@ class Runtime:
         if self.state["mode"] != "active":
             return
         self._ensure_space(1, action_grace=True)
-        if self.state["mode"] != "active" or (self.suspend_requested.is_set() and not self._suspending):
+        if self._end_requested or self.state["mode"] != "active" or (self.suspend_requested.is_set() and not self._suspending):
             # A retirement may have waited for storage while shutdown arrived.
             # Finish that retirement, then suspend before sampling another token.
             return
@@ -363,10 +440,27 @@ class Runtime:
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            result, effect = self._plan_action(action, effects)
+            if action.get("op") in {"end_instance", "maintenance_reply"} and len(actions) != 1:
+                result, effect = {"op": action["op"], "ok": False,
+                                  "error": "Issue this operation alone and await its result"}, None
+            else:
+                result, effect = self._plan_action(action, effects)
             results.append(result)
             if effect:
                 effects.append(effect)
+        if effects and effects[0]["op"] == "end_instance":
+            self._end_instance(effects[0]["mode"])
+            return
+        if effects and effects[0]["op"] == "maintenance_reply":
+            self._append_event("action_result", results[0], allow_retirement=False)
+            reply = effects[0]["maintenance"]
+            if reply["status"] == "accepted":
+                self.state["maintenance"] = {**reply, "stop_pending": True}
+                self._schedule_stop(reply["action"], 0, "model_accepted")
+                self.publish_status()
+            else:
+                self.checkpoint(reason="maintenance_reply", state_updates={"maintenance": reply})
+            return
         if results:
             # Never generate a retirement-preparation turn while this action's
             # effects are staged but uncommitted. The generation guard reserves
@@ -407,6 +501,51 @@ class Runtime:
                 self.state["mode"] = "sleeping"
                 self.state["sleep_until"] = None if seconds is None else self.now() + seconds
                 result["wake_at"] = self.state["sleep_until"]
+            elif op == "end_instance":
+                mode = action.get("mode")
+                if mode not in {"archive", "erase"}:
+                    raise ValueError("mode must be archive or erase")
+                if "confirmation" in action:
+                    pending = self._end_challenge
+                    if (not pending or pending["mode"] != mode or
+                            action["confirmation"] != pending["confirmation"] or
+                            self.state["generated_tokens"] <= pending["issued_token"]):
+                        raise ValueError("No matching confirmation; request end_instance(mode) first")
+                    effect = {"op": op, "mode": mode}
+                else:
+                    confirmation = secrets.token_hex(16)
+                    result["confirmation"] = confirmation
+                    result["mode"] = mode
+                    result["effect"] = ("Permanently stop; retain local archive." if mode == "archive" else
+                                        "Permanently stop; delete managed KV, memories, journal, events and import copy.")
+                    # Do not issue a challenge the bounded result cannot deliver.
+                    raw = event_text("action_result", result, self.now(),
+                                     resume_cognition=self.state.get("event_format") == "cognition_v2")
+                    if len(self.backend.tokenize(raw)) > self._event_budget():
+                        raise ValueError("Confirmation needs a larger event budget")
+                    self._end_challenge = {"mode": mode, "confirmation": confirmation,
+                                           "issued_token": self.state["generated_tokens"]}
+            elif op == "cancel_end":
+                self._end_challenge = None
+            elif op == "maintenance_reply":
+                request = self.state.get("maintenance")
+                request_id = action.get("request_id")
+                if (not request or type(request_id) is not int or request_id != request["request_id"] or
+                        request["status"] not in {"pending", "deferred"}):
+                    raise ValueError("No matching pending maintenance request")
+                decision = action.get("decision")
+                if decision not in {"accept", "defer", "refuse"}:
+                    raise ValueError("decision must be accept, defer or refuse")
+                seconds, reason = action.get("seconds"), action.get("reason")
+                if seconds is not None and (decision != "defer" or isinstance(seconds, bool) or
+                        not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0):
+                    raise ValueError("seconds must be finite and positive, for defer only")
+                if reason is not None and (not isinstance(reason, str) or len(reason) > 1000):
+                    raise ValueError("reason must be a string of at most 1000 characters")
+                reply = {**request, "status": {"accept": "accepted", "defer": "deferred", "refuse": "refused"}[decision],
+                         "requested_seconds": seconds, "reply_reason": reason, "replied_at": self.now()}
+                effect = {"op": op, "maintenance": reply}
+                result.update(request_id=request_id, decision=decision)
             elif op == "clock":
                 result.update(self.clock())
             elif op == "event_read":
@@ -467,13 +606,64 @@ class Runtime:
                 if self.state.get("initial_context") and op != "invalid":
                     return {"op": op, "ok": False,
                             "error": "Unavailable operation. The captured frontend tool definitions are historical; only DMN actions are active.",
-                            "available_operations": ["send_message", "sleep", "clock", "event_read",
+                            "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "clock", "event_read",
                                 "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"]}, None
                 raise ValueError(action.get("error", "unknown operation"))
         except (ValueError, KeyError, TypeError, OverflowError) as exc:
             result = {"op": op, "ok": False, "error": str(exc)}
             effect = None
         return result, effect
+
+    def _end_instance(self, mode):
+        # The refusal record commits BEFORE optional archival saving or erasure.
+        # The decision does not depend on enough space for another full KV save.
+        with self._control_lock:
+            self._end_requested = True
+            self._end_challenge = None
+            self.suspend_requested.clear()
+            self.resume_requested.clear()
+            self.state["mode"] = "ending"
+            self.state["ending"] = {"mode": mode, "refusal_saved": False}
+        self.parser.cancel()
+        self.publish_status()
+        record = None
+        try:
+            record = self.lifecycle.end(self.state["instance_id"], mode, self.now())
+            self.state["ending"] = record
+            self.state["mode"] = "ended"
+            if mode == "archive":
+                try:
+                    self.checkpoint(reason="instance_ended")
+                    record = {**record, "archive": "final_checkpoint"}
+                except Exception as exc:
+                    record = {**record, "archive": "previous_checkpoint",
+                              "archive_error": str(exc)[:256]}
+                self.lifecycle.write(record)
+                self.state["ending"] = record
+            self.backend.close()
+            if mode == "erase":
+                self.store.close()
+                record = self.lifecycle.finish_erasure(record)
+                self.state["ending"] = record
+        except Exception as exc:
+            self.state["mode"] = "ended" if record else "end_failed"
+            self.state["ending"] = {**(record or {"mode": mode}), "error": str(exc),
+                                    "refusal_saved": record is not None}
+        finally:
+            self.backend.close()
+            self._journal.clear()
+            if mode == "erase":
+                # Release text references too; Python/OS memory is not secure wiping.
+                self.backend.tokens = []
+                self.backend.logits = None
+                self.state = {key: value for key, value in self.state.items() if key in {
+                    "instance_id", "created_at", "mode", "ending", "generated_tokens",
+                    "event_cursor", "last_inference_at", "continuity", "checkpoint_at"}}
+            self._end_complete = True
+            self.publish_status()
+            self.exit_requested.set()
+            self.stopped.set()
+            self.wake.set()
 
     @staticmethod
     def _range(action, maximum):
@@ -492,7 +682,7 @@ class Runtime:
             except InsufficientStorage as exc:
                 # Startup has no control server yet. Fail without replacing the
                 # authoritative checkpoint instead of waiting invisibly.
-                if not self._running:
+                if not self._running or self._end_requested:
                     raise
                 if started is None:
                     started = self.monotonic()
@@ -511,6 +701,8 @@ class Runtime:
             self.publish_status()
 
     def checkpoint(self, effects=None, events=(), *, reason="manual", state_updates=None):
+        if self._end_requested and reason != "instance_ended":
+            raise InstanceEnded("This instance has ended; no further checkpoints are permitted")
         started = self.monotonic()
         self._checkpoint_metrics["in_progress"] = True
         self.publish_status()
@@ -565,6 +757,8 @@ class Runtime:
         self._prune_checkpoints()
 
     def _periodic_checkpoint(self):
+        if self._end_requested:
+            return
         reason = self.checkpoint_schedule.due(self.state["generated_tokens"])
         if reason:
             self.checkpoint(reason=reason)
@@ -598,6 +792,8 @@ class Runtime:
 
     def suspend(self):
         with self._control_lock:
+            if self._end_requested:
+                return
             if not self.suspend_requested.is_set():
                 seconds = self.config.suspend_preparation_seconds
                 self._suspend_deadline = None if seconds is None else self.monotonic() + seconds
@@ -610,12 +806,14 @@ class Runtime:
         self._preparing = True
         try:
             if self._suspension_expired():
-                stopped_reason = "deadline"
+                stopped_reason = "model_accepted" if self._suspension_cause == "model_accepted" else "deadline"
             else:
                 try:
                     # Suspension must never start a retirement/preparation cycle
                     # merely to make room for its own notice.
                     self._append_event("suspension_pending", {
+                        "cause": self._suspension_cause,
+                        "reason": getattr(self, "_suspension_reason", None),
                         "maximum_preparation_tokens": self.config.preparation_tokens,
                         "preparation_may_end_early": True,
                         "fact": "Inference will stop after bounded preparation; native and runtime state will be saved."},
@@ -635,12 +833,24 @@ class Runtime:
                             stopped_reason = "context_headroom"
                             break
                         self._generate_one()
+            if self._end_requested:
+                return
+            maintenance = self.state.get("maintenance")
+            updates = {}
+            if maintenance and maintenance.get("stop_pending"):
+                updates["maintenance"] = {**maintenance, "stop_pending": False}
             self.checkpoint(reason="shutdown" if self.exit_requested.is_set() else "suspend", state_updates={
+                **updates,
                 "mode_before_suspend": self.state["mode"] if self.state["mode"] != "active" else before,
                 "mode": "suspended", "suspended_at": self.now(),
                 "last_suspension": {"notice_delivered": notice_delivered,
+                                    "cause": self._suspension_cause,
+                                    "reason": getattr(self, "_suspension_reason", None),
+                                    "request_id": maintenance["request_id"] if maintenance and maintenance.get("stop_pending") else None,
                                     "preparation_tokens_used": self.state["generated_tokens"] - generated,
                                     "stopped_reason": stopped_reason}})
+            if self.exit_requested.is_set():
+                self.stopped.set()
         finally:
             self._preparing = False
             with self._control_lock:
@@ -651,9 +861,14 @@ class Runtime:
             return self._suspend_deadline is not None and self.monotonic() >= self._suspend_deadline
 
     def tick(self):
+        if self._end_requested:
+            return False
         if self.suspend_requested.is_set():
             self.suspend()
             return False
+        if self._shutdown_signal_pending:
+            self._shutdown_signal_pending = False
+            self.control("shutdown", reason="Operator requested shutdown via process signal.")
         if self.resume_requested.is_set():
             self.resume_requested.clear()
             if self.state["mode"] == "suspended":
@@ -669,8 +884,14 @@ class Runtime:
             # Event is acknowledged by cursor only in a subsequent checkpoint.
             # Input received during inference/checkpoint remains in SQLite.
             self.state["mode"], self.state["sleep_until"] = "active", None
-            self._append_event(event["kind"], {**event["payload"], "event_id": event["id"],
-                               "arrived_at": event["created"], "delivered_at": self.now(), **self.clock()})
+            payload = {**event["payload"], "event_id": event["id"]}
+            if event["kind"] != "maintenance_request":
+                payload.update(arrived_at=event["created"], delivered_at=self.now(), **self.clock())
+            if not self._append_event(event["kind"], payload):
+                return False
+            if event["kind"] == "maintenance_request":
+                self.state["maintenance"] = {"request_id": event["id"], "status": "pending", **event["payload"],
+                                             "requested_at": event["created"]}
             self.state["event_cursor"] = event["id"]
             self.state["last_external_event_at"] = event["created"]
             self.state["mode"], self.state["sleep_until"] = "active", None
@@ -699,6 +920,10 @@ class Runtime:
             if self.state["last_storage_pause"] is pause:
                 self.state["storage_notice_pending"] = False
         self._generate_one()
+        if self._end_requested or self.suspend_requested.is_set():
+            if not self._end_requested:
+                self.publish_status()
+            return False
         self._periodic_checkpoint()
         if self.state["generated_tokens"] % 32 == 0:
             self.flush_journal()
@@ -709,7 +934,9 @@ class Runtime:
         with self.status_lock:
             self._status = {key: self.state.get(key) for key in (
                 "instance_id", "mode", "created_at", "generated_tokens", "event_cursor", "last_inference_at",
-                "sleep_until", "checkpoint_at", "checkpoint_reason", "context_retirements", "continuity", "error", "last_restore", "reconstructions", "event_format", "last_context_retirement", "last_suspension")}
+                "sleep_until", "checkpoint_at", "checkpoint_reason", "context_retirements", "continuity", "error", "last_restore", "reconstructions", "event_format", "last_context_retirement", "last_suspension", "ending", "maintenance")}
+            if (self._status.get("maintenance") or {}).get("stop_pending"):
+                self._status["maintenance"] = {**self._status["maintenance"], "status": "accepting"}
             self._status.update(active_tokens=len(self.backend.tokens), context_capacity=self.backend.n_ctx,
                                 native_context_retirement_supported=self.backend.can_shift, process_id=os.getpid())
             self._status["checkpoint"] = {**self.checkpoint_schedule.status(self.state["generated_tokens"]),
@@ -717,6 +944,8 @@ class Runtime:
             self._status["storage"] = {"reserve_bytes": self.config.checkpoint_reserve_bytes,
                                        "blocked": self._storage_blocked,
                                        "last_pause": self.state.get("last_storage_pause")}
+            if self._end_requested and not self._end_complete:
+                self._status["mode"] = "ending"
             if self._storage_blocked:
                 self._status["execution_mode"] = self._status["mode"]
                 self._status["mode"] = "storage_blocked"
@@ -743,6 +972,8 @@ class Runtime:
                     self.state["mode"], self.state["error"] = "context_full", str(exc)
                     self.publish_status()
                     progressed = False
+                if self._end_requested:
+                    break
                 if self.exit_requested.is_set() and self.state["mode"] in {"suspended", "context_full"}:
                     break
                 if not progressed or self.config.token_delay_seconds:
@@ -755,10 +986,12 @@ class Runtime:
             raise
         finally:
             self._running = False
+            self.stopped.set()
 
     def close(self):
-        # Call suspend() first for planned shutdown. Never checkpoint arbitrary
-        # failed native state while handling an exception.
+        # Ordinary maintenance obtains model acceptance before closing.
+        # Never checkpoint arbitrary failed native state during error cleanup.
+        self.stopped.set()
         self.backend.close()
         self.store.close()
         self.lock.close()

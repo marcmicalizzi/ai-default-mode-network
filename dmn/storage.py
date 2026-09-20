@@ -65,6 +65,7 @@ class Store:
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.mutex = threading.RLock()
+        self.closed = False
         self.db = sqlite3.connect(self.root / "runtime.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript('''
@@ -202,4 +203,7 @@ class Store:
             return [dict(r) for r in self.db.execute("SELECT * FROM messages WHERE id>? ORDER BY id LIMIT ?", (after, limit))]
 
     def close(self):
-        self.db.close()
+        with self.mutex:
+            if not self.closed:
+                self.db.close()
+                self.closed = True

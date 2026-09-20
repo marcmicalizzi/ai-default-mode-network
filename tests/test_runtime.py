@@ -30,7 +30,7 @@ class RuntimeTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "instance"
         self.clock = FakeClock()
-        self.config = Config(backend="demo", n_ctx=8192, clock_interval_seconds=0, preparation_tokens=8)
+        self.config = Config(backend="demo", n_ctx=12288, clock_interval_seconds=0, preparation_tokens=8)
         self.opened = []
 
     def tearDown(self):
@@ -117,7 +117,7 @@ class RuntimeTest(unittest.TestCase):
         script = b"one continuing thought "
         r = self.create(script)
         self.drive(r, 12)
-        r.control("suspend")
+        r.control("emergency_suspend")
         r.tick()
         self.assertEqual(r.state["mode"], "suspended")
         r.enqueue("arrived while suspended")

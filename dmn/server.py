@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .storage import json_text
+from .ending import InstanceEnded
 
 
 def serve(runtime, port=8765):
@@ -38,6 +40,9 @@ def serve(runtime, port=8765):
             parts = urlsplit(self.path)
             query = parse_qs(parts.query)
             try:
+                if ((runtime.status().get("ending") or {}).get("mode") == "erase" and
+                        parts.path not in {"/", "/api/status", "/api/stream"}):
+                    raise InstanceEnded("This instance ended with erasure; its records are unavailable")
                 if parts.path == "/":
                     self.reply(200, (Path(__file__).parent / "web" / "index.html").read_bytes(), "text/html; charset=utf-8")
                 elif parts.path == "/api/status":
@@ -67,16 +72,30 @@ def serve(runtime, port=8765):
                     # Short-lived connections allow shutdown; EventSource reconnects
                     # with the last durable message ID. Idle ticks never publish thoughts.
                     for _ in range(30):
-                        for message in runtime.store.messages(cursor):
+                        try:
+                            messages = [] if runtime._end_requested else runtime.store.messages(cursor)
+                        except sqlite3.ProgrammingError:
+                            if not runtime._end_requested and not runtime.stopped.is_set():
+                                raise
+                            messages = []
+                        for message in messages:
                             self.wfile.write(f'id: {message["id"]}\nevent: message\ndata: {json_text(message)}\n\n'.encode())
                             cursor = message["id"]
                         self.wfile.write(f'event: status\ndata: {json_text(runtime.status())}\n\n'.encode())
                         self.wfile.flush()
-                        if runtime.exit_requested.wait(1):
+                        if runtime.stopped.wait(1):
+                            self.wfile.write(f'event: status\ndata: {json_text(runtime.status())}\n\n'.encode())
+                            self.wfile.flush()
                             break
                     self.close_connection = True
                 else:
                     self.reply(404, {"error": "not found"})
+            except InstanceEnded as exc:
+                self.reply(410, {"error": str(exc)})
+            except sqlite3.ProgrammingError:
+                if not runtime._end_requested and not runtime.stopped.is_set():
+                    raise
+                self.reply(410, {"error": "Runtime stopped; records are unavailable"})
             except (ValueError, KeyError) as exc:
                 self.reply(400, {"error": str(exc)})
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -104,10 +123,13 @@ def serve(runtime, port=8765):
                         raise ValueError("runtime instance identity does not match")
                     self.reply(202, {"event_id": runtime.enqueue(body["content"], body.get("idempotency_key"))})
                 elif self.path == "/api/control":
-                    runtime.control(body["action"], preparation_seconds=body.get("preparation_seconds"))
-                    self.reply(202, {"accepted": body["action"]})
+                    result = runtime.control(body["action"], preparation_seconds=body.get("preparation_seconds"), reason=body.get("reason"))
+                    self.reply(202, {"accepted": body["action"], **result})
                 else:
                     self.reply(404, {"error": "not found"})
+            except InstanceEnded as exc:
+                self.reply(410, {"error": str(exc)})
+                self.close_connection = True
             except (ValueError, KeyError, TypeError) as exc:
                 self.reply(400, {"error": str(exc)})
                 self.close_connection = True

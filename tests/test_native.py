@@ -28,7 +28,7 @@ class NativeProcessTest(unittest.TestCase):
             try:
                 r._eval(r.backend.tokenize("A history with older and newer details. " * 80))
                 r._consolidate(1)
-                r.control("shutdown", preparation_seconds=0)
+                r.control("emergency_shutdown", preparation_seconds=0)
                 r.run()
                 self.assertEqual(r.state["last_suspension"]["preparation_tokens_used"], 0)
                 saved, tokens = r.store.latest(), r.backend.tokens.copy()

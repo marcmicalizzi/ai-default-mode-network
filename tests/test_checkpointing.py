@@ -167,7 +167,7 @@ class CheckpointPolicyTest(unittest.TestCase):
         r.backend.can_shift = False
         r.enqueue("pending during shutdown")
         before = r.backend.decoded_tokens
-        r.control("shutdown", preparation_seconds=0)
+        r.control("emergency_shutdown", preparation_seconds=0)
         r.run()
         self.assertEqual(r.backend.decoded_tokens, before)
         self.assertEqual(r.state["generated_tokens"], 0)
@@ -187,7 +187,7 @@ class CheckpointPolicyTest(unittest.TestCase):
             evaluate(tokens)
             self.mono.time += 1
         r.backend.eval = slow_eval
-        r.control("suspend")
+        r.control("emergency_suspend")
         r.tick()
         self.assertEqual(r.state["last_suspension"]["preparation_tokens_used"], 2)
         self.assertEqual(r.state["last_suspension"]["stopped_reason"], "deadline")
@@ -197,11 +197,11 @@ class CheckpointPolicyTest(unittest.TestCase):
         r = self.create()
         sample = r.backend.sample
         def urgent_request():
-            r.control("shutdown", preparation_seconds=0)
-            r.control("shutdown", preparation_seconds=300)
+            r.control("emergency_shutdown", preparation_seconds=0)
+            r.control("emergency_shutdown", preparation_seconds=300)
             return sample()
         r.backend.sample = urgent_request
-        r.control("suspend", preparation_seconds=100)
+        r.control("emergency_suspend", preparation_seconds=100)
         r.tick()
         self.assertEqual(r.state["last_suspension"]["preparation_tokens_used"], 1)
         self.assertEqual(r.state["checkpoint_reason"], "shutdown")
@@ -210,7 +210,7 @@ class CheckpointPolicyTest(unittest.TestCase):
         r = self.create()
         prior = r.store.latest()
         r.backend.save = lambda _: (_ for _ in ()).throw(OSError("disk unavailable"))
-        r.control("shutdown", preparation_seconds=0)
+        r.control("emergency_shutdown", preparation_seconds=0)
         with self.assertRaises(OSError):
             r.run()
         self.assertEqual(r.state["mode"], "error")
@@ -261,7 +261,7 @@ class CheckpointPolicyTest(unittest.TestCase):
         r._eval([ord("x")] * (r.backend.n_ctx - len(r.backend.tokens) - 1))
         r._consolidate = lambda *_: self.fail("suspension must not retire context for a notice")
         before = r.backend.decoded_tokens
-        r.control("suspend", preparation_seconds=30)
+        r.control("emergency_suspend", preparation_seconds=30)
         r.tick()
         self.assertEqual(r.backend.decoded_tokens, before)
         self.assertEqual(r.state["mode"], "suspended")

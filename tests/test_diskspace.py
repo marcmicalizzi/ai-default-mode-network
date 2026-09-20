@@ -30,7 +30,7 @@ class StorageCapacityTest(unittest.TestCase):
     def tearDown(self):
         if self.runtime:
             self.free = 10**12
-            self.runtime.control("shutdown", preparation_seconds=0)
+            self.runtime.control("emergency_shutdown", preparation_seconds=0)
             self.runtime.control("retry_checkpoint")
             if self.worker:
                 self.worker.join(5)
@@ -107,7 +107,7 @@ class StorageCapacityTest(unittest.TestCase):
         generated, decoded = r.state["generated_tokens"], r.backend.decoded_tokens
         self.assertEqual(observe(r), [])
         r.enqueue("queued while storage is unavailable")
-        r.control("shutdown", preparation_seconds=0)
+        r.control("emergency_shutdown", preparation_seconds=0)
         r.control("retry_checkpoint")
         time.sleep(.05)
         self.assertEqual(r.state["generated_tokens"], generated)
@@ -200,7 +200,7 @@ class StorageCapacityTest(unittest.TestCase):
         self.until(lambda: r.status()["mode"] == "storage_blocked")
         self.assertEqual(r.status()["storage"]["blocked"]["purpose"], "native packing scratch")
         generated = r.state["generated_tokens"]
-        r.control("shutdown", preparation_seconds=0)
+        r.control("emergency_shutdown", preparation_seconds=0)
         self.free = 10**12
         r.control("retry_checkpoint")
         self.worker.join(5)

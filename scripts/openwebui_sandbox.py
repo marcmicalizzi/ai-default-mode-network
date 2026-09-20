@@ -53,8 +53,8 @@ def stop_children(processes, dmn_port, timeout=600):
             native.wait(timeout=timeout)
         except Exception as exc:
             print(f"DMN shutdown has not been confirmed ({exc}). Child PID {native.pid} "
-                  f"has been left running; inspect http://127.0.0.1:{dmn_port}/ for storage "
-                  "warnings or an in-progress save. It was not forcibly terminated.", flush=True)
+                  f"has been left running; inspect http://127.0.0.1:{dmn_port}/ for the model's reply, "
+                  "storage warnings or an in-progress save. It was not forcibly terminated.", flush=True)
     for process in reversed(processes[1:]):
         if process.poll() is None:
             process.terminate()
@@ -148,7 +148,7 @@ def main():
             "owner_token": os.environ.get("DMN_SANDBOX_OWNER")}))
         label = "Native model runtime" if args.runtime_config else "Transport fixture"
         print(f"Disposable Open WebUI ready: {url}\n{label}: {dmn_url}\nLogs: {folder}", flush=True)
-        print("Press Ctrl+C to stop both sandbox processes.", flush=True)
+        print("Press Ctrl+C to request model-approved shutdown; refusal or timeout leaves DMN running.", flush=True)
         while all(p.poll() is None for p in processes):
             time.sleep(1)
     except KeyboardInterrupt:

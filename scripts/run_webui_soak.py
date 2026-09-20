@@ -85,7 +85,7 @@ class Soak:
             assert status["process_id"] == processes["native_pid"]
             os.kill(processes["native_pid"], signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
         else:
-            self.request("/api/control", {"action": "shutdown"}, native=True)
+            self.request("/api/control", {"action": "emergency_shutdown"}, native=True)
         self.manager.wait(timeout=120)
         self.log.close()
 

@@ -26,7 +26,7 @@ def main():
                   headers={"Content-Type": "application/json", "X-DMN-Request": "1"})
     with opener.open(req, timeout=5) as response:
         print(response.read().decode())
-    print("Checkpointed shutdown requested. The sandbox supervisor will stop Open WebUI after the runtime exits.")
+    print("Shutdown requested; the instance may accept, defer or refuse. Inspect the runtime UI for its reply.")
 
 
 if __name__ == "__main__":

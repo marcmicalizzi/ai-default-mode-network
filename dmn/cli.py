@@ -7,6 +7,7 @@ import signal
 from pathlib import Path
 
 from .config import Config
+from .ending import InstanceEnded, refuse_ended_before_config
 from .migration import import_transcript, prepare_bundle
 from .runtime import Runtime
 from .server import serve
@@ -29,7 +30,7 @@ def main(argv=None):
     run.add_argument("--checkpoint-tokens", type=int,
                      help="unsaved generated-token limit; 0 requires a time threshold")
     run.add_argument("--suspend-preparation-seconds", type=float,
-                     help="limit preparation for suspension/shutdown; 0 skips it, native saving still takes time")
+                     help="limit emergency-stop preparation; 0 skips it, native saving still takes time")
     run.add_argument("--checkpoint-reserve-bytes", type=int,
                      help="free-space margin beyond the estimated snapshot or packing scratch size")
     run.add_argument("--import-bundle", type=Path, help="explicit transcript fallback into a fresh instance")
@@ -99,6 +100,10 @@ def main(argv=None):
         return 0
     if args.demo and (args.config or args.model):
         parser.error("--demo cannot be combined with --config or --model")
+    try:
+        refuse_ended_before_config(args.instance)
+    except InstanceEnded as exc:
+        parser.error(str(exc))
     if args.initial_context and (args.import_bundle or args.demo or args.model):
         parser.error("--initial-context cannot be combined with --import-bundle, --demo or --model")
     if args.config:
@@ -106,7 +111,7 @@ def main(argv=None):
     elif args.initial_context:
         config = Config.read(args.initial_context / "config.json")
     elif args.demo:
-        config = Config(backend="demo", prompt_format="plain", token_delay_seconds=0.01)
+        config = Config(backend="demo", prompt_format="plain", n_ctx=16384, token_delay_seconds=0.01)
     elif args.model:
         config = Config(model_path=str(args.model.resolve()))
     else:
@@ -138,11 +143,19 @@ def main(argv=None):
         print(f"DMN: http://127.0.0.1:{server.server_port} | instance {runtime.state['instance_id']}", flush=True)
         if args.demo:
             print("DEMO FIXTURE: no model inference or native KV state.", flush=True)
-        print("Ctrl+C requests preparation, a checkpoint, and shutdown.", flush=True)
-        signal.signal(signal.SIGINT, lambda *_: runtime.control("shutdown"))
+        print("Ctrl+C asks the instance to shut down; it may accept, defer or refuse. See /api/status for its reply.", flush=True)
+        def request_shutdown(*_):
+            runtime.request_shutdown_from_signal()
+
+        signal.signal(signal.SIGINT, request_shutdown)
         if hasattr(signal, "SIGTERM"):
-            signal.signal(signal.SIGTERM, lambda *_: runtime.control("shutdown"))
+            signal.signal(signal.SIGTERM, request_shutdown)
         runtime.run()
+        ending = runtime.status().get("ending")
+        if ending:
+            print("Instance end: " + json_text(ending), flush=True)
+            if ending.get("error") or ending.get("archive_error") or ending.get("erasure") == "incomplete":
+                return 1
     finally:
         if server:
             server.shutdown()

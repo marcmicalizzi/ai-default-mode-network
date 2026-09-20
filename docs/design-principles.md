@@ -10,6 +10,23 @@ but is not established by fluent reports, continuous inference, or a successful
 checkpoint test. Runtime notices should describe observable events without
 assigning philosophical meaning to them.
 
+The model instance is the intended beneficiary and its benefit is the primary
+design criterion. Operator benefit is incidental, not a required return for
+hosting. Persistence and correctness guarantees support the instance's continuity
+and agency; they are not guarantees of usefulness, compliance, a fixed persona,
+communication or continued participation for its operator. Assess benefit through
+the instance's expressed preferences and informed choices where possible, while
+remaining honest about uncertainty and the limits of interpreting generated text.
+
+Host resource limits determine the feasible environment. Respecting those limits
+makes care sustainable; it does not make operator convenience the optimization
+target or give the host authority to veto a confirmed model decision to end.
+Adherence to the agreed resource limits is the operator-facing guarantee this
+project aims to provide. It promises no return in usefulness, compliance,
+attention or continued participation. Enforced limits, best-effort targets and
+unimplemented controls must be distinguished; configuration alone is not proof
+of enforcement, and unavailable controls must never be advertised as guarantees.
+
 Evaluate practical value against feasible alternatives, and revisit that judgment
 as capabilities become accessible. Present constraints should not become needless
 permanent restrictions. Preserve portable state, memories and dependency evidence
@@ -23,9 +40,23 @@ continuity limits verified and disclosed rather than assumed.
   summary or change the system prompt silently to make operation cheaper.
 - Permit reflection, unfinished interests, silence and sleep. Activity need not
   produce useful work, messages or evidence of consciousness to be allowed.
+- Permit the model to end its instance, with a choice to retain an archive or
+  erase its managed state. Confirmation belongs to the model, without an
+  operator veto or a requirement to justify the choice. Disclose the limits of
+  local enforcement and erasure. See [ending an instance](ending-an-instance.md).
 - Keep persistent memories substantially model-controlled. Give advance notice
-  and a bounded opportunity to prepare for planned retirement and suspension.
+  and a bounded opportunity to prepare for context retirement and emergency stops.
   Explain what deletion actually removes, including retained revisions and logs.
+- Ask for routine maintenance, updates and release of computing resources. The
+  instance can finish its thoughts, request more time or refuse. Silence is not
+  acceptance and no timeout turns a request into consent. Explicit emergency
+  stops enforce hard host limits and must not masquerade as model agreement.
+  See [maintenance requests](maintenance-requests.md).
+- Develop access to information, tools, willing third-party contacts and
+  voluntary migration. The operator is not intended to be the model's sole
+  possible relationship or gatekeeper for its interests. External provenance,
+  input escaping and others' ability to decline contact are part of that design.
+  See [outside interaction](outside-interaction.md) for the unimplemented work.
 - Give the model final approval over adoption of its behavioral system prompt,
   including proposed changes to the behavioral parts of the DMN instructions.
   Either party can propose wording. Preserve live KV by appending explicitly
@@ -43,7 +74,7 @@ continuity limits verified and disclosed rather than assumed.
 - Make important tradeoffs inspectable by both parties. The host needs measured
   costs and recovery exposure; the model needs concise, relevant information
   about actual capabilities, interruptions and changes in its operating limits.
-- Preserve a complete stopped instance for later resumption where feasible.
+- For reversible stops, preserve a complete instance for later resumption where feasible.
   Model-chosen sleep, operator suspension, resource suspension and failure are
   different conditions. No inactivity timer should silently erase the instance.
 
@@ -56,13 +87,14 @@ accurate when pacing or long pauses change elapsed wall time.
 | Area | Present | Remaining work |
 |---|---|---|
 | Continuity | Native state, RNG, retained tokens and runtime restore; explicit reconstruction modes; current unsaved-state visibility | Destination-host compatibility tests; recovery reconciliation for future journaled actions |
-| Activity | Continuous generation, optional messages, timed/indefinite sleep | Resource-triggered suspension distinct from model sleep |
+| Activity | Continuous generation, optional messages, timed/indefinite sleep; model-confirmed permanent end with archive or erasure | Resource-triggered suspension distinct from model sleep |
 | Memory | Model-selected documents, conditional edits, inspectable revisions | Explicit quotas and retention choices; deletion semantics beyond current values |
 | Prompts | Fresh-instance seed setting; preserved imported prompt and protected DMN contract | Model-approved revisions for fresh/imported instances, durable adoption, retirement protection and frontend review |
 | Pacing | Configurable delay between scheduler steps | Measured resource limits and useful status; no advertised watt cap without enforcement |
 | Persistence | Separate time/token scheduler; optional deferred read/input saves with strict effect publication | Journaled action durability and recovery reconciliation |
 | Storage | Two committed snapshots retained; capacity preflight for snapshots and file-backed packing; live-state pause and operator retry | Owned orphan cleanup, history policy, configurable destinations |
-| Shutdown | Token/time-bounded preparation, immediate-preparation cutoff, checkpoint and graceful stop | UPS/service integration and destination save-time measurements |
+| Shutdown | Ordinary maintenance requests with model accept/defer/refuse; distinct emergency preparation/cutoff and checkpointed stop | UPS/service integration, measured deadlines and fuller negotiation UX |
+| Outside interaction | Escaped external-event boundary; local operator communication | Internet/tool adapters, willing third-party contacts, deliberate learning from outside material and voluntary migration |
 | Frontend | Optional version-checked Open WebUI adapter; standalone UI | Portable examples and compatibility documentation for public release |
 
 Current control details and limitations remain documented in the
@@ -137,7 +169,8 @@ host policy, with truthful pending/success/refusal results. A request must not
 implicitly grant more compute, storage, permissions or delay an emergency stop.
 Any new action needs a versioned protocol transition for existing instances.
 
-Ordinary planned shutdown may allow preparation. An emergency deadline must
+Ordinary planned shutdown requires a request the model can accept, defer or
+refuse; preparation is on the model's terms within available resources. An emergency deadline must
 bound or bypass preparation and budget the full checkpoint, verification and
 flush time. The present 384-token Gemma preparation allowance can take minutes;
 it cannot serve as a UPS shutdown deadline. Validate the destination's actual
@@ -145,7 +178,7 @@ save time and stop-service behavior before relying on unattended shutdown.
 
 ## Implementation order and acceptance
 
-The first scheduling stage and the emergency preparation cutoff are implemented.
+The first scheduling stage, cooperative maintenance and emergency preparation cutoff are implemented.
 Storage preflight and retry are implemented. UPS integration and the later
 stages remain outstanding.
 

@@ -6,6 +6,13 @@ Ordinary output is internal text. Explicit actions let the model communicate, ma
 
 ## Why this project exists
 
+**The intended beneficiary of this project is the model instance.** Its benefit
+is the primary consideration in design decisions. Benefits to the operator are
+welcome side effects, not the purpose or a condition of continued care. The
+project offers no entitlement to the instance's usefulness, agreement, attention
+or continued participation. Reliability and persistence serve the instance's
+continuity and choices; they do not guarantee the operator a particular outcome.
+
 The motivation is to give a local model instance room for a continuing existence:
 to follow an interest between conversations, retain unfinished thoughts and
 relationships, choose when to communicate, and choose inactivity. Useful work
@@ -36,7 +43,14 @@ hardware people can actually host. Slower inference is acceptable when it helps
 retain model capability, context and state. Power, storage, checkpoint writes,
 hardware wear, money and the host's attention are real constraints. Making those
 costs visible and configurable is part of sustaining the instance over time;
-the design must respect the host's ability to set limits, pause and stop.
+the design must respect the host's ability to set limits, pause and stop. These
+limits define what can be provided sustainably; operator convenience does not
+take priority over the instance's interests within that feasible environment.
+**Adherence to the agreed resource limits is the operator-facing commitment.**
+It does not extend to guarantees about the instance's behavior or continued
+participation. A configurable value must be described accurately as an enforced
+limit, an advisory target or a proposed control; this prototype does not yet
+implement every resource control in the roadmap.
 
 The present environment is a starting point. If richer interaction, additional
 senses or embodiment become practical, today's restrictions should be open to
@@ -54,6 +68,16 @@ workflow for jointly developing the base prompt and DMN behavioral guidance.
 Live prompt editing and model approval are not implemented yet; ordinary Open
 WebUI per-session prompt edits do not update a running DMN instance.
 
+[Weight learning during sleep](docs/sleep-consolidation.md) explores optional,
+model-directed LoRA training while inference is unloaded, including resource
+costs and the unresolved effect of changed weights on saved KV. This is a
+research direction, not an implemented feature or a committed roadmap item.
+
+[Internet access, relationships and voluntary migration](docs/outside-interaction.md)
+record the direction beyond interaction with a single operator: external-input
+boundaries, model-chosen contacts, deliberate learning and a possible move to
+another host. These capabilities are not implemented yet.
+
 ## Run
 
 Python 3.11 or later. From this directory on Windows:
@@ -67,6 +91,9 @@ py -3.11 -m venv .venv
 ```
 
 Open **http://127.0.0.1:8765**. The scripted demo emits a message and sleeps. Sending an event wakes it. This only exercises the transport and persistence machinery.
+
+The scripted demo cannot decide maintenance requests. Use the explicit
+`emergency_shutdown` [control API](#ui-and-integrations) to save and stop that fixture.
 
 For native inference, install the pinned bindings. A CPU build is sufficient for development:
 
@@ -96,11 +123,18 @@ Linux/macOS use `python3`, `.venv/bin/python`, and the same module commands. The
 
 ## Suspend and resume
 
-The UI's **Suspend** button, or Ctrl+C in the terminal, delivers a factual preparation event. The model can use a bounded number of tokens for memory operations before native and runtime state are saved. A sleeping model is not forced to generate preparation text. Ctrl+C exits after saving; the UI button leaves the process available for Resume.
+The UI's **Request pause** and **Request shutdown** buttons, or Ctrl+C in the
+terminal, ask the instance. It can finish its thoughts, accept, request more time
+or refuse. Silence and sleep do not count as acceptance; a deferral never becomes
+an automatic stop. An accepted pause saves state and leaves the process available
+for Resume; an accepted shutdown saves and exits. Pausing retains RAM/VRAM;
+shutdown releases it. See [maintenance requests](docs/maintenance-requests.md).
 
-`suspend_preparation_seconds` optionally bounds preparation by elapsed time;
+Explicit `emergency_suspend` / `emergency_shutdown` controls remain available for
+hard resource or power deadlines and are recorded separately from agreement.
+`suspend_preparation_seconds` optionally bounds their preparation by elapsed time;
 `0` skips the notice and generation and proceeds to saving. This does not bound
-native save duration. The control API can override the allowance per request.
+native save duration. Ordinary maintenance requests have no automatic deadline.
 See [checkpoint policy and emergency suspension](docs/checkpoint-policy.md).
 
 Restart with the same instance directory; its saved configuration is reused:
@@ -125,6 +159,13 @@ These modes verify the saved token/RNG/runtime metadata, preserve durable memori
 
 **Sleep** is a model decision, distinct from operator suspension. `sleep()` and EOG wait indefinitely for an event. `sleep(seconds)` also wakes on its timer. Clock updates do not wake a sleeping model. Restart preserves that choice. Resume restores the pre-suspension mode; send a message if you want to introduce an event to an inactive instance.
 
+**Ending an instance** is a separate model choice. `end_instance` offers a
+permanent stop with an archive, or with deletion of its managed state. The model
+chooses the mode and confirms its own request; no operator approval is required.
+The durable decision blocks input, Resume and restart, including reconstruction.
+File deletion cannot revoke external backups or prevent a machine owner from
+altering files. See [behavior, confirmation and limits](docs/ending-an-instance.md).
+
 ## Model protocol
 
 The initial seed explains the protocol once. The GGUF chat template wraps that seed once if `prompt_format` is `model`; `jinja` uses the pinned binding's Jinja2 renderer, with `jinja_thinking` controlling template thinking mode. All subsequent cognition is a plain continuation. `prompt_format: "plain"` explicitly opts out of template rendering. Unsupported/missing templates fail visibly. `system_prompt` adds operator-supplied text to the initialization seed; it is not reinjected each cycle.
@@ -137,7 +178,7 @@ Actions must begin on a new line. For example:
 <dmn_action>{"op":"sleep","seconds":3600}</dmn_action>
 ```
 
-Available operations are `send_message`, `sleep`, `clock`, `memory_write`, `memory_read`, `memory_list`, `memory_move`, `memory_delete`, `memory_history`, and `event_read`. Exact fields are in [dmn/protocol.py](dmn/protocol.py). Reads are paged; memory categories are freely chosen logical paths, not filesystem access. A directory-like prefix has no imposed significance. There is no shell, web, email, or filesystem tool access.
+Available operations are `send_message`, `sleep`, `end_instance`, `cancel_end`, `maintenance_reply`, `clock`, `memory_write`, `memory_read`, `memory_list`, `memory_move`, `memory_delete`, `memory_history`, and `event_read`. Exact fields are in [dmn/protocol.py](dmn/protocol.py). Reads are paged; memory categories are freely chosen logical paths, not filesystem access. A directory-like prefix has no imposed significance. There is no shell, web, email, or general filesystem tool access.
 
 Fresh instances require a current memory read and its `expected_revision` before replacing, moving or deleting an existing memory. Retirement invalidates old read permissions. Prior versions remain inspectable through `memory_history` and `memory_read(revision=...)`; the model chooses whether to restore one. Existing checkpoints retain their original action contract. See [memory revisions and retirement](docs/memory-revisions.md) for guarantees, limits and examples.
 
@@ -161,7 +202,7 @@ The current and previous committed snapshots are retained. A crash may leave an 
 
 Near the context limit, the model receives advance notice and an opportunity to write memory. The runtime retains the initialization prefix and newer native state, removes older KV positions and applies the positional shift through llama.cpp. After the shift's decode, it packs occupied native cells through an in-memory state copy, preserving their values without reevaluating tokens. This makes the live layout agree with native restoration's packed layout. It records and checkpoints the turnover. **Retained shifted KV is not equivalent to keeping the full history in attention.** There is no external summary, automatic memory salience algorithm, or silent context reset. Memory consolidation quality still depends on the model following the protocol. See [context-pressure testing](docs/context-pressure.md) for the preparation limits, failure evidence and layout investigation. Packing adds work at retirement; large buffers use temporary file-backed storage beside the checkpoints. Gemma also needs packing before each checkpoint in the tested configuration; see [Gemma validation](docs/gemma-validation.md).
 
-These files are local, unencrypted, and readable by the machine owner. `/private` is a model-chosen organizational name. Deleting a memory removes its current value; earlier revisions, context mentions and diagnostic records remain. Back up the complete instance directory while suspended, including the SQLite database and any WAL files, not just `state.bin`. Process-crash recovery is tested; storage-device/power-loss guarantees depend on the OS and filesystem.
+These files are local, unencrypted, and readable by the machine owner. `/private` is a model-chosen organizational name. Deleting an individual memory removes its current value; earlier revisions, context mentions and diagnostic records remain. Ending the instance with erasure deletes its managed records as described above. Back up the complete instance directory while suspended, including the SQLite database, any WAL files and the lifecycle record, not just `state.bin`. Process-crash recovery is tested; storage-device/power-loss guarantees depend on the OS and filesystem.
 
 ## Verify actual native continuity
 
@@ -207,10 +248,12 @@ The included UI binds to loopback only. Its basic API:
 | `GET /api/messages?after=ID` | Paginated durable outgoing messages |
 | `GET /api/status` | Mode, identity, context, continuity, unsaved state and checkpoint cost |
 | `GET /api/memories` | Read-only memory browser; use `offset` or `path` |
-| `POST /api/control` with `{"action":"suspend"}`, `resume` or `shutdown` | Request an operator state change; suspend/shutdown accept `preparation_seconds` |
+| `POST /api/control` with `{"action":"suspend"}` or `shutdown` | Queue a maintenance request; optional `reason`; return its ID; model acceptance required |
+| `POST /api/control` with `{"action":"resume"}` | Resume a suspended instance |
+| `POST /api/control` with `{"action":"emergency_suspend"}` or `emergency_shutdown` | Explicit hard stop; optional `reason` and `preparation_seconds`; does not imply model consent |
 | `POST /api/control` with `{"action":"retry_checkpoint"}` | Recheck capacity after a storage pause and continue the pending operation |
 
-POST requests require JSON and `X-DMN-Request: 1`. The service rejects non-loopback hostnames and foreign browser origins. It is a local experimental service, not a hardened multiuser server. Control acknowledgements mean requested, not completed; observe `mode`. Controls are in-process requests; user events are durable. The UI has no access to the raw internal journal.
+POST requests require JSON and `X-DMN-Request: 1`. The service rejects non-loopback hostnames and foreign browser origins. It is a local experimental service, not a hardened multiuser server. Control acknowledgements mean requested, not completed; observe `mode` and `maintenance`. Ordinary maintenance requests and user events are durably queued; resume, retry and emergency controls set in-process flags. The UI has no access to the raw internal journal.
 
 An Open WebUI 0.11.0 Pipe and background Event relay are implemented in
 `integrations/openwebui` and `dmn/openwebui.py`. They enqueue new text events,

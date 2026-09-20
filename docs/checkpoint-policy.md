@@ -12,7 +12,7 @@ Existing configurations retain the original behavior unless changed explicitly.
 | `checkpoint_policy` | `"all_actions"` | Save on every completed action and delivered input. `"effects"` defers read-only, rejected-action and input-delivery snapshots. |
 | `checkpoint_tokens` | `512` | Generated tokens since the last successful save. `0` disables this threshold if a time threshold is enabled. |
 | `checkpoint_interval_seconds` | `0` | Monotonic time since the last completed save, checked at scheduler boundaries when state has changed. `0` disables this threshold. |
-| `suspend_preparation_seconds` | `null` | Time allowance for suspension/shutdown preparation. `null` keeps the existing token-only bound; `0` skips preparation. |
+| `suspend_preparation_seconds` | `null` | Emergency/direct suspension preparation allowance. `null` keeps the token-only bound; `0` skips preparation. Ordinary maintenance requests require model acceptance. |
 | `checkpoint_reserve_bytes` | `268435456` (256 MiB) | Additional free-space margin beyond the estimated snapshot or file-backed packing allocation. Nonnegative integer; CLI: `--checkpoint-reserve-bytes`. |
 
 At least one periodic threshold must be enabled. Whichever enabled threshold is
@@ -132,13 +132,17 @@ is simulated while normal disposable state files exercise the real commit path.
 
 ## Emergency preparation cutoff
 
-The control API accepts an optional `preparation_seconds` for `suspend` and
-`shutdown`, overriding the configured preparation allowance for that request.
+Ordinary `suspend` and `shutdown` controls now ask the model and may be refused
+or deferred. See [maintenance requests](maintenance-requests.md) for this API
+change. A maintenance request does not start a countdown or silently escalate.
+
+The control API accepts an optional `preparation_seconds` for `emergency_suspend`
+and `emergency_shutdown`, overriding the configured preparation allowance.
 For example, on Linux:
 
 ```sh
 curl -fsS -H 'Content-Type: application/json' -H 'X-DMN-Request: 1' \
-  -d '{"action":"shutdown","preparation_seconds":0}' \
+  -d '{"action":"emergency_shutdown","preparation_seconds":0,"reason":"UPS deadline"}' \
   http://127.0.0.1:8765/api/control
 ```
 
@@ -147,7 +151,8 @@ the next usable boundary and exits. Saved suspension metadata explains that
 preparation was skipped; resume includes that fact. A positive allowance begins
 when the request arrives, uses monotonic time and is checked between native calls.
 Retried requests can shorten an existing deadline but cannot extend it.
-Ctrl+C and Linux SIGTERM use the configured allowance.
+Ctrl+C and SIGTERM queue ordinary requests. Service/UPS integration needing a
+hard stop must explicitly use the emergency control and account for save time.
 
 Suspension does not retire context merely to insert its notice. If the notice
 or preparation would exceed reserved headroom, preparation stops and the current
