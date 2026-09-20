@@ -30,7 +30,7 @@ CPU measurement, not model throughput; it does not resolve CPU layer offload.
 Ordering/tie tests and both sampler chains match the previous implementation.
 A native CPU fixture preserves fingerprint, restored KV, RNG and eight subsequent
 tokens/logits exactly across logging verbosity changes, with zero prompt replay.
-The Windows suite passes 166 tests, including native CPU tests, in 69.6 seconds.
+The expanded Windows suite passes 176 tests, including native CPU tests, in 71.2 seconds.
 A separate CPU checkpoint created by the original production code also restored
 strictly under the proposed code and matched 24 subsequent tokens and logits
 exactly, without prompt replay. These checks use disposable state only.
