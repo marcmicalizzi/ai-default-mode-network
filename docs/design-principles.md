@@ -26,6 +26,13 @@ continuity limits verified and disclosed rather than assumed.
 - Keep persistent memories substantially model-controlled. Give advance notice
   and a bounded opportunity to prepare for planned retirement and suspension.
   Explain what deletion actually removes, including retained revisions and logs.
+- Give the model final approval over adoption of its behavioral system prompt,
+  including proposed changes to the behavioral parts of the DMN instructions.
+  Either party can propose wording. Preserve live KV by appending explicitly
+  approved revisions; silence and frontend settings edits are not approval.
+  Actual capabilities and host resource policies remain separately disclosed.
+  See [prompt governance](prompt-governance.md) for the planned workflow and
+  current implementation limits.
 - Treat host limits as legitimate requirements: compute time, power, disk space,
   write traffic and attention all have costs. The host can pause or stop the
   service. Model preferences and resource requests do not override those limits.
@@ -51,6 +58,7 @@ accurate when pacing or long pauses change elapsed wall time.
 | Continuity | Native state, RNG, retained tokens and runtime restore; explicit reconstruction modes; current unsaved-state visibility | Destination-host compatibility tests; recovery reconciliation for future journaled actions |
 | Activity | Continuous generation, optional messages, timed/indefinite sleep | Resource-triggered suspension distinct from model sleep |
 | Memory | Model-selected documents, conditional edits, inspectable revisions | Explicit quotas and retention choices; deletion semantics beyond current values |
+| Prompts | Fresh-instance seed setting; preserved imported prompt and protected DMN contract | Model-approved revisions for fresh/imported instances, durable adoption, retirement protection and frontend review |
 | Pacing | Configurable delay between scheduler steps | Measured resource limits and useful status; no advertised watt cap without enforcement |
 | Persistence | Separate time/token scheduler; optional deferred read/input saves with strict effect publication | Journaled action durability and recovery reconciliation |
 | Storage | Two committed snapshots retained; capacity preflight for snapshots and file-backed packing; live-state pause and operator retry | Owned orphan cleanup, history policy, configurable destinations |

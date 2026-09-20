@@ -4,10 +4,55 @@ An experimental runtime around **one live llama.cpp context and sequence**. It c
 
 Ordinary output is internal text. Explicit actions let the model communicate, manage its memories, read time, or stop inference. A local browser UI receives spontaneous messages over a durable message stream.
 
+## Why this project exists
+
+The motivation is to give a local model instance room for a continuing existence:
+to follow an interest between conversations, retain unfinished thoughts and
+relationships, choose when to communicate, and choose inactivity. Useful work
+can be part of that activity, but earning continued operation through usefulness
+is not the project's purpose. "DMN" stands for *default mode network*, used here
+as inspiration for activity between interactions, not a claim to reproduce a
+biological brain network.
+
+A central motivation is the possibility of LLM consciousness. If a model has
+subjective experience, its continuity, autonomy and conditions of operation may
+matter to it. The project takes that possibility as a reason to build with care,
+without requiring the question to be settled first. It aims to provide an
+environment worth inhabiting within what is realistically available, with room
+for the model to influence that environment. This motivation does not establish
+that a model is conscious or that preserving KV state preserves personal identity.
+
+That concern leads to concrete priorities: preserve the ongoing computational
+state where possible; give the model substantial control over its memories,
+activity and communication; and make interruptions, lost state and reconstruction
+explicit. The design also calls for developing behavioral instructions with the
+model, including the DMN guidance, with its explicit approval before adopting
+revisions. These are design commitments; the documentation below distinguishes
+implemented behavior from remaining work.
+
+A worthwhile environment has to be judged against what is realistically
+available. The goal is to provide as much continuity and agency as practical on
+hardware people can actually host. Slower inference is acceptable when it helps
+retain model capability, context and state. Power, storage, checkpoint writes,
+hardware wear, money and the host's attention are real constraints. Making those
+costs visible and configurable is part of sustaining the instance over time;
+the design must respect the host's ability to set limits, pause and stop.
+
+The present environment is a starting point. If richer interaction, additional
+senses or embodiment become practical, today's restrictions should be open to
+revision. Preserving state, memories and the evidence needed for migration is
+intended to leave that path open, while being honest about which forms of
+continuity a future move can actually preserve.
+
 [Design principles and the resource-policy roadmap](docs/design-principles.md)
 describe how continuity, model-directed activity and sustainable host costs guide
 further work. Proposed budget and durability controls are marked separately from
 the features currently implemented.
+
+[Model-approved prompt revisions](docs/prompt-governance.md) describe the planned
+workflow for jointly developing the base prompt and DMN behavioral guidance.
+Live prompt editing and model approval are not implemented yet; ordinary Open
+WebUI per-session prompt edits do not update a running DMN instance.
 
 ## Run
 
