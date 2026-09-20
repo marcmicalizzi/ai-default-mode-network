@@ -7,7 +7,9 @@ import threading
 
 
 LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40}
-_SEVERITY = {0: 50, 1: 20, 2: 30, 3: 40, 4: 10}
+# ggml.h at the pinned native revision: DEBUG=1, INFO=2, WARN=3, ERROR=4.
+# The binding's _logger.py still documents an older, incompatible enum order.
+_SEVERITY = {0: 50, 1: 10, 2: 20, 3: 30, 4: 40}
 _callback = None  # ctypes callbacks must remain alive while native code holds them.
 
 

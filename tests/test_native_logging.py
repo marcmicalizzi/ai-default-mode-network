@@ -11,9 +11,9 @@ class NativeLoggingTest(unittest.TestCase):
         handler = NativeLogFilter("warning")
         stream = io.StringIO()
         with patch("sys.stderr", stream):
-            for level, text in ((4, b"graph reused"), (5, b" debug continuation"),
-                                (1, b"info"), (2, b"warning"), (5, b" details\n"),
-                                (3, b"error"), (5, b" more\n")):
+            for level, text in ((1, b"graph reused"), (5, b" debug continuation"),
+                                (2, b"info"), (3, b"warning"), (5, b" details\n"),
+                                (4, b"error"), (5, b" more\n")):
                 handler(level, text, None)
         self.assertEqual(stream.getvalue(), "warning details\nerror more\n")
 
@@ -21,8 +21,8 @@ class NativeLoggingTest(unittest.TestCase):
         handler = NativeLogFilter("warning")
         stream = io.StringIO()
         with patch("sys.stderr", stream):
-            handler(2, b"warning", None)
-            worker = threading.Thread(target=lambda: handler(4, b"debug", None))
+            handler(3, b"warning", None)
+            worker = threading.Thread(target=lambda: handler(1, b"debug", None))
             worker.start()
             worker.join()
             handler(5, b" details", None)
@@ -31,9 +31,9 @@ class NativeLoggingTest(unittest.TestCase):
     def test_debug_opt_in_and_closed_output(self):
         stream = io.StringIO()
         with patch("sys.stderr", stream):
-            NativeLogFilter("debug")(4, b"graph reused\n", None)
+            NativeLogFilter("debug")(1, b"graph reused\n", None)
             self.assertEqual(stream.getvalue(), "graph reused\n")
             stream.close()
-            NativeLogFilter("warning")(3, b"failure", None)
+            NativeLogFilter("warning")(4, b"failure", None)
         with self.assertRaises(ValueError):
             NativeLogFilter("invalid")

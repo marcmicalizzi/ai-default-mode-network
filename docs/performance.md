@@ -14,6 +14,10 @@ Use `--native-log-level debug` on `dmn run`, or set `DMN_NATIVE_LOG_LEVEL=debug`
 when investigating the native backend. `info`, `warning` and `error` are also
 supported. Logging is process-wide and does not enter the inference fingerprint.
 No native-library files are changed.
+The filter uses the [pinned native log-level values](https://github.com/ggml-org/llama.cpp/blob/4df29be4f4c3673f428170fda944a5b19f743bb8/ggml/include/ggml.h),
+which differ from the binding's outdated Python logger definitions. An actual
+native-emission test verifies that debug/info are hidden and warning/error
+messages and their continuations remain visible.
 
 For nonzero top-k smaller than the vocabulary, the sampler selects candidates
 without sorting the entire vocabulary. Boundary ties retain ascending token ID
@@ -26,7 +30,10 @@ CPU measurement, not model throughput; it does not resolve CPU layer offload.
 Ordering/tie tests and both sampler chains match the previous implementation.
 A native CPU fixture preserves fingerprint, restored KV, RNG and eight subsequent
 tokens/logits exactly across logging verbosity changes, with zero prompt replay.
-The Windows suite passes 165 tests, including native CPU tests, in 68.1 seconds.
+The Windows suite passes 166 tests, including native CPU tests, in 69.6 seconds.
+A separate CPU checkpoint created by the original production code also restored
+strictly under the proposed code and matched 24 subsequent tokens and logits
+exactly, without prompt replay. These checks use disposable state only.
 
 ## A guarded diagnostic benchmark
 

@@ -10,6 +10,31 @@ from pathlib import Path
 
 @unittest.skipUnless(os.environ.get("DMN_TEST_MODEL"), "set DMN_TEST_MODEL for native process-restart test")
 class NativeProcessTest(unittest.TestCase):
+    def test_real_native_log_levels_keep_errors_and_filter_graph_messages(self):
+        import contextlib
+        import ctypes as C
+        import io
+        from unittest.mock import patch
+        import llama_cpp.llama_cpp as api
+        from dmn.native_logging import configure_native_logging
+        root = Path(api._lib._name).parent
+        paths = [p for p in root.iterdir() if p.name in
+                 {"ggml-base.dll", "libggml-base.so", "libggml-base.dylib"}]
+        self.assertTrue(paths, "pinned shared ggml-base library must be present")
+        library = C.CDLL(str(paths[0]))
+        emit = library.ggml_log_internal
+        emit.argtypes, emit.restype = [C.c_int, C.c_char_p], None
+        stream = io.StringIO()
+        with patch.dict(os.environ, {"DMN_NATIVE_LOG_LEVEL": "warning"}):
+            configure_native_logging(api)
+        with contextlib.redirect_stderr(stream):
+            emit(1, b"graph reused\n")
+            emit(2, b"ordinary info\n")
+            emit(3, b"native warning\n")
+            emit(4, b"native error")
+            emit(5, b" details\n")
+        self.assertEqual(stream.getvalue(), "native warning\nnative error details\n")
+
     def test_diagnostic_verbosity_preserves_native_state_and_continuation(self):
         from unittest.mock import patch
         import numpy as np
