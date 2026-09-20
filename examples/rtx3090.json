@@ -1,0 +1,16 @@
+{
+  "backend": "llama",
+  "model_path": "../models/your-model.gguf",
+  "n_ctx": 16384,
+  "n_batch": 256,
+  "n_gpu_layers": -1,
+  "n_threads": 8,
+  "offload_kqv": false,
+  "flash_attn": false,
+  "type_k": "f16",
+  "type_v": "f16",
+  "prompt_format": "model",
+  "checkpoint_tokens": 512,
+  "turnover_reserve": 2048,
+  "preparation_tokens": 256
+}

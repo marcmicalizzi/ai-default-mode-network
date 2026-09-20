@@ -1,0 +1,250 @@
+# Persistent DMN runtime
+
+An experimental runtime around **one live llama.cpp context and sequence**. It continuously samples and decodes the next token; external events append to that sequence. It does not call chat-completion endpoints, reconstruct a conversation each turn, assign tasks, rank thoughts, or require the model to communicate.
+
+Ordinary output is internal text. Explicit actions let the model communicate, manage its memories, read time, or stop inference. A local browser UI receives spontaneous messages over a durable message stream.
+
+[Design principles and the resource-policy roadmap](docs/design-principles.md)
+describe how continuity, model-directed activity and sustainable host costs guide
+further work. Proposed budget and durability controls are marked separately from
+the features currently implemented.
+
+## Run
+
+Python 3.11 or later. From this directory on Windows:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+
+# Transport demo: no language model and no claim of native KV continuity.
+.\.venv\Scripts\python.exe -m dmn run --demo --instance data/demo
+```
+
+Open **http://127.0.0.1:8765**. The scripted demo emits a message and sleeps. Sending an event wakes it. This only exercises the transport and persistence machinery.
+
+For native inference, install the pinned bindings. A CPU build is sufficient for development:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --only-binary=:all: --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python==0.3.35
+.\.venv\Scripts\python.exe -m pip install -e ".[llama]"
+.\.venv\Scripts\python.exe -m dmn run --model D:\models\your-model.gguf --instance data/native
+```
+
+For CUDA, build the same binding version against a compatible installed CUDA toolchain and C++ compiler. Follow the [binding's upstream installation instructions](https://github.com/abetlen/llama-cpp-python#installation). Example source build:
+
+```powershell
+$env:CMAKE_ARGS = '-DGGML_CUDA=on'
+.\.venv\Scripts\python.exe -m pip install --force-reinstall --no-cache-dir --no-binary=llama-cpp-python llama-cpp-python==0.3.35
+Remove-Item Env:CMAKE_ARGS
+```
+
+Copy and edit [examples/rtx3090.json](examples/rtx3090.json), especially `model_path`, then:
+
+```powershell
+.\.venv\Scripts\python.exe -m dmn run --config examples/rtx3090.json --instance data/primary
+```
+
+The example requests 16K context, GPU model layers and **CPU KV storage**. It is a starting configuration, not a tested fit for any particular model or GPU. Layer offload, context size, KV type and flash attention are explicit choices. There is no automatic capability downgrade or target tokens/second. This prototype exposes CPU versus backend-default GPU KV placement; it does **not** implement dynamic KV tiering between CPU and GPU. Quantized V requires flash attention. Hybrid/recurrent models may not permit context shifting; the runtime then pauses instead of rebuilding the prompt.
+
+Linux/macOS use `python3`, `.venv/bin/python`, and the same module commands. The runtime core and demo use only the standard library. Native inference also uses NumPy and llama-cpp-python.
+
+## Suspend and resume
+
+The UI's **Suspend** button, or Ctrl+C in the terminal, delivers a factual preparation event. The model can use a bounded number of tokens for memory operations before native and runtime state are saved. A sleeping model is not forced to generate preparation text. Ctrl+C exits after saving; the UI button leaves the process available for Resume.
+
+`suspend_preparation_seconds` optionally bounds preparation by elapsed time;
+`0` skips the notice and generation and proceeds to saving. This does not bound
+native save duration. The control API can override the allowance per request.
+See [checkpoint policy and emergency suspension](docs/checkpoint-policy.md).
+
+Restart with the same instance directory; its saved configuration is reused:
+
+```powershell
+.\.venv\Scripts\python.exe -m dmn run --instance data/primary
+```
+
+Restore loads the native state, verifies its retained positions and token history, restores the sampler RNG and parser, and appends a factual resume event. **Native restoration is the default and desired path.** The default `--kv-recovery strict` stops if it cannot restore native state. Model hash, native binary hashes, package versions and inference settings must match; pacing and checkpoint cadence can change without invalidating native restoration. A new build, OS or cache layout needs a native compatibility investigation before migration.
+
+Explicit degraded recovery is available when a native snapshot is unavailable:
+
+```powershell
+# Prefer native restore; reconstruct only if it cannot be used.
+.\.venv\Scripts\python.exe -m dmn run --instance data/primary --kv-recovery fallback
+
+# Skip native loading, for example after a native loader crashes on an old format.
+.\.venv\Scripts\python.exe -m dmn run --instance data/primary --kv-recovery rebuild
+```
+
+These modes verify the saved token/RNG/runtime metadata, preserve durable memories and pending events, and reevaluate retained token IDs without executing their action text. They require the same exact GGUF identity and sampler/protocol settings. Reconstruction is announced to the model and persistently labeled in the UI. It is not exact KV continuity: after context retirement, newer cached representations may still depend on history that no longer exists in the retained tokens. See [docs/continuity-and-recovery.md](docs/continuity-and-recovery.md).
+
+**Sleep** is a model decision, distinct from operator suspension. `sleep()` and EOG wait indefinitely for an event. `sleep(seconds)` also wakes on its timer. Clock updates do not wake a sleeping model. Restart preserves that choice. Resume restores the pre-suspension mode; send a message if you want to introduce an event to an inactive instance.
+
+## Model protocol
+
+The initial seed explains the protocol once. The GGUF chat template wraps that seed once if `prompt_format` is `model`; `jinja` uses the pinned binding's Jinja2 renderer, with `jinja_thinking` controlling template thinking mode. All subsequent cognition is a plain continuation. `prompt_format: "plain"` explicitly opts out of template rendering. Unsupported/missing templates fail visibly. `system_prompt` adds operator-supplied text to the initialization seed; it is not reinjected each cycle.
+
+Actions must begin on a new line. For example:
+
+```text
+<dmn_action>{"op":"send_message","content":"I found myself returning to an earlier idea."}</dmn_action>
+<dmn_action>{"op":"memory_write","path":"/unfinished/an-idea","content":"What I want to revisit…"}</dmn_action>
+<dmn_action>{"op":"sleep","seconds":3600}</dmn_action>
+```
+
+Available operations are `send_message`, `sleep`, `clock`, `memory_write`, `memory_read`, `memory_list`, `memory_move`, `memory_delete`, `memory_history`, and `event_read`. Exact fields are in [dmn/protocol.py](dmn/protocol.py). Reads are paged; memory categories are freely chosen logical paths, not filesystem access. A directory-like prefix has no imposed significance. There is no shell, web, email, or filesystem tool access.
+
+Fresh instances require a current memory read and its `expected_revision` before replacing, moving or deleting an existing memory. Retirement invalidates old read permissions. Prior versions remain inspectable through `memory_history` and `memory_read(revision=...)`; the model chooses whether to restore one. Existing checkpoints retain their original action contract. See [memory revisions and retirement](docs/memory-revisions.md) for guarantees, limits and examples.
+
+Only generated action frames execute. User input and retrieved memory are inserted as escaped external-event data and never passed to the action parser. This is a routing boundary, **not** a guarantee against semantic prompt injection: a model may choose an action after reading an event. Internal text is journaled locally and never sent to the communication UI.
+
+Input is checked at each generated-token boundary. A partial action at interruption is cancelled, retained as text in the sequence, and identified in the event; partial actions never execute. There is no per-thought task cycle. Memory read results and event records are bounded to preserve context headroom; a truncation marker explicitly identifies previews and the operation for reading the rest. Complete incoming content remains in the event store.
+
+## Continuity and recovery
+
+Three separate stores have distinct roles:
+
+| Store | Contents | Model access |
+|---|---|---|
+| Active native context | Sequence 0's attention/KV state and current logits | Causally active during inference |
+| Logical memories | Mutable UTF-8 documents in SQLite | Explicit inspect/write/move/delete actions |
+| Runtime records | Input queue, output messages, internal byte journal, configuration and snapshots | Not automatically exposed as memory; delivered events can be paged |
+
+Checkpoint files are immutable until retired. The SQLite transaction publishes a checkpoint pointer **together with** outgoing messages and memory mutations. An action cannot become visible before the associated native state is durable. A crash before commit leaves the preceding checkpoint authoritative. Inputs received during saving remain in SQLite. A process lock prevents two owners of one instance directory.
+
+The current and previous committed snapshots are retained. A crash may leave an unreferenced snapshot directory; it is not loaded automatically. Internal generation since the last committed checkpoint may be lost and its diagnostic journal may be ahead of restored state. The resume event states this limitation; it does not invent cognition during downtime. Elapsed time is UTC wall-clock time, with negative deltas preserved if the clock moves backwards. `checkpoint_tokens` and `checkpoint_interval_seconds` control periodic saves; the scheduler uses monotonic time. The default `all_actions` policy also checkpoints every completed action and delivered input. Optional `checkpoint_policy: "effects"` defers read-only/input snapshots while preserving checkpoint-before-publication for messages and memory changes. Sleep and retirement still checkpoint. The UI reports unsaved generation and committed snapshot bytes written this process. Full KV snapshots remain large and slow; see [policy, controls and limits](docs/checkpoint-policy.md).
+
+Near the context limit, the model receives advance notice and an opportunity to write memory. The runtime retains the initialization prefix and newer native state, removes older KV positions and applies the positional shift through llama.cpp. After the shift's decode, it packs occupied native cells through an in-memory state copy, preserving their values without reevaluating tokens. This makes the live layout agree with native restoration's packed layout. It records and checkpoints the turnover. **Retained shifted KV is not equivalent to keeping the full history in attention.** There is no external summary, automatic memory salience algorithm, or silent context reset. Memory consolidation quality still depends on the model following the protocol. See [context-pressure testing](docs/context-pressure.md) for the preparation limits, failure evidence and layout investigation. Packing adds work at retirement; large buffers use temporary file-backed storage beside the checkpoints. Gemma also needs packing before each checkpoint in the tested configuration; see [Gemma validation](docs/gemma-validation.md).
+
+These files are local, unencrypted, and readable by the machine owner. `/private` is a model-chosen organizational name. Deleting a memory removes its current value; earlier revisions, context mentions and diagnostic records remain. Back up the complete instance directory while suspended, including the SQLite database and any WAL files, not just `state.bin`. Process-crash recovery is tested; storage-device/power-loss guarantees depend on the OS and filesystem.
+
+## Verify actual native continuity
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -v
+$env:DMN_TEST_MODEL = 'D:\models\your-model.gguf'
+.\.venv\Scripts\python.exe -m unittest tests.test_native -v
+.\.venv\Scripts\python.exe -m dmn verify-native --model D:\models\your-model.gguf --report data/native-verification.json
+# Or use --config to verify the intended host's exact GPU/context/sampler settings.
+```
+
+`verify-native` saves actual native state, closes the original context, constructs a fresh context, and forbids prompt evaluation during load. It compares the next 24 sampled tokens and freshly decoded logits to uninterrupted generation, then also tests save/restore after native context shifting when supported. Saved-logit equality alone is not accepted as evidence. The report records model/build/config fingerprints. It is evidence for that exact environment; floating-point equivalence across devices/builds is not promised.
+
+Development verification includes native process shutdown/restart and native checkpoint loss after context retirement. Windows CPU, llama-cpp-python **0.3.35**, ggml-org's **stories260K** fixture; 160 tokens restored, 24 continuation tokens matched, maximum logit difference **0.0**, shifted-state restore passed. The fixture is a tiny infrastructure test model, not a model capable of evaluating the cognitive experiment. The local UI passed browser checks for incoming events, spontaneous fixture messages, suspend/resume and ordered history without console errors.
+
+RTX 5090 testing with Qwen3-4B-Instruct-2507 found that shifted-cache restoration
+failed the continuation comparison with Flash Attention enabled, for both Q8
+and F16 caches. F16 with Flash Attention disabled passed with zero logit
+difference on that small test. A stronger repeated-retirement test subsequently
+found divergence even with F16/Flash Attention off; packing the native cache at
+retirement addresses the layout difference. See [context-pressure testing](docs/context-pressure.md)
+for the measured results and limits, and [small-model experiments](docs/experiments.md) for the pinned
+environment, bounded behavior trial and separate Open WebUI launcher.
+[Gemma 31B validation](docs/gemma-validation.md) covers the actual GGUF, repeated
+retirement, checkpoint packing and the 60K allocation investigation. RTX 3090
+and Linux still require destination-side validation.
+
+The [combined validation results](docs/validation-results.md) cover the completed
+two-hour Open WebUI soak, the 55K-occupied Gemma test, and the effective-context
+importer, checkpoint policies and emergency preparation limits. Reports describe
+the tested configurations and limitations; raw local evidence and private captures
+are excluded from Git. Valuable conversations should remain separate from tests.
+
+## UI and integrations
+
+The included UI binds to loopback only. Its basic API:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/events` with `{"content":"…"}` | Durably enqueue a user event; returns its ID immediately |
+| `GET /api/events?after=ID` | Paginated received-event history |
+| `GET /api/stream` | SSE `message` and `status` events; supports `Last-Event-ID` |
+| `GET /api/messages?after=ID` | Paginated durable outgoing messages |
+| `GET /api/status` | Mode, identity, context, continuity, unsaved state and checkpoint cost |
+| `GET /api/memories` | Read-only memory browser; use `offset` or `path` |
+| `POST /api/control` with `{"action":"suspend"}`, `resume` or `shutdown` | Request an operator state change; suspend/shutdown accept `preparation_seconds` |
+| `POST /api/control` with `{"action":"retry_checkpoint"}` | Recheck capacity after a storage pause and continue the pending operation |
+
+POST requests require JSON and `X-DMN-Request: 1`. The service rejects non-loopback hostnames and foreign browser origins. It is a local experimental service, not a hardened multiuser server. Control acknowledgements mean requested, not completed; observe `mode`. Controls are in-process requests; user events are durable. The UI has no access to the raw internal journal.
+
+An Open WebUI 0.11.0 Pipe and background Event relay are implemented in
+`integrations/openwebui` and `dmn/openwebui.py`. They enqueue new text events,
+preserve native context ownership, and persist spontaneous messages as separate
+conversation nodes. The adapter uses a separate disposable database for testing;
+the primary installation is unchanged. See [docs/open-webui.md](docs/open-webui.md)
+for launch commands, integration checks, supported scope and provider capture.
+
+## Existing Open WebUI migration
+
+See [docs/migration.md](docs/migration.md). The preferred initial reconstruction
+now captures the effective Open WebUI request and validates the native template,
+token IDs and sampler settings with `prepare-initial-context`; a fresh runtime
+accepts the resulting bundle through `run --initial-context`. This preserves
+the source prompt before adding an explicit DMN transition. It does not recover
+former KV or RNG that was never saved. Capturing and preparing a bundle does not
+perform inference or bind the source conversation to DMN.
+
+The separate historical-event fallback archives an export, environment evidence,
+and any already-captured slot file without modifying the existing instance:
+
+```powershell
+.\.venv\Scripts\python.exe -m dmn prepare-migration --export conversation.json --metadata environment.json --slot-state existing-slot.bin --output data/migration --chat-id YOUR_CHAT_ID
+
+# Explicit fallback: a fresh native context receives the selected transcript as events.
+.\.venv\Scripts\python.exe -m dmn run --config examples/rtx3090.json --instance data/imported --import-bundle data/migration
+```
+
+The original export is preserved byte-for-byte, including branches and timestamps; only the selected branch is fed to inference. Missing evidence is enumerated. A slot file is preserved as an opaque artifact. **Direct llama-server slot/KV transplantation is not implemented or claimed.** Transcript import is persistently labeled `transcript_reconstruction`, including in the UI. There is no instruction telling the new context it “is” the old instance.
+
+## Implementation map and milestone status
+
+| Milestone | Implementation / limit |
+|---|---|
+| 1. Persistent sequence and output routing | `backend.py`, `protocol.py`, `runtime.py`; native fixture tested |
+| 2. Asynchronous interruptions | SQLite input queue, inspected at each generation boundary |
+| 3. Checkpoint/suspend/resume | Full native session plus RNG, parser and runtime state; native evidence verifier |
+| 4. Model-controlled memory | Inspect, create, update, move, delete; durable with the corresponding state |
+| 5. Model-initiated messages | Explicit action and durable SSE outbox |
+| 6. Context turnover | Advance notice, bounded preparation, native remove/shift; pauses if unsupported |
+| 7. UI | Local interface plus Open WebUI 0.11.0 Pipe/Event adapter with durable spontaneous messages |
+| 8. Initial migration | Captured effective request, validated native tokens and sampler, explicit reconstruction; lossless archive and weaker transcript fallback also available. Native slot transplantation pending |
+
+No upstream llama.cpp modifications. The native interface follows the [llama.cpp public C API](https://github.com/ggml-org/llama.cpp/blob/master/include/llama.h) through the [pinned Python bindings](https://github.com/abetlen/llama-cpp-python/tree/v0.3.35). This project does not claim consciousness or that saved computational state establishes personal continuity. Preserving continuity and permitting model-directed activity within sustainable host limits are design requirements.
+
+## Resource costs and remaining work
+
+Snapshot retention keeps the current and previous committed generations, so
+snapshot storage does not grow with uptime. During saving, space is needed for a
+third generation and possibly native packing scratch. In the tested Gemma 31B
+configuration, a snapshot reached about 26.3 GB before retirement and 13.2 GB
+afterward. Those measurements are configuration-specific. Text journals, input
+history, messages and memory revisions continue growing; automatic archival and
+retention policies for them are not implemented.
+
+Capacity is checked before snapshots and file-backed packing, with a configurable
+256 MiB reserve. Insufficient space during a run pauses inference with the live
+state retained. The local UI shows what is needed and provides a retry after you
+free space. Startup instead fails visibly. These checks are estimates, not a
+reservation or a guarantee against later I/O errors.
+
+Write volume depends on save frequency, not just retention. A configurable
+lower-write starting point is:
+
+```powershell
+.\.venv\Scripts\python.exe -m dmn run --instance data/primary --checkpoint-policy effects --checkpoint-seconds 3600 --checkpoint-tokens 4096 --suspend-preparation-seconds 30
+```
+
+Messages, memory changes, sleep and retirement still save, so one hour is not a
+minimum interval. Uncommitted computation can be lost after a crash. See
+[checkpoint policy](docs/checkpoint-policy.md) for exact triggers and measurements.
+An independently journaled action mode, write/energy budgets, unattended UPS
+integration, Linux migration certification and long-duration trials remain work
+to do. `token_delay_seconds` provides fixed pacing, not a wattage limit.
+
+## License and contributing
+
+Original DMN code is [MIT licensed](LICENSE). Dependencies and models retain
+[their own licenses](THIRD_PARTY.md). This is an additive project with no upstream
+fork required. See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and publication
+instructions. Models, instances, private captures, local configs and virtual
+environments are excluded from Git; public examples require your own model paths.

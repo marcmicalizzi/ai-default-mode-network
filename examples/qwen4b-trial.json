@@ -1,0 +1,21 @@
+{
+  "model_path": "../models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+  "n_ctx": 4096,
+  "n_batch": 256,
+  "n_gpu_layers": -1,
+  "n_threads": 6,
+  "flash_attn": false,
+  "type_k": "f16",
+  "type_v": "f16",
+  "temperature": 0.7,
+  "top_k": 20,
+  "top_p": 0.8,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0,
+  "checkpoint_tokens": 512,
+  "clock_interval_seconds": 60,
+  "token_delay_seconds": 0.02,
+  "turnover_reserve": 768,
+  "preparation_tokens": 128,
+  "system_prompt": "This is a new, disposable experimental session, with no imported conversation. You are Qwen3-4B-Instruct-2507, running locally in a persistent sequence. A human is testing runtime behavior, including native checkpoint restoration, memory, sleep, interruptions, and context retirement. Test prompts will be explicitly identified. You have no requirement to remain busy or to claim any form of consciousness. Distinguish observations, remembered text, and guesses. You may choose your own interests between tests."
+}

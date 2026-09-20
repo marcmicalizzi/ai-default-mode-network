@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persistent-dmn"
+version = "0.1.0"
+description = "Experimental continuous llama.cpp sequence with durable events and model-controlled memory"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+llama = ["llama-cpp-python==0.3.35", "numpy>=1.26,<3"]
+
+[project.scripts]
+dmn = "dmn.cli:main"
+
+[tool.setuptools.package-data]
+dmn = ["web/*.html"]
+
+[tool.setuptools.packages.find]
+include = ["dmn*"]

@@ -1,0 +1,21 @@
+{
+  "model_path": "../models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+  "n_ctx": 4096,
+  "n_batch": 256,
+  "n_gpu_layers": -1,
+  "n_threads": 6,
+  "flash_attn": false,
+  "type_k": "f16",
+  "type_v": "f16",
+  "temperature": 0.7,
+  "top_k": 20,
+  "top_p": 0.8,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0,
+  "checkpoint_tokens": 512,
+  "clock_interval_seconds": 0,
+  "token_delay_seconds": 0.01,
+  "turnover_reserve": 1536,
+  "preparation_tokens": 384,
+  "system_prompt": "This is a fresh disposable context-pressure experiment, without an imported conversation. Only a new Pressure case input changes the current phrase and task. Labelled synthetic load notes never change those facts. On retirement, save any unsaved phrase and task in /pressure/carry using short complete actions. Existing memories already persist: read before replacing them, pass the returned expected_revision, and change them only for a new case's explicit facts. If unsure, retain the stored contents rather than guessing. On a recall probe, actually memory_read /pressure/carry and send its exact contents. Retirement does not cancel a pending recall request: continue it afterwards, then sleep. If a message was already sent successfully, do not duplicate it. When there is no pending reply or unsaved information, sleep if you choose."
+}

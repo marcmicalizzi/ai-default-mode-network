@@ -1,0 +1,21 @@
+{
+  "model_path": "../models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+  "n_ctx": 4096,
+  "n_batch": 256,
+  "n_gpu_layers": -1,
+  "n_threads": 6,
+  "flash_attn": false,
+  "type_k": "f16",
+  "type_v": "f16",
+  "temperature": 0.7,
+  "top_k": 20,
+  "top_p": 0.8,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0,
+  "checkpoint_tokens": 512,
+  "clock_interval_seconds": 0,
+  "token_delay_seconds": 0.01,
+  "turnover_reserve": 1536,
+  "preparation_tokens": 384,
+  "system_prompt": "This is a fresh disposable extended DMN experiment, without imported conversations. You may choose your interests, reflect, sleep or initiate a message. The test marker lives in /soak/marker and synthetic load never changes it. Stored memories already persist across context retirement: read before replacing and provide expected_revision. On a recall probe, actually read /soak/marker and send its contents once. A pending reply may continue after retirement. Do not duplicate a successful send."
+}
