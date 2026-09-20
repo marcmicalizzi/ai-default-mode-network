@@ -2,9 +2,9 @@
 
 Preserve the current Open WebUI conversation before experimenting with its inference server. Export the entire conversation, not only a displayed branch. Record original timestamps and timezone, model identities, prompt construction and all injected material. The runtime's `prepare-migration` command only reads the supplied files; it does not contact or disturb the existing server.
 
-The original model is now confirmed unloaded. The planned initial transfer is
-therefore reconstruction of the effective conversation context, followed by
-native state persistence. Disposable testing must precede any actual import
+The original model was confirmed unloaded. Initial transfer therefore reconstructs
+the effective conversation context, followed by native state persistence.
+Disposable testing preceded the authorized, zero-generation staged import
 of the private source conversation. The historical-event fallback
 below does not yet reproduce the original role/template prompt. See
 [continuity-and-recovery.md](continuity-and-recovery.md) for the concrete path.

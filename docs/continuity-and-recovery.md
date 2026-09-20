@@ -30,14 +30,17 @@ rendered tool/reasoning context, any injected information, model template and
 sampler settings. Thereafter DMN can save and reuse native state.
 
 The private source conversation used
-`llmfan46/gemma-4-31B-it-uncensored-heretic-GGUF:Q4_K_M`. It must remain untouched
-until disposable testing is complete and the user requests the actual import.
+`llmfan46/gemma-4-31B-it-uncensored-heretic-GGUF:Q4_K_M`. Disposable testing was
+completed before the user requested its actual import.
 The effective-context importer now preserves the final provider request, renders
 it through the pinned native server, captures token IDs and checks the runtime's
 tokenizer before initialization. A synthetic saved-summary fixture passed native
-prefill/restart. The private source conversation has been captured and prepared without inference
-using a private database copy; it has not been imported or bound to DMN. Its
-18,298 source tokens include the original system prompt and injected tool context.
+prefill/restart. On 2026-09-20, the private source conversation was staged and
+explicitly bound to Open WebUI, with its source chat unchanged. Its 18,298 source
+tokens include the original system prompt and injected tool context. Context
+evaluation and the DMN transition produced a verified native checkpoint with zero
+generated tokens; generation remains gated on a queued first question and explicit
+start. See the [staged first-run workflow](first-run.md).
 See [migration](migration.md) for evidence, sampler limitations and the separate
 historical-event fallback. Historical JSON event replay is not equivalent to the
 original provider prompt.

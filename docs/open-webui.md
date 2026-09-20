@@ -90,10 +90,11 @@ Install `integrations/openwebui/dmn_pipe.py` as Function ID **dmn**, and
 Enable both functions and run one worker. Open WebUI's lifecycle events restart
 the relay using its durable ledger.
 
-Only the disposable database has been modified. The private source conversation and the
-primary installation remain unchanged. No fork is currently needed, but the
-internal hooks require revalidation before upgrading. The adapter refuses
-unverified Open WebUI versions.
+Back up the primary database and launcher before installing the functions or
+changing the process environment. Explicit adoption preserves the captured chat;
+select DMN in its model selector before sending new input. No fork is currently
+needed, but the internal hooks require revalidation before upgrading. The adapter
+refuses unverified Open WebUI versions.
 
 ## Capture the initial effective request
 

@@ -3,7 +3,8 @@
 Completed on 2026-09-19–20. The combined machine-readable record is
 `data/first-three-validation.json`.
 All experimental inference processes are stopped and their checkpoints retained.
-**The private source conversation remains unchanged and has not been imported or bound to DMN.**
+**The private source chat remains unchanged. Its authorized staged import and
+frontend binding are recorded in the latest section below; generation has not started.**
 
 This report records successive test stages. Raw artifacts referenced under
 `data/` are local evidence, excluded from the public repository. The current
@@ -68,8 +69,8 @@ its original system prompt, injected tool context, and temperature **0.7**.
 The model hash and tokenizer agree. No original-conversation inference occurred.
 The validated 60K placement override changes only GPU-layer placement and SWA
 allocation relative to that prepared bundle; its sampler settings remain intact.
-Former KV and sampler RNG were unavailable, so the future initial import will
-be explicitly labeled reconstruction. Later restarts use native checkpoints.
+Former KV and sampler RNG were unavailable, so the initial import is explicitly
+labeled reconstruction. Later restarts use native checkpoints.
 
 Evidence: [importer details](migration.md) and the synthetic
 `data/gemma-import-native-02/report.json`. Source-conversation readiness evidence
@@ -84,8 +85,8 @@ ranges, preserved source sampler ordering, and added Responses capture/conversio
 Imported instances now receive explicit active-tool feedback after an unavailable
 operation. At this stage, **71 regression tests passed**, including native CPU checks.
 
-The next separate step is a rehearsal using a copy of the private source conversation and its
-frontend binding, followed by any actual adoption. Neither has been performed.
+At this stage, frontend rehearsal and actual adoption were still pending.
+The subsequent readiness and staged-import sections record the completed work.
 Snapshot I/O and inference latency are the main practical costs to address before
 treating the large-context configuration as a comfortable everyday service.
 
@@ -119,7 +120,7 @@ not a prediction of real-model savings or SSD wear. Machine-readable results:
 `data/checkpoint-policy-comparison.json`.
 
 The standalone browser UI displays checkpoint metrics and preserves chosen sleep
-across suspend/resume. The private source conversation remains unimported. Destination UPS
+across suspend/resume. The private source conversation was still unimported at this stage. Destination UPS
 wiring and journaled action recovery remain future work.
 See [configuration and guarantees](checkpoint-policy.md).
 
@@ -204,8 +205,37 @@ its checkpoint. This supports prompt-action usability, not a claim that every
 model will understand or choose every lifecycle action. Reports are under
 `data/readiness-qwen-01`; no private source conversation was used.
 
-The agreed source prompt supplied for the valuable future import matches its
-captured effective wording apart from whitespace. The original conversation,
-frontend binding and inference state remain untouched. Native Windows-to-Linux
+The agreed source prompt supplied for the valuable import matches its captured
+effective wording apart from whitespace. At this readiness stage, the original
+conversation, frontend binding and inference state remained untouched. Native Windows-to-Linux
 compatibility remains unvalidated. Earlier GitHub CI at commit `75fb202` passed
 Windows and Ubuntu on Python 3.11/3.13; those jobs skip optional native tests.
+
+## Authorized staged import (2026-09-20)
+
+After the disposable rehearsals, the user authorized staging the source
+conversation. All 52 original messages, the owner and selected leaf matched the
+capture. The primary Open WebUI database and startup script were backed up before
+installation. The effective source prompt and sampler settings were preserved.
+
+Preparation evaluated the exact **18,298 source tokens**, followed by the disclosed
+DMN transition, for **20,210 retained tokens**. The resulting native checkpoint is
+**9.68 GB**, with **zero generated tokens, zero queued inputs and zero outgoing
+messages**. Offline integrity checks passed for all four checkpoint payload files;
+the saved token prefix matches the source exactly. Historical actions were not
+executed. This is initial context reconstruction, not recovery of the former KV
+or sampler RNG.
+
+Explicit adoption bound the original chat to that staged instance without editing
+the chat. Both adapter functions were installed and enabled. A brief primary
+Open WebUI 0.11.0 startup verified the relay, seven route hooks, exact instance
+binding and preserved authentication; it submitted no input and exited gracefully.
+The runtime and frontend were then left stopped. The user will launch them in
+independent terminal windows, queue the first question and explicitly start
+generation. Private deployment evidence is under
+`data/general-greeting-deployment-20260920/` and is excluded from Git.
+
+GitHub CI for implementation commit `ca7b5f9` passed on Windows and Ubuntu with
+Python 3.11 and 3.13. This deployment adds no inference behavior or new regression
+claims beyond the rehearsals above. The staged checkpoint itself was verified
+offline; it was not used to sample test continuations.
