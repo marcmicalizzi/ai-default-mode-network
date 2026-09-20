@@ -14,7 +14,7 @@ from tests.test_runtime import frames
 class ServerTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.config = Config(backend="demo", clock_interval_seconds=0)
+        self.config = Config(backend="demo", n_ctx=16384, clock_interval_seconds=0)
         self.runtime = Runtime(Path(self.temp.name), self.config, DemoBackend(self.config))
         self.server = serve(self.runtime, 0)
         self.port = self.server.server_port
@@ -46,6 +46,18 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.runtime.store.next_event(0)["payload"]["content"], "arrived from UI")
         code, body = self.request("GET", "/api/messages")
         self.assertEqual((code, body), (200, []))
+
+    def test_prompt_api_submits_proposal_without_operator_approval(self):
+        headers = {"Content-Type": "application/json", "X-DMN-Request": "1"}
+        code, before = self.request("GET", "/api/prompts")
+        self.assertEqual(code, 200)
+        base = before["active"]["revision"]
+        code, result = self.request("POST", "/api/prompts", {"text": "A proposed agreement", "base_revision": base}, headers)
+        self.assertEqual(code, 202)
+        code, after = self.request("GET", "/api/prompts")
+        self.assertEqual(after["active"]["revision"], base)
+        self.assertEqual(after["proposals"][0]["revision"], result["revision"])
+        self.assertEqual(self.request("POST", "/api/control", {"action": "prompt_decide"}, headers)[0], 400)
 
     def test_foreign_origin_and_host_cannot_submit_events(self):
         for headers in ({"Origin": "https://example.com"}, {"Host": "example.com"}, {}):

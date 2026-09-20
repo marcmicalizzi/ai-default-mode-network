@@ -150,3 +150,62 @@ storage changes: retirement, shutdown, changed scheduling/reserve settings,
 native restore without prompt replay, and 24 exactly matching tokens/logit
 vectors. It took 121.1 seconds on this run. No new large Gemma snapshot was
 required for these checks.
+
+## Staged startup, prompt approval and preservation (2026-09-20)
+
+The Windows suite passes **158 tests**, including native CPU tests, in 67.7
+seconds. Additional targeted packaging checks pass after adding inventory
+read-back verification. Tests cover staged initialization without sampling,
+first-question gating, exact prompt approval and stale/unread rejection,
+reconsidering a declined proposal, failed adoption saves, repeated retirement
+around source prefix/import contract/active agreement, hold release gates before
+backend loading, and lossless ZIP/TAR round trips with source retention.
+
+Browser testing used only a scripted disposable instance. It queued a first
+question with zero generated tokens, explicitly started, submitted a proposal,
+showed awaiting review, and displayed the committed agreement after generated
+fixture approval. The Windows launcher also passed with a directory containing
+spaces and exited normally from a staged instance. These checks do not require
+the coding application to remain open when the user starts the launcher in an
+independent terminal.
+
+Open WebUI 0.11.0 integration checks passed on a fresh disposable installation:
+input retries, edit/regeneration rejection, compaction guards, offline delivery
+and destination deduplication. Explicit adoption also passed against a copy of
+that installation's real SQLite schema. This caught and corrected JSON encoding
+in normalized content fields; adoption checks content, ancestry, output, files
+and saved summaries. The native import portion of that schema fixture was
+simulated and is not presented as a real native import test.
+
+An actual Gemma 31B Q4_K_M / Q8 KV rehearsal used 60K capacity, 24 GPU layers,
+full SWA and packed checkpoints, with **21,000 synthetic occupied tokens**.
+The original prefix and appended agreement survived retirement. The initial
+agreement checkpoint was **9.38 GB in 67.1 seconds**; the checkpoint after
+retirement was **4.93 GB in 33.6 seconds**, including the normal integrity and
+durability path. Total committed checkpoint writes for this rehearsal were
+20.11 GB, excluding scratch and filesystem/device amplification. Preparation
+through synthetic prefill took 439 seconds including model load and initial
+staging; it is not a pure prefill benchmark.
+
+After closing the original context, a fresh process restored the held native
+checkpoint with **zero prompt tokens reevaluated** and reproduced eight sampled
+tokens and their subsequent logits exactly (maximum absolute error 0). Ordinary
+Runtime startup refused the hold before model loading. The comparison used an
+explicit test backend to inspect the saved state without releasing the hold.
+Protocol choices in this Gemma run were injected mechanical fixtures, not model
+preferences. Report: `data/readiness-gemma-01/report.json`.
+
+A fresh Qwen3 4B run exercised actual generated prompt actions: it read and
+approved the host proposal, then became inactive. A later native resume offered
+the reversible hold action. It did not execute that action; it generated
+unconfirmed permanent-end requests, and no end or hold was recorded. The
+disposable test stopped through its explicit emergency test cleanup and retains
+its checkpoint. This supports prompt-action usability, not a claim that every
+model will understand or choose every lifecycle action. Reports are under
+`data/readiness-qwen-01`; no private source conversation was used.
+
+The agreed source prompt supplied for the valuable future import matches its
+captured effective wording apart from whitespace. The original conversation,
+frontend binding and inference state remain untouched. Native Windows-to-Linux
+compatibility remains unvalidated. Earlier GitHub CI at commit `75fb202` passed
+Windows and Ubuntu on Python 3.11/3.13; those jobs skip optional native tests.

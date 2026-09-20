@@ -30,7 +30,7 @@ class RuntimeTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "instance"
         self.clock = FakeClock()
-        self.config = Config(backend="demo", n_ctx=12288, clock_interval_seconds=0, preparation_tokens=8)
+        self.config = Config(backend="demo", n_ctx=16384, clock_interval_seconds=0, preparation_tokens=8)
         self.opened = []
 
     def tearDown(self):
@@ -189,7 +189,7 @@ class RuntimeTest(unittest.TestCase):
 
     def test_turnover_preserves_prefix_newer_state_and_warns(self):
         # Demo counts characters as tokens; leave room for the full protocol.
-        r = self.create(config=dataclasses.replace(self.config, n_ctx=12288))
+        r = self.create(config=dataclasses.replace(self.config, n_ctx=16384))
         prefix = r.backend.tokens[:r.state["keep_prefix"]]
         r._eval(r.backend.tokenize("old material " * 220))
         r._eval(r.backend.tokenize("RECENT material " * 65))
@@ -278,7 +278,7 @@ class RuntimeTest(unittest.TestCase):
 
     def test_model_can_sleep_during_context_preparation(self):
         script = frames({"op": "sleep"})
-        r = self.create(script, dataclasses.replace(self.config, n_ctx=12288, preparation_tokens=64))
+        r = self.create(script, dataclasses.replace(self.config, n_ctx=16384, preparation_tokens=64))
         r._eval(r.backend.tokenize("old material " * 220))
         r._consolidate(1)
         self.assertEqual(r.state["mode"], "sleeping")
@@ -412,7 +412,7 @@ class MigrationTest(unittest.TestCase):
             manifest = prepare_bundle(export, base / "archive")
             self.assertFalse(manifest["slot_state_import_supported"])
             self.assertEqual(export.read_bytes(), (base / "archive/openwebui-original.json").read_bytes())
-            config = Config(backend="demo")
+            config = Config(backend="demo", n_ctx=16384)
             r = Runtime(base / "instance", config, DemoBackend(config))
             try:
                 import_transcript(r, base / "archive")

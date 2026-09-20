@@ -15,7 +15,7 @@ class CheckpointPolicyTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "instance"
         self.wall, self.mono = FakeClock(), FakeClock()
-        self.config = Config(backend="demo", n_ctx=12288, clock_interval_seconds=0,
+        self.config = Config(backend="demo", n_ctx=16384, clock_interval_seconds=0,
                              checkpoint_policy="effects", preparation_tokens=8)
         self.opened = []
 

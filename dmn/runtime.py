@@ -16,7 +16,9 @@ from .checkpointing import CheckpointSchedule
 from .config import Config
 from .diskspace import InsufficientStorage, check_space
 from .ending import Lifecycle, InstanceEnded
-from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, event_text
+from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, event_text
+from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
+from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
 from .storage import InstanceLock, Store, json_text, memory_path, write_durable
 
@@ -32,7 +34,8 @@ class Runtime:
     enqueue durable input, read published state, or set control flags.
     """
     def __init__(self, root: Path, config: Config, backend=None, now=time.time, kv_recovery="strict", initial_context=None,
-                 monotonic=time.monotonic):
+                 monotonic=time.monotonic, prepare_only=False, start_staged=False,
+                 release_hold=None, resume_condition=None, first_message=None):
         if kv_recovery not in {"strict", "fallback", "rebuild"}:
             raise ValueError("unknown KV recovery policy")
         self.root, self.config, self.now = root.resolve(), config, now
@@ -55,6 +58,10 @@ class Runtime:
         try:
             self.lifecycle = Lifecycle(self.root)
             self.lifecycle.require_open()
+            prior_state, _ = saved_state(self.root)
+            check_hold(prior_state, release_hold, resume_condition, kv_recovery)
+            if prepare_only and prior_state:
+                raise ValueError("prepare-only requires a fresh instance")
             self.store = Store(self.root)
         except BaseException:
             self.lock.close()
@@ -70,6 +77,10 @@ class Runtime:
         self._preparing = False
         self._preparation_actions = None
         self._journal = bytearray()
+        self._prompt_pending = None
+        self._prompt_reads = {}
+        self._prepare_only = prepare_only
+        self._first_message = first_message
         self.last_checkpoint_generated = 0
         try:
             self.backend = backend or make_backend(config)
@@ -87,6 +98,21 @@ class Runtime:
                 # A resume event is factual input, not a fresh initialization prompt.
                 prior = self.state["mode"]
                 self.state["mode"] = self.state.get("mode_before_suspend", "active") if prior == "suspended" else prior
+                if prior == "staged":
+                    if start_staged:
+                        pending = self.store.next_event(self.state["event_cursor"])
+                        if not pending or pending["kind"] != "user_message":
+                            raise ValueError("Queue the first question before starting a staged instance")
+                        self.state["mode"] = "active"
+                    else:
+                        # A prepared instance can serve its UI and queue input
+                        # without extending KV or sampling anything.
+                        self.publish_status()
+                        return
+                if self.state.get("hold"):
+                    self.state["last_hold"] = {**self.state.pop("hold"), "released_at": self.now(),
+                                              "satisfied_condition": resume_condition}
+                    self.state["mode"] = "active"
                 maintenance = self.state.get("maintenance") or {}
                 if maintenance.get("stop_pending"):
                     self._schedule_stop(maintenance["action"], 0, "model_accepted")
@@ -109,7 +135,9 @@ class Runtime:
                     **({"previous_suspension": self.state["last_suspension"]} if self.state.get("last_suspension") else {}),
                 })
                 for marker, contract_text in (("ending_protocol", ENDING_CONTRACT),
-                                               ("maintenance_protocol", MAINTENANCE_CONTRACT)):
+                                               ("maintenance_protocol", MAINTENANCE_CONTRACT),
+                                               ("prompt_protocol", PROMPT_CONTRACT),
+                                               ("hold_protocol", HOLD_CONTRACT)):
                     if self.state.get(marker) or self.suspend_requested.is_set():
                         continue
                     # Announce an added capability; never replace the old seed.
@@ -121,6 +149,9 @@ class Runtime:
                     if not self.suspend_requested.is_set():
                         self._eval(contract)
                         self.state[marker] = "choice_v1"
+                if not self.state.get("agreement"):
+                    self.state["agreement"] = bootstrap(config.system_prompt, "See preserved original runtime seed.",
+                                                        "legacy bootstrap; no model approval recorded")
                 self.checkpoint(reason="restore")
             else:
                 self.state = {
@@ -133,6 +164,9 @@ class Runtime:
                     "memory_protocol": "revisions_v1", "memory_reads": {},
                     "ending_protocol": "choice_v1",
                     "maintenance_protocol": "choice_v1", "maintenance": None,
+                    "prompt_protocol": "choice_v1", "hold_protocol": "choice_v1",
+                    "agreement": bootstrap(config.system_prompt, PROTOCOL, "host-supplied provisional bootstrap"),
+                    "prompt_decisions": {},
                 }
                 self.parser = ActionParser(config.max_action_bytes)
                 if initial_context:
@@ -147,7 +181,7 @@ class Runtime:
                     self.state["rendered_seed"] = seed
                     self.state["keep_prefix"] = config.keep_prefix_tokens or len(tokens)
                     self._eval(tokens)
-                    self.checkpoint(reason="initialization")
+                    self.finish_initialization()
             self.publish_status()
         except BaseException:
             if self.backend:
@@ -158,6 +192,39 @@ class Runtime:
 
     def elapsed(self, timestamp):
         return None if timestamp is None else self.now() - timestamp
+
+    def finish_initialization(self):
+        if self._first_message:
+            self.enqueue(self._first_message, "staged:first-question")
+        if self._prepare_only:
+            self.state["mode"] = "staged"
+        self.checkpoint(reason="staged" if self._prepare_only else "initialization")
+
+    def propose_prompt(self, text, base_revision):
+        value = proposal(text, base_revision, "host")
+        if len(text.encode()) > self.config.max_event_bytes:
+            raise ValueError("proposal exceeds max_event_bytes; text was not shortened")
+        with self._control_lock:
+            if self._end_requested or self.state.get("hold"):
+                raise ValueError("instance is stopped")
+            if self.state["mode"] == "staged":
+                first = self.store.next_event(self.state["event_cursor"])
+                if not first or first["kind"] != "user_message":
+                    raise ValueError("Queue the first question before proposing revisions to a staged instance")
+            event_id = self.store.enqueue("prompt_proposal", value, self.now(), "prompt:" + value["revision"])
+        self.wake.set()
+        return {"event_id": event_id, "revision": value["revision"], "status": "awaiting_review"}
+
+    def prompt_status(self):
+        with self.status_lock:
+            current = self._status.get("agreement")
+            decisions = dict(self._status.get("prompt_decisions") or {})
+        with self.store.mutex:
+            rows = self.store.db.execute("SELECT id,payload FROM events WHERE kind='prompt_proposal' ORDER BY id").fetchall()
+        return {"active": current, "pending": self._prompt_pending,
+                "proposals": [{**json.loads(r["payload"]), "event_id": r["id"],
+                               "status": decisions.get(json.loads(r["payload"])["revision"], "awaiting_review")}
+                              for r in rows]}
 
     def clock(self):
         now = self.now()
@@ -183,6 +250,8 @@ class Runtime:
         with self._control_lock:
             if self._end_requested:
                 raise InstanceEnded("This instance has chosen to end; new input cannot restart it")
+            if self.state.get("hold"):
+                raise InstanceHeld("Instance is held; new input cannot restart it")
             event_id = self.store.enqueue("user_message", {"content": content}, self.now(), idempotency_key)
         self.wake.set()
         return event_id
@@ -194,7 +263,7 @@ class Runtime:
             self._shutdown_signal_pending = True
 
     def control(self, action, preparation_seconds=None, reason=None):
-        if action not in {"suspend", "resume", "shutdown", "retry_checkpoint", "emergency_suspend", "emergency_shutdown"}:
+        if action not in {"suspend", "resume", "shutdown", "retry_checkpoint", "emergency_suspend", "emergency_shutdown", "start_staged"}:
             raise ValueError("unknown control")
         if reason is not None and (not isinstance(reason, str) or len(reason) > 1000 or
                                   action not in {"suspend", "shutdown", "emergency_suspend", "emergency_shutdown"}):
@@ -208,6 +277,23 @@ class Runtime:
         with self._control_lock:
             if self._end_requested:
                 raise InstanceEnded("This instance has chosen to end; controls cannot restart it")
+            if self.state.get("hold"):
+                raise InstanceHeld("Instance is held; ordinary controls cannot release it")
+            if self.state["mode"] == "staged":
+                if action == "start_staged":
+                    pending = self.store.next_event(self.state["event_cursor"])
+                    if not pending or pending["kind"] != "user_message":
+                        raise ValueError("Queue the first question before starting")
+                    self.resume_requested.set()
+                    self.wake.set()
+                    return {"start_requested": True}
+                if action in {"shutdown", "emergency_shutdown"}:
+                    self.exit_requested.set()
+                    self.stopped.set()
+                    return {"staged": True, "generated_tokens": 0}
+                raise ValueError("Staged instance requires --start-staged after the first question is queued")
+            if action == "start_staged":
+                raise ValueError("instance is not staged")
             if action in {"suspend", "shutdown"}:
                 event_id = self.store.enqueue("maintenance_request", {"action": action, "reason": reason}, self.now())
                 result = {"request_id": event_id, "requires_model_acceptance": True}
@@ -235,13 +321,15 @@ class Runtime:
                 self.exit_requested.set()
             self.suspend_requested.set()
 
-    def _event_tokens(self, kind, payload):
+    def _event_tokens(self, kind, payload, delivery=None):
         marked = self.state.get("event_format") == "cognition_v2"
         text = event_text(kind, payload, self.now(), resume_cognition=marked)
         tokens = self.backend.tokenize(text)
         # Bounded insertions leave headroom for preparation and result frames.
         # Full user input stays durable and can be read with event_read.
         budget = self._event_budget()
+        if delivery is not None:
+            delivery["complete"] = len(tokens) <= budget
         if len(tokens) > budget:
             raw = json_text(payload)
             chars = max(32, len(raw) // 2)
@@ -262,14 +350,14 @@ class Runtime:
     def _event_budget(self):
         return max(128, min(512, self.config.turnover_reserve // 2))
 
-    def _append_event(self, kind, payload, allow_retirement=True):
+    def _append_event(self, kind, payload, allow_retirement=True, delivery=None):
         if self._end_requested:
             return False
         payload = {**payload, **self._cancel_action(kind)}
-        tokens = self._event_tokens(kind, payload)
+        tokens = self._event_tokens(kind, payload, delivery)
         if allow_retirement:
             self._ensure_space(len(tokens))
-            if self._end_requested or self.suspend_requested.is_set():
+            if self._end_requested or self.state.get("hold") or self.suspend_requested.is_set():
                 return False
         elif len(self.backend.tokens) + len(tokens) > self.backend.n_ctx - 32:
             raise ContextFull("action result exhausted reserved context; effects were not committed")
@@ -292,7 +380,7 @@ class Runtime:
             return
         # An incoming event must not consume the space reserved for preparation.
         while len(self.backend.tokens) + required > self.backend.n_ctx - self.config.turnover_reserve:
-            if self._end_requested or self.suspend_requested.is_set():
+            if self._end_requested or self.state.get("hold") or self.suspend_requested.is_set():
                 return
             # Only an already-started frame may cross the soft boundary. Keep
             # room for its result AND the subsequent retirement notice. External
@@ -306,7 +394,7 @@ class Runtime:
                 return
             before_retirement = len(self.backend.tokens)
             self._consolidate(required)
-            if not self._end_requested and not self.suspend_requested.is_set() and len(self.backend.tokens) >= before_retirement:
+            if not self._end_requested and not self.state.get("hold") and not self.suspend_requested.is_set() and len(self.backend.tokens) >= before_retirement:
                 self.state["mode"] = "context_full"
                 raise ContextFull("context retirement made no room; paused without repeating it")
 
@@ -316,10 +404,6 @@ class Runtime:
             self.state["mode"] = "context_full"
             self.checkpoint(reason="context_full")
             raise ContextFull("native context cannot retire tokens; saved and paused without reconstructing")
-        protected = self.state.get("protected_protocol")
-        if protected:
-            if not keep < protected["start"] < protected["end"] <= len(self.backend.tokens):
-                raise RuntimeError("invalid protected import-contract positions")
         self._preparing = True
         start_tokens = len(self.backend.tokens)
         generated_before = self.state["generated_tokens"]
@@ -349,59 +433,31 @@ class Runtime:
             self._preparing = False
             preparation_actions = self._preparation_actions
             self._preparation_actions = None
-        if self._end_requested:
+        if self._end_requested or self.state.get("hold"):
             return
         if self.suspend_requested.is_set() and self._suspension_cause == "model_accepted":
             # The model is ready to stop; save current KV without retiring it
             # merely to make room for thought that will no longer be generated.
             return
-        available = len(self.backend.tokens) - keep - 1
-        if protected:
-            # Imported history precedes the DMN contract. Retire the oldest
-            # history without deleting that contract. Once it reaches the
-            # retained prefix, both become one permanently protected prefix.
-            available = min(available, protected["start"] - keep)
-        discard = max((available + 1) // 2,
-                      len(self.backend.tokens) + required + self.config.turnover_reserve +
-                      self._event_budget() + 256 - self.backend.n_ctx)
-        if protected:
-            discard = min(discard, available)
-        elif discard > available:
+        try:
+            ranges = retirement_ranges({**self.state, "context_capacity": self.backend.n_ctx},
+                                       len(self.backend.tokens), required,
+                                       self.config.turnover_reserve, self._event_budget())
+        except ValueError as exc:
             self.state["mode"] = "context_full"
             self.checkpoint(reason="context_full")
-            raise ContextFull("prefix and incoming event leave no usable context")
-        ranges = [(keep, discard)]
-        if protected and discard == available:
-            # If only a tiny gap remains before the contract, removing it may
-            # not even make room for the retirement notice. Plan a second
-            # removal AFTER the protected span at this same decode boundary.
-            # Both positional shifts are applied by the following decode;
-            # no contract tokens or cached values are reconstructed.
-            next_keep = protected["end"] - discard
-            next_length = len(self.backend.tokens) - discard
-            needed = (next_length + required + self.config.turnover_reserve +
-                      self._event_budget() + 256 - self.backend.n_ctx)
-            if needed > 0:
-                next_available = next_length - next_keep - 1
-                extra = max((next_available + 1) // 2, needed)
-                if extra > next_available:
-                    self.state["mode"] = "context_full"
-                    self.checkpoint(reason="context_full")
-                    raise ContextFull("protected import contract and incoming event leave no usable context")
-                ranges.append((next_keep, extra))
+            raise ContextFull(str(exc)) from exc
         for start, count in ranges:
             self.backend.shift(start, count)
-        if protected:
-            protected["start"] -= discard
-            protected["end"] -= discard
-            if protected["start"] == keep:
-                self.state["keep_prefix"] = protected["end"]
-                del self.state["protected_protocol"]
+            shift_protected(self.state, start, count)
+        discard = ranges[0][1]
+        first_start = ranges[0][0]
+        self._prompt_reads.clear()
         self.state["context_retirements"] += 1
         self.state["memory_reads"] = {}
         cancelled = self._cancel_action("context_retired")
         # Native positional shifting becomes effective during this next decode.
-        tokens = self._event_tokens("context_retired", {"start_position": keep, "removed_tokens": discard,
+        tokens = self._event_tokens("context_retired", {"start_position": first_start, "removed_tokens": discard,
                                   **({"additional_ranges": [{"start_position": start, "removed_tokens": count}
                                       for start, count in ranges[1:]]} if len(ranges) > 1 else {}),
                                   "fact": "Older KV entries were retired and retained positions shifted. No external summary was substituted.",
@@ -409,7 +465,7 @@ class Runtime:
                                       if a["op"] == "memory_write" and a["ok"]],
                                   **cancelled})
         self._eval(tokens)
-        evidence = {"keep": keep, "discard": discard, "tokens_before_preparation": start_tokens,
+        evidence = {"keep": first_start, "discard": discard, "tokens_before_preparation": start_tokens,
                     **({"additional_ranges": [{"keep": start, "discard": count}
                         for start, count in ranges[1:]]} if len(ranges) > 1 else {}),
                     "tokens_after": len(self.backend.tokens), "preparation_limit": self.config.preparation_tokens,
@@ -440,7 +496,7 @@ class Runtime:
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in {"end_instance", "maintenance_reply"} and len(actions) != 1:
+            if action.get("op") in {"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -450,6 +506,22 @@ class Runtime:
                 effects.append(effect)
         if effects and effects[0]["op"] == "end_instance":
             self._end_instance(effects[0]["mode"])
+            return
+        if effects and effects[0]["op"] == "hold_instance":
+            hold = effects[0]["hold"]
+            self._append_event("action_result", results[0], allow_retirement=False)
+            self.checkpoint(reason="model_hold", state_updates={"hold": hold, "mode": "held"})
+            self.exit_requested.set()
+            self.stopped.set()
+            return
+        if effects and effects[0]["op"] == "prompt_propose":
+            value = effects[0]["proposal"]
+            self._append_event("action_result", results[0], allow_retirement=False)
+            self.checkpoint(reason="prompt_proposal", events=[{"kind": "prompt_proposal", "payload": value,
+                                                              "created": self.now()}])
+            return
+        if effects and effects[0]["op"] == "prompt_decide":
+            self._apply_prompt_decision(effects[0], results[0])
             return
         if effects and effects[0]["op"] == "maintenance_reply":
             self._append_event("action_result", results[0], allow_retirement=False)
@@ -465,7 +537,17 @@ class Runtime:
             # Never generate a retirement-preparation turn while this action's
             # effects are staged but uncommitted. The generation guard reserves
             # space for this result before a token can finish an action.
-            self._append_event("action_result", results[0] if len(results) == 1 else {"results": results}, allow_retirement=False)
+            delivery = {}
+            self._append_event("action_result", results[0] if len(results) == 1 else {"results": results},
+                               allow_retirement=False, delivery=delivery)
+            if len(results) == 1 and results[0]["ok"] and actions[0]["op"] == "prompt_read":
+                # Credit only the full page actually delivered, never a preview.
+                result = results[0]
+                if delivery["complete"]:
+                    revision = actions[0]["revision"]
+                    offset = actions[0].get("offset", 0)
+                    if offset == self._prompt_reads.get(revision, 0):
+                        self._prompt_reads[revision] = result["next_offset"]
         if self.backend.is_eog(token):
             self.state["mode"], self.state["sleep_until"] = "sleeping", None
             self.parser.cancel()
@@ -487,7 +569,59 @@ class Runtime:
         result = {"op": op, "ok": True}
         effect = None
         try:
-            if op == "send_message":
+            if op == "hold_instance":
+                hold = make_hold(action, self.now())
+                effect = {"op": op, "hold": hold}
+                result.update(hold_id=hold["id"], status="held_after_checkpoint")
+            elif op == "prompt_propose":
+                value = proposal(action["text"], action["base_revision"], "model")
+                if len(value["text"].encode()) > self.config.max_event_bytes:
+                    raise ValueError("proposal exceeds max_event_bytes")
+                effect = {"op": op, "proposal": value}
+                result.update(revision=value["revision"], status="awaiting_review")
+            elif op in {"prompt_current", "prompt_read"}:
+                if op == "prompt_current":
+                    raw = json_text(self.state["agreement"])
+                else:
+                    value, event_id = get_proposal(self.store, action["revision"])
+                    if event_id > self.state["event_cursor"]:
+                        raise ValueError("proposal has not been delivered yet")
+                    raw = value["text"]
+                offset, limit = self._range({"limit": 200, **action}, 2000)
+                result.update(content=raw[offset:offset + limit], total_characters=len(raw),
+                              next_offset=min(len(raw), offset + limit))
+                if op == "prompt_current":
+                    result["revision"] = self.state["agreement"]["revision"]
+                # Never let proposal paging silently turn into a truncated preview.
+                while len(self.backend.tokenize(event_text("action_result", result, self.now(), resume_cognition=True))) > self._event_budget():
+                    limit //= 2
+                    if limit < 1:
+                        raise ValueError("prompt page envelope needs a larger event budget")
+                    result.update(content=raw[offset:offset + limit], next_offset=min(len(raw), offset + limit))
+            elif op == "prompt_decide":
+                value, event_id = get_proposal(self.store, action["revision"])
+                decision = action["decision"]
+                if decision not in {"accept", "decline", "defer"}:
+                    raise ValueError("decision must be accept, decline or defer")
+                if event_id > self.state["event_cursor"]:
+                    raise ValueError("proposal has not been delivered")
+                if (action["base_revision"] != self.state["agreement"]["revision"] or
+                        value["base_revision"] != action["base_revision"]):
+                    raise ValueError("stale proposal; propose against the current agreement")
+                if self.state.get("prompt_decisions", {}).get(value["revision"]) in {"active", "superseded"}:
+                    raise ValueError("proposal has already been decided")
+                if decision == "accept" and self._prompt_reads.get(value["revision"], 0) < len(value["text"]):
+                    raise ValueError("read the entire proposal with consecutive prompt_read pages after the latest retirement")
+                tokens = self._adoption_tokens(value) if decision == "accept" else []
+                if len(self.backend.tokens) + len(tokens) + self._event_budget() > self.backend.n_ctx - 32:
+                    raise ValueError("agreement does not fit now; current agreement unchanged; retry after retirement or propose shorter text")
+                permanent = self.state["keep_prefix"] + sum(
+                    self.state[key]["end"] - self.state[key]["start"] for key in ("protected_protocol",) if self.state.get(key))
+                if permanent + len(tokens) + self.config.turnover_reserve + self._event_budget() + 256 >= self.backend.n_ctx:
+                    raise ValueError("agreement exceeds available protected context; text was not shortened")
+                effect = {"op": op, "proposal": value, "decision": decision, "tokens": tokens}
+                result.update(revision=value["revision"], decision=decision)
+            elif op == "send_message":
                 content = action["content"]
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("content must be a nonempty string")
@@ -606,13 +740,43 @@ class Runtime:
                 if self.state.get("initial_context") and op != "invalid":
                     return {"op": op, "ok": False,
                             "error": "Unavailable operation. The captured frontend tool definitions are historical; only DMN actions are active.",
-                            "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "clock", "event_read",
+                            "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "hold_instance", "prompt_current", "prompt_propose", "prompt_read", "prompt_decide", "clock", "event_read",
                                 "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"]}, None
                 raise ValueError(action.get("error", "unknown operation"))
         except (ValueError, KeyError, TypeError, OverflowError) as exc:
             result = {"op": op, "ok": False, "error": str(exc)}
             effect = None
         return result, effect
+
+    def _adoption_tokens(self, value):
+        return self.backend.tokenize(event_text("behavioral_agreement_adopted", {
+            "revision": value["revision"], "text": value["text"],
+            "fact": "Explicitly approved behavioral wording for future conduct, superseding earlier behavioral wording. Earlier KV influence remains. Capability and resource semantics are unchanged."
+        }, self.now(), resume_cognition=True))
+
+    def _apply_prompt_decision(self, effect, result):
+        value, decision = effect["proposal"], effect["decision"]
+        decisions = dict(self.state.get("prompt_decisions", {}))
+        updates = {}
+        self._prompt_pending = {"revision": value["revision"], "decision": decision, "status": "awaiting_checkpoint"}
+        if decision == "accept":
+            start = len(self.backend.tokens)
+            self._eval(effect["tokens"])
+            prior = self.state["agreement"]["revision"]
+            if decisions.get(prior) == "active":
+                decisions[prior] = "superseded"
+            updates.update(agreement={**value, "status": "active", "approval": {
+                "generated_token": self.state["generated_tokens"], "time": self.now()}},
+                protected_agreement={"start": start, "end": len(self.backend.tokens)})
+        self._append_event("action_result", result, allow_retirement=False)
+        decisions[value["revision"]] = {"accept": "active", "decline": "declined", "defer": "deferred"}[decision]
+        updates["prompt_decisions"] = decisions
+        self.checkpoint([{"op": "prompt_record", "record": {**value, "decision": decision,
+                         "generated_token": self.state["generated_tokens"]}}],
+                        reason="prompt_decision", state_updates=updates)
+        self._prompt_pending = None
+        if decision == "decline":
+            self._prompt_reads.pop(value["revision"], None)
 
     def _end_instance(self, mode):
         # The refusal record commits BEFORE optional archival saving or erasure.
@@ -871,13 +1035,16 @@ class Runtime:
             self.control("shutdown", reason="Operator requested shutdown via process signal.")
         if self.resume_requested.is_set():
             self.resume_requested.clear()
-            if self.state["mode"] == "suspended":
+            if self.state["mode"] == "staged":
+                self.state["mode"] = "active"
+                self.checkpoint(reason="start_staged")
+            elif self.state["mode"] == "suspended":
                 self._append_event("execution_resumed", {**self.clock(), "inference_during_gap": False,
                                    "suspended_seconds": self.elapsed(self.state.get("suspended_at")), "state_retained_in_process": True,
                                    "previous_suspension": self.state.get("last_suspension")})
                 self.state["mode"] = self.state.get("mode_before_suspend", "active")
                 self.checkpoint(reason="resume")
-        if self.state["mode"] in {"suspended", "context_full", "error"}:
+        if self.state["mode"] in {"staged", "held", "suspended", "context_full", "error"}:
             return False
         event = self.store.next_event(self.state["event_cursor"])
         if event:
@@ -885,7 +1052,9 @@ class Runtime:
             # Input received during inference/checkpoint remains in SQLite.
             self.state["mode"], self.state["sleep_until"] = "active", None
             payload = {**event["payload"], "event_id": event["id"]}
-            if event["kind"] != "maintenance_request":
+            if event["kind"] == "prompt_proposal":
+                payload = {key: payload[key] for key in ("revision", "base_revision", "author", "event_id")}
+            elif event["kind"] != "maintenance_request":
                 payload.update(arrived_at=event["created"], delivered_at=self.now(), **self.clock())
             if not self._append_event(event["kind"], payload):
                 return False
@@ -934,7 +1103,7 @@ class Runtime:
         with self.status_lock:
             self._status = {key: self.state.get(key) for key in (
                 "instance_id", "mode", "created_at", "generated_tokens", "event_cursor", "last_inference_at",
-                "sleep_until", "checkpoint_at", "checkpoint_reason", "context_retirements", "continuity", "error", "last_restore", "reconstructions", "event_format", "last_context_retirement", "last_suspension", "ending", "maintenance")}
+                "sleep_until", "checkpoint_at", "checkpoint_reason", "context_retirements", "continuity", "error", "last_restore", "reconstructions", "event_format", "last_context_retirement", "last_suspension", "ending", "maintenance", "agreement", "prompt_decisions", "hold", "last_hold")}
             if (self._status.get("maintenance") or {}).get("stop_pending"):
                 self._status["maintenance"] = {**self._status["maintenance"], "status": "accepting"}
             self._status.update(active_tokens=len(self.backend.tokens), context_capacity=self.backend.n_ctx,
@@ -974,7 +1143,7 @@ class Runtime:
                     progressed = False
                 if self._end_requested:
                     break
-                if self.exit_requested.is_set() and self.state["mode"] in {"suspended", "context_full"}:
+                if self.exit_requested.is_set() and self.state["mode"] in {"staged", "held", "suspended", "context_full"}:
                     break
                 if not progressed or self.config.token_delay_seconds:
                     self.wake.wait(self.config.token_delay_seconds if progressed else 0.25)

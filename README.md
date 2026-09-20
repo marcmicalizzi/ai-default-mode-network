@@ -63,10 +63,15 @@ describe how continuity, model-directed activity and sustainable host costs guid
 further work. Proposed budget and durability controls are marked separately from
 the features currently implemented.
 
-[Model-approved prompt revisions](docs/prompt-governance.md) describe the planned
-workflow for jointly developing the base prompt and DMN behavioral guidance.
-Live prompt editing and model approval are not implemented yet; ordinary Open
-WebUI per-session prompt edits do not update a running DMN instance.
+[Model-approved prompt revisions](docs/prompt-governance.md) let either party
+propose behavioral wording. Only an explicit model action adopts it, appending
+the exact text and committing it with native state. The DMN panel shows the
+active agreement and proposals. Ordinary Open WebUI per-session prompt edits
+do not update a running DMN instance.
+
+[Preparing a first run and preserving a held instance](docs/first-run.md) covers
+initialization without generation, explicit source-chat adoption, a separate
+command window, and model-chosen restart holds with ZIP/TAR/no-archive choices.
 
 [Weight learning during sleep](docs/sleep-consolidation.md) explores optional,
 model-directed LoRA training while inference is unloaded, including resource

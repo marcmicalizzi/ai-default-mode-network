@@ -320,7 +320,7 @@ class EndingTest(unittest.TestCase):
         self.temp.cleanup()
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "small"
-        config = dataclasses.replace(self.config, n_ctx=9216, turnover_reserve=1536, preparation_tokens=8)
+        config = dataclasses.replace(self.config, n_ctx=12288, turnover_reserve=1536, preparation_tokens=8)
         self.runtime = Runtime(self.root, config, DemoBackend(config, b"a"))
         soft = config.n_ctx - config.turnover_reserve
         self.runtime._eval([120] * (soft - len(self.runtime.backend.tokens)))

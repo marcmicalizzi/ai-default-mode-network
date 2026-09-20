@@ -24,9 +24,10 @@ The launcher uses separate ports (3031 and 8766), database, static assets,
 runtime files and configuration under `data/openwebui-test`. It never copies
 or accesses the primary chat database, loads the 31B model, or changes startup
 scripts in the primary installation. Authentication is disabled **only for this loopback,
-disposable installation**; never point it at primary data. Ctrl+C stops its
-processes, checkpointing the fixture first. For native models, saving may take
-minutes. The launcher waits up to `--shutdown-timeout` (default 600 seconds);
+disposable installation**; never point it at primary data. Ctrl+C requests DMN
+shutdown and stops the frontend. The instance may accept, defer or refuse; the
+scripted demo cannot decide that request. For native models, saving may take
+minutes after acceptance. The launcher waits up to `--shutdown-timeout` (default 600 seconds);
 if shutdown is not confirmed, it leaves DMN running and reports its PID/control
 URL. It does not forcibly terminate a slow save or a storage-blocked runtime.
 
@@ -122,3 +123,15 @@ currently loads llama.cpp through native bindings in its own process; loading
 the large model in both processes may duplicate RAM/VRAM. For an unloaded
 original model, initial import reconstructs context; it does not transfer a
 live slot.
+
+## Adopting a prepared existing conversation
+
+The [staged first-run workflow](first-run.md) now provides `adopt-openwebui` for
+explicitly binding a captured source chat after import-only preparation. It
+checks that the source remains unchanged and prevents historical input replay.
+The ordinary adapter still refuses to implicitly adopt an existing conversation.
+Start the runtime and Open WebUI in independent processes; the disposable sandbox
+supervisor is a test tool, not the production launcher.
+
+System-prompt edits in Open WebUI do not change DMN's live agreement. Use the DMN
+panel's Behavioral agreement and proposals section; only the model can adopt it.

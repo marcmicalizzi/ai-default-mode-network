@@ -164,7 +164,7 @@ class NativeProcessTest(unittest.TestCase):
         from dmn.config import Config
         from dmn.runtime import Runtime
         model = str(Path(os.environ["DMN_TEST_MODEL"]).resolve())
-        config = Config(model_path=model, prompt_format="plain", preparation_tokens=8, clock_interval_seconds=0)
+        config = Config(model_path=model, n_ctx=12288, prompt_format="plain", preparation_tokens=8, clock_interval_seconds=0)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             r = Runtime(root, config)

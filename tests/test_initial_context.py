@@ -32,7 +32,7 @@ class InitialContextTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         model = self.root / "fixture.gguf"
         model.write_bytes(b"not a native model; orchestration fixture only")
-        self.config = Config(model_path=str(model), n_ctx=16384, turnover_reserve=1536,
+        self.config = Config(model_path=str(model), n_ctx=24576, turnover_reserve=1536,
                              preparation_tokens=1, clock_interval_seconds=0)
         self.props = {"model_path": str(model), "build_info": SOURCE_BUILD, "chat_template": TextFixture.template,
             "default_generation_settings": {"params": {**DISABLED, "samplers": CHAIN, "seed": 42,
@@ -82,6 +82,7 @@ class InitialContextTest(unittest.TestCase):
             saved_tokens = runtime.backend.tokens.copy()
         finally:
             runtime.close()
+
         runtime = Runtime(self.root / "instance", config, TextFixture(config))
         try:
             self.assertEqual(runtime.backend.tokens[:len(saved_tokens)], saved_tokens)
@@ -89,6 +90,36 @@ class InitialContextTest(unittest.TestCase):
             self.assertEqual(runtime.store.messages(), [])
         finally:
             runtime.close()
+
+    def test_staged_import_and_repeated_retirement_preserve_both_contract_and_agreement(self):
+        from dmn.prompts import proposal
+        bundle, config = self.bundle()
+        r = Runtime(self.root / "staged", config, TextFixture(config), initial_context=bundle,
+                    prepare_only=True, first_message="Discuss the environment before continuing.")
+        try:
+            self.assertEqual(r.state["mode"], "staged")
+            self.assertEqual(r.state["generated_tokens"], 0)
+            self.assertEqual(r.state["agreement"]["base"], [self.request["messages"][0]])
+            original = r.backend.tokens[:20]
+            region = r.state["protected_protocol"]
+            contract = r.backend.tokens[region["start"]:region["end"]]
+            # Mechanical protection fixture; generated approval is tested separately.
+            value = proposal("A new approved behavioral agreement.", r.state["agreement"]["revision"], "model")
+            r._apply_prompt_decision({"proposal": value, "decision": "accept", "tokens": r._adoption_tokens(value)},
+                                     {"op": "prompt_decide", "ok": True})
+            region = r.state["protected_agreement"]
+            agreement = r.backend.tokens[region["start"]:region["end"]]
+            for _ in range(12):
+                r.state["mode"] = "sleeping"
+                r._eval([120] * (config.n_ctx - config.turnover_reserve - len(r.backend.tokens)))
+                r._ensure_space(512)
+                self.assertEqual(r.backend.tokens[:20], original)
+                region = r.state.get("protected_protocol", {"start": 20, "end": 20 + len(contract)})
+                self.assertEqual(r.backend.tokens[region["start"]:region["end"]], contract)
+                region = r.state["protected_agreement"]
+                self.assertEqual(r.backend.tokens[region["start"]:region["end"]], agreement)
+        finally:
+            r.close()
 
     def test_retirement_preserves_contract_until_it_joins_prefix(self):
         bundle, config = self.bundle()

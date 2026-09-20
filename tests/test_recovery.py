@@ -14,7 +14,7 @@ class RecoveryTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.config = Config(backend="demo", n_ctx=12288, clock_interval_seconds=0, preparation_tokens=8)
+        self.config = Config(backend="demo", n_ctx=16384, clock_interval_seconds=0, preparation_tokens=8)
         self.script = (b'\n<dmn_action>{"op":"memory_write","path":"/keep","content":"retained"}</dmn_action>'
                        b'\n<dmn_action>{"op":"send_message","content":"published once"}</dmn_action>'
                        b'\n<dmn_action>{"op":"sleep"}</dmn_action>\n')
@@ -102,7 +102,7 @@ class RecoveryTest(unittest.TestCase):
             self.open("rebuild", config=dataclasses.replace(self.config, temperature=0.7))
 
     def test_hardware_placement_can_change_only_with_reconstruction(self):
-        config = dataclasses.replace(self.config, n_ctx=10000, n_threads=2)
+        config = dataclasses.replace(self.config, n_ctx=18000, n_threads=2)
         with self.assertRaisesRegex(ValueError, "environment differs"):
             self.open(config=config)
         r = self.open("fallback", config=config)

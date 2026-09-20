@@ -9,6 +9,7 @@ import asyncio
 import copy
 import hashlib
 import logging
+import json
 import os
 import time
 
@@ -44,6 +45,11 @@ class OpenWebUIBridge:
         root = DATA_DIR / "dmn-bridge"
         self.owner_lock = InstanceLock(root)  # one web worker, one relay
         self.ledger = BridgeLedger(root / "relay.sqlite3")
+        self.adoption = json.loads((root / "adoption.json").read_text()) if (root / "adoption.json").exists() else None
+        if self.adoption and self.adoption["instance_id"] != self.client.instance_id:
+            self.ledger.close()
+            self.owner_lock.close()
+            raise ValueError("adopted conversation belongs to another instance")
         self.mutex = asyncio.Lock()
         self.closed = False
         self.task = None
@@ -61,6 +67,9 @@ class OpenWebUIBridge:
             chat = await Chats.get_chat_by_id(metadata["chat_id"])
             if not chat or chat.user_id != metadata["user_id"]:
                 raise ValueError("Only the owner of the bound conversation can send DMN events")
+            if self.adoption:
+                from .adoption import validate_adopted_message
+                validate_adopted_message(self.adoption, chat.chat, message)
             if not self.ledger.binding():
                 nodes = await Chats.get_messages_map_by_chat_id(chat.id)
                 if any(n.get("role") == "user" and n.get("id") != message["id"] for n in nodes.values()):
@@ -89,6 +98,9 @@ class OpenWebUIBridge:
             row = await session.get(Chat, binding["chat_id"])
             if row is None or row.user_id != binding["user_id"]:
                 raise ValueError("Bound conversation is missing or its owner changed")
+            if self.adoption:
+                from .adoption import validate_adopted_history
+                validate_adopted_history(self.adoption, row.chat)
             chat, node, changed = attach_message(row.chat, binding["instance_id"], outgoing, self.ledger.placeholders())
             if not changed:
                 return node["id"]

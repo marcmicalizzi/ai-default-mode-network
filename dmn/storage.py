@@ -159,6 +159,9 @@ class Store:
                                (effect["destination"], now, effect["path"]))
                     self._archive_memory(db, effect["path"], None, op, now)
                     self._archive_memory(db, effect["destination"], content, op, now)
+                elif op == "prompt_record":
+                    db.execute("INSERT INTO records(kind,payload,created) VALUES(?,?,?)",
+                               ("prompt_decision", json_text(effect["record"]), now))
                 else:
                     raise ValueError(f"unknown staged effect {op}")
             db.execute("INSERT INTO checkpoints(directory,created) VALUES(?,?)", (directory, now))

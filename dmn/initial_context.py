@@ -20,6 +20,7 @@ from .config import Config
 from .protocol import PROTOCOL, event_text
 from .storage import write_durable
 from .responses import responses_to_chat
+from .prompts import bootstrap
 
 SOURCE_BUILD = "b10502-0adcc3bb5"
 CHAIN = ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"]
@@ -228,6 +229,13 @@ def initialize_runtime(runtime, bundle: Path):
     if runtime.backend.tokens or runtime.store.latest() or runtime.store.next_event(0):
         raise ValueError("initial-context import requires an empty runtime")
     manifest, prompt, source_tokens = validate_bundle(bundle, runtime.backend)
+    request_path = bundle / "normalized-chat-request.json"
+    if not request_path.exists():
+        request_path = bundle / "provider-request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    source_system = [m for m in request.get("messages", []) if m.get("role") in {"system", "developer"}]
+    runtime.state["agreement"] = bootstrap(source_system, PROTOCOL,
+        "captured effective source prompt; historical agreement is context, DMN guidance remains provisional")
     transition = event_text("dmn_transition", {
         "fact": "The preceding effective conversation context was reconstructed from text. Its former KV and RNG were unavailable. No inference occurred during the unloaded interval. Prior frontend tool definitions and calls remain historical context, not callable tools. Only the following DMN action contract is active from now on.",
         "source_token_count": len(source_tokens), **runtime.clock()}, runtime.now())
@@ -251,4 +259,4 @@ def initialize_runtime(runtime, bundle: Path):
         runtime.state["keep_prefix"] = keep + len(transition_tokens)
         del runtime.state["protected_protocol"]
     runtime._eval(transition_tokens)
-    runtime.checkpoint()
+    runtime.finish_initialization()

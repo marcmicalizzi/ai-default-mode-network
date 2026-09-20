@@ -52,6 +52,8 @@ def serve(runtime, port=8765):
                     if expected is not None and expected != runtime.status()["instance_id"]:
                         raise ValueError("runtime instance identity does not match")
                     self.reply(200, runtime.store.messages(int(query.get("after", [0])[0])))
+                elif parts.path == "/api/prompts":
+                    self.reply(200, runtime.prompt_status())
                 elif parts.path == "/api/memories":
                     if "path" in query:
                         self.reply(200, {"path": query["path"][0], "content": runtime.store.memory_read(query["path"][0])})
@@ -125,6 +127,8 @@ def serve(runtime, port=8765):
                 elif self.path == "/api/control":
                     result = runtime.control(body["action"], preparation_seconds=body.get("preparation_seconds"), reason=body.get("reason"))
                     self.reply(202, {"accepted": body["action"], **result})
+                elif self.path == "/api/prompts":
+                    self.reply(202, runtime.propose_prompt(body["text"], body["base_revision"]))
                 else:
                     self.reply(404, {"error": "not found"})
             except InstanceEnded as exc:

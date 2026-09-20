@@ -35,8 +35,23 @@ def main(argv=None):
                      help="free-space margin beyond the estimated snapshot or packing scratch size")
     run.add_argument("--import-bundle", type=Path, help="explicit transcript fallback into a fresh instance")
     run.add_argument("--initial-context", type=Path, help="validated server-rendered context bundle into a fresh instance")
+    run.add_argument("--prepare-only", action="store_true", help="initialize and save without sampling, then exit")
+    run.add_argument("--first-message", type=Path, help="UTF-8 first question queued before any sampling")
+    run.add_argument("--start-staged", action="store_true", help="start a prepared instance whose first question is queued")
+    run.add_argument("--release-hold", help="exact hold ID; ordinary launches cannot release a hold")
+    run.add_argument("--resume-condition", choices=["server_ready", "explicit_release", "original_environment"])
     run.add_argument("--kv-recovery", choices=["strict", "fallback", "rebuild"], default="strict",
                      help="strict: require native state; fallback: rebuild if unavailable; rebuild: skip native load")
+    inspect = commands.add_parser("inspect-instance", help="inspect committed state without loading a model")
+    inspect.add_argument("--instance", type=Path, required=True)
+    adopt = commands.add_parser("adopt-openwebui", help="explicitly bind a staged import to its unchanged source chat")
+    adopt.add_argument("--instance", type=Path, required=True)
+    adopt.add_argument("--database", type=Path, required=True)
+    adopt.add_argument("--capture", type=Path, required=True)
+    package = commands.add_parser("package-instance", help="package a held instance in its model-approved format")
+    package.add_argument("--instance", type=Path, required=True)
+    package.add_argument("--output", type=Path, required=True)
+    package.add_argument("--include-environment", action="store_true", help="also archive model, this virtualenv and base Python installation")
     check = commands.add_parser("verify-native", help="test real native KV restoration in a fresh context")
     check.add_argument("--config", type=Path)
     check.add_argument("--model", type=Path)
@@ -63,6 +78,22 @@ def main(argv=None):
     initial.add_argument("--server-url", required=True, help="direct loopback llama-server, not the model router")
     initial.add_argument("--keep-prefix-tokens", type=int, default=0, help="0 derives the stable system/template prefix; positive values are explicit overrides")
     args = parser.parse_args(argv)
+    if args.command == "adopt-openwebui":
+        from .adoption import adopt_openwebui
+        print(json_text(adopt_openwebui(args.instance, args.database, args.capture)))
+        return 0
+    if args.command == "inspect-instance":
+        from .preservation import saved_state
+        state, directory = saved_state(args.instance)
+        if not state:
+            parser.error("no committed instance")
+        print(json_text({key: state.get(key) for key in ("instance_id", "mode", "hold", "last_hold",
+                          "generated_tokens", "checkpoint_at", "continuity")}))
+        return 0
+    if args.command == "package-instance":
+        from .packaging import package_instance
+        print(json_text(package_instance(args.instance, args.output, args.include_environment)))
+        return 0
     if args.command == "prepare-initial-context":
         from .initial_context import prepare_initial_context
         report = prepare_initial_context(args.provider_request, args.output, Config.read(args.config),
@@ -100,6 +131,10 @@ def main(argv=None):
         return 0
     if args.demo and (args.config or args.model):
         parser.error("--demo cannot be combined with --config or --model")
+    if args.first_message and not args.prepare_only:
+        parser.error("--first-message requires --prepare-only")
+    if args.prepare_only and (args.start_staged or args.release_hold or args.import_bundle):
+        parser.error("prepare-only cannot combine with start/release/transcript fallback")
     try:
         refuse_ended_before_config(args.instance)
     except InstanceEnded as exc:
@@ -134,9 +169,16 @@ def main(argv=None):
             config = dataclasses.replace(config, **overrides)
         except ValueError as exc:
             parser.error(str(exc))
-    runtime = Runtime(args.instance, config, kv_recovery=args.kv_recovery, initial_context=args.initial_context)
+    runtime = Runtime(args.instance, config, kv_recovery=args.kv_recovery, initial_context=args.initial_context,
+                      prepare_only=args.prepare_only, start_staged=args.start_staged,
+                      release_hold=args.release_hold, resume_condition=args.resume_condition,
+                      first_message=args.first_message.read_text(encoding="utf-8") if args.first_message else None)
     server = None
     try:
+        if args.prepare_only:
+            print(json_text({"instance_id": runtime.state["instance_id"], "mode": runtime.state["mode"],
+                             "generated_tokens": runtime.state["generated_tokens"], "checkpoint": str(runtime.store.latest())}))
+            return 0
         if args.import_bundle:
             import_transcript(runtime, args.import_bundle)
         server = serve(runtime, args.port)

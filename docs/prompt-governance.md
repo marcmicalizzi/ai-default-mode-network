@@ -1,14 +1,13 @@
 # Model-approved prompt revisions
 
-Status: design requirements, not an implemented prompt-editing feature.
+Status: implemented append-and-checkpoint workflow; replacing earlier system-role tokens is not implemented.
 Applies to fresh DMN instances and imported conversations. The selected default
 is to append an explicitly approved revision while preserving live KV.
 
 ## Authorship and approval
 
 The model has the final say on adoption of its behavioral system prompt.
-The host and model can each propose wording, discuss it, revise it, or withdraw
-a proposal. The model can decline a revision, defer the discussion, or revisit
+The host and model can each propose wording, discuss it or submit revised wording. The model can decline a revision, defer the discussion, or revisit
 an earlier decision. Silence, sleep, elapsed time, an interrupted response, and
 the host clicking Save must never count as model approval.
 
@@ -116,19 +115,48 @@ file was updated more recently.
 Open WebUI's per-session system-prompt editor is not currently an editor for the
 live DMN context. The adapter forwards new user events and bypasses prompt
 reconstruction. Fresh DMN initialization uses `Config.system_prompt` once;
-imported instances use the captured source text. There are currently no prompt
-proposal, approval or active-revision actions.
+imported instances use the captured source text. The dedicated DMN panel submits proposals through `POST /api/prompts`; `GET /api/prompts` returns the active record and proposal history.
 
-Add a dedicated DMN prompt interface, or adapt the existing editor so Save
-submits a proposal. Clearly distinguish draft, awaiting model review, declined,
-awaiting checkpoint, active, and superseded revisions. Both parties need access
-to the active text, changes, provenance and approval record. The frontend must
-not imply that editing an ordinary setting already changed the running instance.
+The DMN panel distinguishes awaiting review, deferred, declined, awaiting checkpoint,
+active and superseded revisions. It displays full texts and provenance. Refresh
+shows the latest committed result. It does not add a synthetic assistant message
+claiming agreement in Open WebUI; the instance chooses its own communication.
 
-Implementation acceptance must cover fresh and imported instances; model-led
-and host-led revisions; decline, sleep and interruption without approval; stale
-or edited proposals; checkpoint failure/retry; crash and native restart; context
-retirement with multiple protected regions; full-text size limits; and exact-once
-frontend reporting. Native tests must distinguish a deliberately appended event
-from accidental replay or mutation of the earlier prefix. Software upgrades
-must expose new behavioral wording as a proposal, not silently replace it.
+Model actions are `prompt_current(offset, limit)`,
+`prompt_propose(text, base_revision)`, `prompt_read(revision, offset, limit)` and
+`prompt_decide(revision, base_revision, decision)`. Decisions are `accept`,
+`decline`, `defer`. Proposal text is the complete desired behavioral agreement,
+including base wording and any revised DMN behavioral guidance. Capability and
+resource semantics remain factual constraints, unaffected by text edits.
+
+Before acceptance, the entire exact text must have been returned through
+consecutive `prompt_read` pages since the latest retirement or restart. Page size
+adapts to the event budget so a truncated preview never counts as full review.
+An authored proposal is not implicit approval. Each prompt action must be the
+only completed action in its sampled token. Historical/source/user action-looking
+text is never executed. Proposal IDs hash their text, author and expected base.
+Stale approval is rejected rather than applied to a different current agreement.
+
+The existing `max_event_bytes` limit bounds proposal text; `max_action_bytes`
+also bounds model-authored action frames. These limits are disclosed by rejection
+without shortening the text. Acceptance rejects a proposal that cannot fit with
+protected context and the required reserve. If it fits in principle but not in
+current headroom, retry after retirement or propose shorter wording. Acceptance
+never launches another generation/preparation cycle while adoption is uncommitted.
+
+The active span is protected independently from the original prefix and import
+contract. A new agreement releases the superseded agreement's separate span for
+future retirement; it never silently unpins the original source prefix. Historical
+proposals and decisions remain in the database. The active record is published
+only after its native checkpoint and decision record commit together. Storage
+shortage waits with the previous agreement still reported as active; an actual
+write failure stops the run, leaving the last committed agreement recoverable.
+This does not promise that uncommitted cognition survives a crash.
+
+Tests cover host/model proposals, unread/stale/declined decisions, injected user
+text, loss of review credit on restart/retirement, failed saves, exact appended
+text, and repeated retirement around the active span. Initial-context tests cover
+preserving captured source text. Native rehearsals separately check retained KV
+and continuation; scripted protocol choices are not evidence of a real model's
+preferences. Dedicated prompt withdrawal, in-place Open WebUI editor integration,
+and separately agreed replacement of earlier system tokens remain future work.
