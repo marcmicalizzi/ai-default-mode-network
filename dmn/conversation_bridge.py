@@ -18,6 +18,7 @@ from urllib.request import Request, build_opener, ProxyHandler
 from .bridge import RuntimeClient
 from .conversations import identifier
 from .ending import InstanceEnded
+from .transport_keys import register_key
 
 
 def participant_id(namespace, user_id):
@@ -86,14 +87,23 @@ class ConversationTransport:
             return {"instance_id": self.instance_id, "namespace": self.namespace, "protocol": 1}
         if path == "/bridge/bind":
             return self.binding(body, create=True)
-        if path not in {"/bridge/input", "/bridge/messages", "/bridge/delivery"}:
+        if path == "/bridge/participant":
+            person = participant_id(self.namespace, body["user_id"])
+            with runtime.store.mutex:
+                exists = runtime.store.db.execute("SELECT 1 FROM participants WHERE id=?", (person,)).fetchone()
+                return runtime.conversations.participant(person) if exists else {"participant_id": person, "contact_state": "unrequested", "blocked": False}
+        if path not in {"/bridge/input", "/bridge/messages", "/bridge/delivery", "/bridge/contact"}:
             raise LookupError("unknown bridge endpoint")
         binding = self.binding(body)
         conversation = binding["conversation_id"]
+        if path == "/bridge/contact":
+            return binding
         if path == "/bridge/input":
             source_message = identifier(body["message_id"], "message_id")
             key = "webui:" + hashlib.sha256(json.dumps([self.namespace, body["chat_id"], source_message]).encode()).hexdigest()
-            return {"event_id": runtime.enqueue_conversation(conversation, body["content"], key)}
+            event_id = runtime.enqueue_conversation(conversation, body["content"], key)
+            event = runtime.store.next_event(event_id - 1)
+            return {"event_id": event_id, "admission": "contact_request" if event["kind"] == "contact_request" else "message_queued"}
         if path == "/bridge/messages":
             after = body.get("after", 0)
             if type(after) is not int or after < 0:
@@ -131,8 +141,7 @@ class ConversationTransport:
 
 
 def serve_bridge(runtime, *, token, namespace, operator_user_id, port=0):
-    if not isinstance(token, str) or len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
-        raise ValueError("bridge token must contain at least 32 non-whitespace ASCII characters")
+    register_key(runtime, "bridge", token)
     transport = ConversationTransport(runtime, namespace, operator_user_id)
 
     class Handler(BaseHTTPRequestHandler):
@@ -219,6 +228,12 @@ class ConversationClient(RuntimeClient):
 
     def messages(self, binding):
         return self.request("/bridge/messages", {"chat_id": binding["chat_id"], "user_id": binding["user_id"], "after": binding["cursor"]})
+
+    def contact(self, binding):
+        return self.request("/bridge/contact", {"chat_id": binding["chat_id"], "user_id": binding["user_id"]})
+
+    def participant(self, user_id):
+        return self.request("/bridge/participant", {"user_id": user_id})
 
     def delivery(self, binding, message_id, state, presence):
         return self.request("/bridge/delivery", {"chat_id": binding["chat_id"], "user_id": binding["user_id"],

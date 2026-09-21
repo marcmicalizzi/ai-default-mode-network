@@ -1,6 +1,7 @@
 # Multi-user runtime prototype
 
-Status: runtime foundation and authenticated WebUI transport, 2026-09-21.
+Status: runtime foundation, authenticated WebUI transport, first-contact consent
+and operator reconsideration interface, 2026-09-21.
 Opt-in, fresh-instance experiments. The verification scripts and default unit
 tests load no model. The existing single-user protocol remains the default.
 
@@ -29,6 +30,9 @@ request alone does not unblock the guest and that outputs and contact state
 survive restart. Temporary instance files are removed on exit; only the optional
 JSON report remains. It opens no server, contacts no running instance, and uses
 no language model or GPU. It is transport evidence, not a cognition experiment.
+This foundation fixture explicitly disables first-contact consent so it can
+isolate scheduling. The authenticated WebUI fixture and dedicated consent tests
+use the default consent gate.
 
 ## Implemented contract
 
@@ -63,6 +67,7 @@ Available generated actions:
 | `send_message(conversation_id, content, in_reply_to?)` | Require an open registered destination; an optional reply reference must have entered this sequence in that same conversation |
 | `conversation_list(offset=0, limit=2)` | Return registered conversation IDs, at most 5 per page |
 | `conversation_read(conversation_id, offset=0, limit=80)` | Read the complete JSON identity/contact record in character pages, at most 160 characters per page |
+| `contact_decide(participant_id, expected_request_revision, decision, reason?)` | After receiving a contact request, accept, decline or defer contact; the optional reason is public to that participant |
 | `close_conversation(conversation_id)` | Stop new ordinary input/output in that conversation and suppress queued unread input |
 | `reopen_conversation(conversation_id)` | Reopen it if its participant is not blocked; suppressed input stays suppressed |
 | `block_participant(participant_id)` | Block new contact across the participant's conversations and suppress queued unread input |
@@ -74,11 +79,23 @@ record. Input accepted while a block checkpoint is being saved is suppressed by
 that publication transaction. Already committed sends remain valid delivery
 intents; closing or blocking is not recall.
 
-Reconsideration requests coalesce by participant/block revision. The request is
-a durable event and does not alter contact state. Silence, ordinary conversational
-refusal, restart or elapsed time cannot unblock anyone. A later block has a new
-revision, so an old acceptance cannot remove it. Structured refusal/deferment
-records and the operator's request UI remain future integration work.
+Fresh multi-user instances default to `require_contact_consent: true`. The first
+message from each participant, including the operator, stays outside the event
+stream until explicit acceptance. The identity-only request uses the same safe
+insertion boundaries as other ordinary events. Silence and defer retain the
+held message; decline, block or closure discard it from future delivery. Consent
+is per stable account across chats and never removes a block or reopens a chat.
+Only one first message may be held for each participant, counted against the
+global inbox bound. Acceptance and release publish in one checkpoint transaction.
+
+Reconsideration requests require reasoning (1–4,000 characters) and coalesce by
+participant/block revision. Identical retries return the same durable event;
+changed reasoning is explicitly rejected. The request does not alter contact
+state. Silence, ordinary conversational refusal, restart or elapsed time cannot
+unblock anyone. A later block has a new revision, so an old acceptance cannot
+remove it. The separate operator interface shows participants and preserved
+reasoning, even if everyone is blocked. Structured refusal/deferment records for
+unblock requests remain future work; explicit unblock actions are already audited.
 
 Output records include their conversation, participant and optional reply ID.
 `store.messages(conversation_id="guest-chat")` returns only that destination's
@@ -129,6 +146,8 @@ Mode, operator identity and limits are part of the saved configuration. Existing
 single-user instances cannot silently switch contracts on restore or through
 reconstruction. Initial-context import is rejected in experimental mode; a
 deliberate migration procedure is still needed before using an existing instance.
+Earlier multi-user prototype checkpoints without a saved consent setting are
+also rejected rather than enabling an action contract absent from their seed.
 
 ## WebUI delivery and remaining integration
 
@@ -144,11 +163,18 @@ They never claim chat visibility or reading. The bridge records at most one
 failure and one success per output, so retries cannot flood the inbox with the
 same report. These events enter the existing queue and action-boundary rules.
 
-An operator directory/reconsideration UI and explicit first-contact handling
-remain future work. The fixture creates saved chats through WebUI's API before
-submitting input; the ordinary browser's new-chat flow has not been validated
-for this adapter. Existing-instance migration and native-model trials are also
-required before inviting additional people to the live instance.
+The ordinary browser New Chat flow, first-contact status and separate operator
+directory/reconsideration form have been validated in the disposable fixture.
+See [WebUI transport notes](multi-user-webui.md) for the consent and request
+contracts. A supported multi-user launcher, existing-instance migration and
+native-model trials remain necessary before inviting people to the live instance.
+
+Fresh multi-user instructions recommend retaining stable participant and source
+provenance in memories strongly associated with people, with optional organization
+under `/relationships/<participant_id>/...`. This expresses association, not
+ownership or authority; it does not automatically create or rewrite memories.
+Existing instances keep their saved initialization text. See
+[memory guidance](memory-revisions.md#people-and-relationship-provenance).
 
 Model-chosen attention holds, inbox pause, per-participant fair scheduling,
 participant refusal of contact and existing-instance migration remain proposed.

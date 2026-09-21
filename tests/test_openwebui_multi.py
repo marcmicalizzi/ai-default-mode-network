@@ -24,6 +24,7 @@ class MultiRelayTest(unittest.IsolatedAsyncioTestCase):
         bridge.client = Mock()
         bridge.client.messages.side_effect = lambda b: [{"id": 1 if b["chat_id"] == "a" else 2, "content": b["chat_id"]}]
         bridge.presence = AsyncMock(return_value="unknown")
+        bridge.update_contact_status = AsyncMock()
         bridge.notify = AsyncMock()
         for chat in ("a", "b"):
             bridge.ledger.bind(chat, "user-" + chat, "conversation-" + chat, "person-" + chat)

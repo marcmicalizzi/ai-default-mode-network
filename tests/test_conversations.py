@@ -26,7 +26,7 @@ class ConversationTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.config = Config(backend="demo", n_ctx=32768, multi_user=True,
+        self.config = Config(backend="demo", n_ctx=32768, multi_user=True, require_contact_consent=False,
             operator_participant_id="alice", inbox_generation_tokens=4,
             clock_interval_seconds=0, checkpoint_policy="effects", checkpoint_tokens=65536,
             preparation_tokens=8)
@@ -293,7 +293,9 @@ class ConversationTest(unittest.TestCase):
         suppressed = r.enqueue_conversation("chat-b", "never delivered")
         self.commit_action(r, op="block_participant", participant_id="bob")
         first = r.request_unblock("bob", 1, "Please reconsider")
-        self.assertEqual(r.request_unblock("bob", 1, "A repeated request"), first)
+        self.assertEqual(r.request_unblock("bob", 1, "Please reconsider"), first)
+        with self.assertRaisesRegex(ValueError, "different reasoning"):
+            r.request_unblock("bob", 1, "A revised request")
         self.assertTrue(r.conversations.participant("bob")["blocked"])
         r.tick()  # Reading the request is not acceptance.
         self.assertTrue(r.conversations.participant("bob")["blocked"])

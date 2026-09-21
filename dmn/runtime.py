@@ -77,7 +77,8 @@ class Runtime:
                 raise ValueError("prepare-only requires a fresh instance")
             self.store = Store(self.root)
             self.conversations = (Conversations(self.store, config.operator_participant_id,
-                config.max_pending_messages, config.max_pending_messages_per_participant) if config.multi_user else None)
+                config.max_pending_messages, config.max_pending_messages_per_participant,
+                config.require_contact_consent) if config.multi_user else None)
         except BaseException:
             if hasattr(self, "store"):
                 self.store.close()
@@ -195,6 +196,9 @@ class Runtime:
                     protocol = protocol.replace("send_message(content): communicate to the local user, including unsolicited messages.",
                         "send_message(conversation_id, content, in_reply_to): communicate to that registered conversation.")
                     protocol += "\n" + CONVERSATION_CONTRACT
+                    if config.require_contact_consent:
+                        from .contacts import CONTRACT as CONTACT_CONTRACT
+                        protocol += "\n" + CONTACT_CONTRACT
                 self.state = {
                     "schema": 1, "instance_id": str(uuid.uuid4()), "created_at": self.now(),
                     "mode": "active", "event_cursor": 0, "generated_tokens": 0,
@@ -453,6 +457,13 @@ class Runtime:
                     reduced = {key: payload[key] for key in ("event_id", "participant_id", "conversation_id", "is_operator")}
                     reduced.update(truncated=True, content_preview=payload["content"][:chars],
                                    instruction="Use event_read for the complete event.")
+                if self.conversations and kind == "unblock_request":
+                    reduced = {key: payload[key] for key in ("event_id", "participant_id", "requested_by", "expected_block_revision")}
+                    reduced.update(truncated=True, reason_preview=payload["reason"][:chars],
+                                   instruction="Request only; no block changes. Use event_read for full reasoning.")
+                if self.conversations and kind == "contact_request":
+                    reduced = {key: payload[key] for key in ("event_id", "participant_id", "conversation_id", "is_operator", "request_revision")}
+                    reduced.update(truncated=True, instruction="New contact asks permission. Message withheld. Use event_read; choose contact_decide.")
                 if payload.get("partial_action_cancelled"):
                     reduced.update(partial_action_cancelled=True, action_effects=payload["action_effects"])
                 tokens = self.backend.tokenize(event_text(kind, reduced, self.now(), resume_cognition=marked))

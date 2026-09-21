@@ -120,6 +120,15 @@ relationship memories remain model-controlled and should retain provenance when
 the model chooses to write them. Directory labels do not generate relationship
 summaries or overwrite those memories.
 
+For memories strongly associated with people, recommend stable participant IDs
+and available conversation/event sources. Distinguish who spoke, who was being
+discussed, direct experience, inference and third-party reports. Preserve
+uncertainty and corrections rather than inventing provenance. An optional
+`/relationships/<participant_id>/...` channel can support this organization;
+cross-person memories can retain several IDs with their roles and sources.
+These associations are not ownership or authority over memory and do not create
+separate cognition. The prototype adds this guidance only to fresh initialization.
+
 Preserve the existing single-user contract for old checkpoints until deliberate
 migration. An old unaddressed output must remain associated with its original
 destination; adding a second user must never replay that backlog into the new
@@ -286,6 +295,28 @@ stable message ID before retrying. Socket notification failure does not undo the
 database commit. Delivery results return through the same durable inbox and safe
 insertion rules, with deduplication and bounded retry notifications.
 
+## Consent before a new participant's first message
+
+The first message should request contact without exposing its body to cognition.
+Hold it in bounded host storage and queue only authenticated participant identity,
+operator status and its conversation address. No preview or model-readable event
+may contain the held content. The model can accept, decline, defer or remain
+silent; no timeout, operator role or successful transport receipt implies consent.
+
+The prototype implements this gate by default for fresh multi-user instances,
+including the operator. `contact_decide` accepts a delivered request's participant
+and revision. Acceptance and release of the one held message publish atomically
+with its checkpoint. Defer retains it; decline, block or conversation closure
+discard it from future delivery. An optional model-authored reason is public to
+the participant. Later acceptance after a decline allows new messages without
+replaying discarded material. Host storage remains operator-accessible.
+
+Current consent applies to the stable account across its chats. Further input is
+rejected while the first request is pending/deferred/declined. Once accepted,
+the model can end contact through its existing close/block actions. Fresh consent
+for each additional chat and participant-side leave controls are further design
+choices; they are not provided by the initial account-level gate.
+
 ## Ending a conversation, blocking and requesting reconsideration
 
 These are capabilities of the instance, without operator approval or a required
@@ -301,8 +332,9 @@ Open WebUI account or their unrelated models.
 | Operator `request_unblock(participant_id, expected_block_revision, reason)` | Queue a request for reconsideration; does not remove the block |
 
 Conversation closure does not end the instance or its other relationships. A
-fresh chat from the same unblocked participant is a new contact request, which
-the model can accept or decline; it must not silently reopen the closed chat.
+fresh chat must not silently reopen a closed chat. Per-chat acceptance is a
+possible extension; the prototype currently grants consent per participant,
+so an accepted, unblocked participant can start a separate chat.
 Blocking covers new chats and renamed accounts with the same stable identity.
 It cannot identify the same human behind a newly created account; initial account
 admission and registration policy should reflect that limit.
@@ -336,6 +368,16 @@ same block revision. Do not automatically embed the blocked person's subsequent
 messages in the request, or make the request an unlimited way to bypass a block.
 Unblocking does not automatically reopen closed conversations or replay messages
 suppressed during the block.
+
+The prototype's separate operator page now requires reasoning of up to 4,000
+characters and preserves the original request. Its intended recovery use includes
+suspected structural errors where one conversation's statements were attributed
+to another person and everyone ended up blocked. Explain the suspected mix-up and
+evidence as claims for the instance to assess; neither the operator nor the page
+declares the decision mistaken. Identical retries reuse one event per block
+revision, while changed reasoning is rejected explicitly. Request delivery is
+shown separately from access. The channel remains usable when all chats are
+blocked, and only a model-generated unblock action restores contact.
 
 Respect participants' own decisions to leave or refuse contact too. Selecting
 DMN can request contact; it cannot oblige either party to continue. Expose closure
@@ -468,6 +510,11 @@ Required fixture checks:
 - Close, block, queued-input suppression, restart and account rename preserve the
   decision. New chats cannot bypass a block. Unblock refusal, silence and stale
   revisions leave it in force; acceptance alone does not replay suppressed input.
+- First messages remain outside cognition and `event_read` until contact is
+  accepted. Defer, decline, restart and failed checkpoint publication cannot
+  release them. The operator has no first-contact exemption.
+- Operator reasoning survives intact and is available while everyone is blocked;
+  request delivery alone does not restore contact or erase a newer block.
 - Reordered delivery and suppressed IDs cannot bypass `event_read` or other
   delivered-event checks. Ordinary users cannot reach global DMN records or controls.
 - Upgrading a single-user instance preserves its original destination and sends

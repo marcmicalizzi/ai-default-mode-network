@@ -18,7 +18,7 @@ class ConversationBridgeTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.config = Config(backend="demo", n_ctx=32768, multi_user=True,
+        self.config = Config(backend="demo", n_ctx=32768, multi_user=True, require_contact_consent=False,
                              operator_participant_id=participant_id("sandbox", "operator"), clock_interval_seconds=0)
         self.runtime = Runtime(self.root / "instance", self.config, DemoBackend(self.config, b"thinking. "))
         self.addCleanup(self.runtime.close)

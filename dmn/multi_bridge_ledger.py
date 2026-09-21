@@ -18,6 +18,7 @@ class MultiBridgeLedger:
             CREATE TABLE IF NOT EXISTS receipts (
                 chat_id TEXT NOT NULL, message_id TEXT NOT NULL, digest TEXT NOT NULL,
                 assistant_id TEXT NOT NULL, event_id INTEGER, PRIMARY KEY(chat_id,message_id));
+            CREATE TABLE IF NOT EXISTS contact_updates (chat_id TEXT PRIMARY KEY, status TEXT NOT NULL);
         ''')
         prior = self.db.execute("SELECT instance_id,namespace FROM source").fetchone()
         if prior and tuple(prior) != (instance_id, namespace):
@@ -41,7 +42,7 @@ class MultiBridgeLedger:
             prior = self.binding(chat_id)
             if prior and any(prior[k] != v for k, v in expected.items()):
                 raise ValueError("chat binding cannot change owner or destination")
-            self.db.execute("INSERT OR IGNORE INTO bindings VALUES(?,?,?,?,?,0)", tuple(expected.values()))
+            self.db.execute("INSERT OR IGNORE INTO bindings(chat_id,user_id,instance_id,conversation_id,participant_id) VALUES(?,?,?,?,?)", tuple(expected.values()))
         return self.binding(chat_id)
 
     def receipt(self, chat_id, message_id, content, assistant_id):
@@ -67,6 +68,14 @@ class MultiBridgeLedger:
 
     def placeholders(self, chat_id=None):
         return {row[0] for row in self.db.execute("SELECT assistant_id FROM receipts WHERE chat_id=? AND event_id IS NOT NULL", (chat_id,))}
+
+    def contact_status(self, chat_id):
+        row = self.db.execute("SELECT status FROM contact_updates WHERE chat_id=?", (chat_id,)).fetchone()
+        return row[0] if row else None
+
+    def save_contact_status(self, chat_id, status):
+        with self.db:
+            self.db.execute("INSERT INTO contact_updates VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET status=excluded.status", (chat_id, status))
 
     def close(self):
         self.db.close()

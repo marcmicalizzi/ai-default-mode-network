@@ -165,7 +165,7 @@ class Store:
                         db.execute("INSERT INTO message_destinations VALUES(?,?,?,?)",
                                    (message_id, effect["conversation_id"], effect["participant_id"], effect.get("in_reply_to")))
                 elif op in {"events_delivered", "close_conversation", "reopen_conversation",
-                            "block_participant", "unblock_participant"}:
+                            "block_participant", "unblock_participant", "contact_decide"}:
                     from .conversations import commit_effect
                     commit_effect(db, effect, now)
                 elif op == "memory_write":

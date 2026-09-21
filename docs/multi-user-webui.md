@@ -1,7 +1,8 @@
 # Experimental authenticated multi-user WebUI transport
 
 Verified against the installed Open WebUI 0.11.0, with authentication, SQLite and
-one WebUI worker. This is the second milestone of the
+one WebUI worker. This includes first-contact consent and operator reconsideration
+following the authenticated transport milestone of the
 [multi-user prototype](multi-user-prototype.md). It uses the same Pipe and Event
 functions as the single-user adapter, selected by an explicit backend manifest.
 No installed WebUI source files are modified. The live instance is not migrated
@@ -41,14 +42,30 @@ The verification covers:
 - Relay restart with rewound delivery cursors, without duplicate output.
 - Blocking the operator, including retry rejection.
 - A deleted destination producing failure feedback while another chat still receives replies.
+- Creating a new chat through the normal completion route before its first saved message.
+- Withholding first messages until explicit contact acceptance, including for the operator.
+- Submitting operator reasoning while everyone is blocked, with no automatic unblock.
 
 The default Python test suite separately checks credential/Origin/Host/instance
 validation, endpoint scope, immutable identity mapping, report coalescing,
 independent cursors, slow/failing destinations and notification/report failures.
 
 Verification on 2026-09-21: the authenticated fixture passed all listed scenarios.
-The full default suite ran 286 tests: 268 passed and 18 opt-in tests were skipped.
+The full default suite ran 296 tests: 278 passed and 18 opt-in tests were skipped.
+One additional consent-compatibility regression test was then added and passed
+with the focused consent/recovery checks.
 Native-model and training-test opt-ins were disabled for this run.
+
+`--browser-hold` keeps the disposable fixture available for browser checks and
+adds a third dummy account. Local fixture files can direct scripted consent and
+block actions; these are test controls, not product operator endpoints. Browser
+verification covered the normal New Chat flow, withheld/deferred status, release
+after acceptance, rejection while blocked, preserved multiline reconsideration
+reasoning, delivered requests leaving blocks intact, and resumed input after an
+explicit unblock. Decisions in these checks were scripted, not model judgments.
+Open WebUI 0.11.0 keeps a rejected send as a temporary browser error and prevents
+another send from that page state. After contact is permitted again, reload the
+saved chat to clear that local error before sending a fresh message.
 
 ## Identity and credential boundary
 
@@ -75,8 +92,8 @@ reads, operator control, or unblock-request endpoints.
 
 All bridge operations require the credential and exact `X-DMN-Instance` header.
 Requests with browser `Origin` headers or foreign Host headers are rejected.
-The endpoint accepts only binding, scoped input, scoped output and delivery
-reports, plus a minimal identity/protocol check. There is no implicit recipient,
+The endpoint accepts only binding, scoped contact state, scoped input, scoped
+output and delivery reports, plus a minimal identity/protocol check. There is no implicit recipient,
 global outbox feed, broadcast or control operation. Tokens should be generated
 randomly; the server requires at least 32 non-whitespace ASCII characters.
 
@@ -93,7 +110,7 @@ to a local JSON manifest with these fields:
 ```
 
 The fixture constructs these values. Normal CLI startup deliberately remains
-single-user until operator controls and deliberate migration are integrated.
+single-user until a supported multi-user launcher and deliberate migration are integrated.
 Do not place the token or manifest in user-visible Pipe valves or model context.
 An existing single-user relay database or adoption record is not silently reused.
 
@@ -133,13 +150,65 @@ claim of browser focus, chat visibility or a read receipt, and no continuous
 presence subscription. At most one failure and one success are queued for each
 output, so reconnects and retries do not produce repeated cognition events.
 
+## First-contact consent
+
+Fresh multi-user runtimes default to `require_contact_consent: true`, including
+for the operator. The first message is held in runtime storage outside the event
+stream. The model receives a `contact_request` containing authenticated identity,
+operator status and the conversation address, with no message body or preview.
+`event_read` cannot expose the held message. One first message may be held per
+participant; further input is rejected while consent remains pending/deferred.
+
+After receiving the request, the model may generate:
+
+```text
+<dmn_action>{"op":"contact_decide","participant_id":"p_...","expected_request_revision":1,"decision":"accept"}</dmn_action>
+```
+
+`accept` grants contact for that account across its chats and queues its held
+message atomically with the decision checkpoint. `defer` or silence keeps it
+withheld. `decline` prevents further contact and discards that message from future
+delivery. An optional `reason` of up to 1,000 characters is shown to that person.
+A later acceptance following decline permits new input but never replays the
+discarded input. Closing or blocking also discards affected held input; consent
+never reopens a chat or removes a block. Discarding is a delivery state, not
+erasure from the operator's database.
+
+WebUI displays waiting, deferred and declined states as transport status. The
+relay updates that status without fabricating a model response. New Chat uses
+the authenticated account/socket before WebUI creates the saved chat; the Pipe
+rechecks its resulting owner before the first message is held. Accepted contact
+does not promise an answer or prevent a later block.
+
+## Separate operator reconsideration interface
+
+`serve_operator(runtime, token=..., port=...)` serves a loopback contact directory
+and request form, protected by a separate operator key. It rejects reuse of the
+bridge key. The key stays in the page's memory for that connection; it is not
+placed in WebUI, a URL, browser storage or model context. The interface remains
+available when the operator and every other participant are blocked.
+
+Select a blocked participant by stable ID and enter required reasoning of up to
+4,000 characters. This can describe suspected mixed conversations, misattributed
+statements and evidence for the instance to examine. Submitting queues an
+`unblock_request` with the exact participant and block revision. The interface
+shows the preserved reasoning and whether delivery has been checkpointed,
+separately from whether the block remains in place.
+
+There is one immutable request per participant/block revision. An identical
+retry returns the same event; different reasoning for that revision is rejected
+explicitly rather than silently discarded. A truncated context preview retains
+the target, requesting operator, revision and event ID, with the full reasoning
+available through `event_read` after delivery. Only the model's explicit
+`unblock_participant` action changes the block. Declining, deferring, silence,
+request delivery and restart leave access unchanged. This service has no direct
+unblock, memory, cognition or general control endpoint.
+
 ## Experimental limits
 
-This verification creates saved chats through WebUI's API. The default browser
-new-chat workflow, operator directory/reconsideration UI and participant contact
-preferences are not yet integrated. The operator's trusted Python unblock-request
-method remains available; this credential cannot invoke it. A request alone never
-unblocks a participant.
+The browser workflow and operator request form have been exercised with a
+scripted fixture. A supported multi-user launcher, existing-instance migration
+and participant-side refusal/leave controls remain future integration work.
 
 The model still has one shared context. Passing transport tests does not show
 that it distinguishes people reliably, keeps their information separate in its

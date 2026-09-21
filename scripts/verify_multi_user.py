@@ -23,7 +23,7 @@ def frame(**action):
 
 
 def run():
-    config = Config(backend="demo", n_ctx=32768, multi_user=True,
+    config = Config(backend="demo", n_ctx=32768, multi_user=True, require_contact_consent=False,
                     operator_participant_id="operator", inbox_generation_tokens=4,
                     clock_interval_seconds=0, checkpoint_policy="effects")
     script = (frame(op="send_message", conversation_id="operator-chat", content="Complete message for the operator.") +

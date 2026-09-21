@@ -12,9 +12,12 @@ class Pipe:
         bridge = getattr(__request__.app.state, "dmn_bridge", None)
         if bridge is None or bridge.closed:
             raise ValueError("Enable the DMN relay Event function first")
-        event_id = await bridge.submit(__metadata__ or {}, __user__)
+        receipt = await bridge.submit(__metadata__ or {}, __user__)
+        event_id = receipt["event_id"] if isinstance(receipt, dict) else receipt
+        waiting = isinstance(receipt, dict) and receipt.get("admission") == "contact_request"
         if __event_emitter__:
             await __event_emitter__({"type": "status", "data": {
-                "description": "Queued for DMN. It may respond independently.", "done": True,
+                "description": ("Waiting for DMN's consent. Your first message is held outside its context." if waiting
+                                else "Queued for DMN. It may respond independently."), "done": True,
                 "dmn_event_id": event_id}})
         return ""  # Delivery status is transport UI, never fabricated model speech.

@@ -51,7 +51,7 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             return self.chat_locks.setdefault(chat_id, asyncio.Lock())
         return self.mutex
 
-    async def authenticate(self, chat_id, session_id, user_id):
+    async def authenticate(self, chat_id, session_id, user_id, allow_new=False):
         from open_webui.models.chats import Chats
         from open_webui.models.users import Users
         from open_webui.socket.main import get_user_id_from_session_pool
@@ -59,6 +59,9 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             raise ValueError("a connected socket belonging to the authenticated sender is required")
         chat = await Chats.get_chat_by_id(chat_id)
         user = await Users.get_user_by_id(user_id)
+        if chat_id is None and allow_new and user:
+            # Upstream creates the new chat and supplies its ID before the Pipe.
+            return None, user
         if not chat or not user or chat.user_id != user_id:
             raise ValueError("only the saved chat's owner can send DMN input")
         return chat, user
@@ -69,21 +72,34 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
         from open_webui.utils.access_control import check_model_access
         await check_model_access(user, await Models.get_model_by_id("dmn"))
         try:
-            chat, person = await self.authenticate(form.get("chat_id"), form.get("session_id"), user.id)
             message = form.get("user_message") or form.get("parent_message") or {}
-            validate_input({**form, "message_id": form.get("id") or "preflight", "user_message": message})
-            if not self.ledger.binding(chat.id):
-                from open_webui.models.chats import Chats
-                nodes = await Chats.get_messages_map_by_chat_id(chat.id)
-                if any(n.get("role") == "user" and n.get("id") != message["id"] for n in nodes.values()):
-                    raise ValueError("start a new saved chat; multi-user history adoption is not supported")
-            remote = await asyncio.to_thread(self.client.bind, chat.id, person.id, person.name)
-            self.validate_binding(remote, chat.id, person.id)
-            if remote["closed"] or remote["blocked"]:
-                raise ValueError("DMN has closed this conversation or blocked this participant")
-            self.ledger.bind(chat.id, person.id, remote["conversation_id"], remote["participant_id"])
+            new_chat = form.get("chat_id") is None and "parent_id" in form and form["parent_id"] is None
+            validate_input({**form, "chat_id": "new-chat-preflight" if new_chat else form.get("chat_id"),
+                            "message_id": form.get("id") or "preflight", "user_message": message})
+            chat, person = await self.authenticate(form.get("chat_id"), form.get("session_id"), user.id, allow_new=True)
+            if chat is None:
+                policy = await asyncio.to_thread(self.client.participant, person.id)
+                if policy.get("blocked") or policy.get("contact_state") in {"pending", "deferred", "declined"}:
+                    raise ValueError("DMN has not permitted a new conversation with this participant; no message was delivered")
+            else:
+                await self.bind_chat(chat, person, message)
         except (ValueError, KeyError, TypeError) as exc:
             raise HTTPException(403, str(exc)) from exc
+
+    async def bind_chat(self, chat, person, message):
+        if not self.ledger.binding(chat.id):
+            from open_webui.models.chats import Chats
+            nodes = await Chats.get_messages_map_by_chat_id(chat.id)
+            if any(n.get("role") == "user" and n.get("id") != message["id"] for n in nodes.values()):
+                raise ValueError("start a new chat; multi-user history adoption is not supported")
+        remote = await asyncio.to_thread(self.client.bind, chat.id, person.id, person.name)
+        self.validate_binding(remote, chat.id, person.id)
+        if remote["closed"] or remote["blocked"]:
+            raise ValueError("DMN has closed this conversation or blocked this participant")
+        if remote["contact_state"] == "declined":
+            raise ValueError("DMN has declined contact; your message has not been delivered")
+        self.ledger.bind(chat.id, person.id, remote["conversation_id"], remote["participant_id"])
+        return self.ledger.binding(chat.id)
 
     def validate_binding(self, remote, chat_id, user_id):
         if (remote["conversation_id"] != conversation_id(self.client.namespace, chat_id)
@@ -98,9 +114,9 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             identifier(assistant_id, "assistant_id")
             if message["id"] == assistant_id:
                 raise ValueError("user and assistant message IDs must differ")
-            chat = await Chats.get_chat_by_id(form["chat_id"])
-            history = chat.chat.get("history") or {}
-            nodes = await Chats.get_messages_map_by_chat_id(chat.id)
+            chat = await Chats.get_chat_by_id(form["chat_id"]) if form.get("chat_id") else None
+            history = (chat.chat.get("history") or {}) if chat else {}
+            nodes = await Chats.get_messages_map_by_chat_id(chat.id) if chat else {}
             existing = nodes.get(message["id"])
             if existing and (existing.get("role") != "user" or existing.get("content") != message["content"]):
                 raise ValueError("new input cannot replace an existing message")
@@ -109,7 +125,7 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
                                 or placeholder.get("meta", {}).get("dmn_delivery") or placeholder.get("parentId") != message["id"]):
                 raise ValueError("assistant placeholder cannot replace an existing message")
             used = self.ledger.db.execute("SELECT message_id FROM receipts WHERE chat_id=? AND assistant_id=?",
-                                          (chat.id, assistant_id)).fetchone()
+                                          (form.get("chat_id"), assistant_id)).fetchone()
             if used and used[0] != message["id"]:
                 raise ValueError("assistant placeholder belongs to another input")
             # Append new input to the authoritative leaf, including any spontaneous
@@ -135,14 +151,43 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             if self.closed:
                 raise ValueError("DMN relay is disabled")
             chat, person = await self.authenticate(metadata["chat_id"], metadata["session_id"], user_id)
-            binding = self.ledger.binding(chat.id)
+            binding = await self.bind_chat(chat, person, message)
             if not binding or binding["user_id"] != person.id:
                 raise ValueError("DMN chat requires authenticated completion preflight")
             self.ledger.receipt(chat.id, message["id"], message["content"], metadata["message_id"])
             # Even a known retry must obey a block or closure committed since acceptance.
             reply = await self.enqueue_bound(binding, message["id"], message["content"])
             self.ledger.accepted(message["id"], reply["event_id"], chat_id=chat.id)
-            return reply["event_id"]
+            return reply
+
+    async def update_contact_status(self, binding):
+        from open_webui.models.chats import Chats
+        contact = await asyncio.to_thread(self.client.contact, binding)
+        if not contact["contact_request_event_id"]:
+            return
+        status = json.dumps([contact["contact_state"], contact["contact_reason"]])
+        if self.ledger.contact_status(binding["chat_id"]) == status:
+            return
+        descriptions = {"pending": "Waiting for DMN's consent. Your first message is held outside its context.",
+                        "deferred": "DMN deferred contact. Your first message remains withheld.",
+                        "declined": "DMN declined contact. Your first message was not delivered.",
+                        "accepted": "DMN accepted contact. Eligible held input is now queued."}
+        description = descriptions.get(contact["contact_state"], "Contact has not been requested.")
+        if contact["contact_reason"]:
+            description += " DMN's reason: " + contact["contact_reason"]
+        chat = await Chats.get_chat_by_id(binding["chat_id"])
+        if not chat or chat.user_id != binding["user_id"]:
+            return
+        nodes = await Chats.get_messages_map_by_chat_id(chat.id)
+        for node_id in self.ledger.placeholders(chat.id):
+            node = nodes.get(node_id)
+            if not node or node.get("content") or node.get("meta", {}).get("dmn_delivery"):
+                continue
+            await Chats.upsert_message_to_chat_by_id_and_message_id(chat.id, node_id, {
+                "statusHistory": [{"action": "contact_consent", "description": description, "done": True}],
+                "meta": {**(node.get("meta") or {}), "dmn_contact_state": contact["contact_state"]}})
+            await self.notify(binding, node_id)
+        self.ledger.save_contact_status(chat.id, status)
 
     async def persist_message(self, binding, outgoing):
         if (outgoing.get("conversation_id") != binding["conversation_id"]
@@ -170,6 +215,7 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             binding = self.ledger.binding(chat_id)
             if await has_active_tasks(self.app.state.redis, chat_id):
                 return
+            await self.update_contact_status(binding)
             for message in await asyncio.to_thread(self.client.messages, binding):
                 try:
                     node_id = await self.persist_message(binding, message)

@@ -48,6 +48,7 @@ class Config:
     max_action_bytes: int = 8192
     max_event_bytes: int = 16384
     multi_user: bool = False  # Experimental; fresh instances with an explicit trusted adapter.
+    require_contact_consent: bool = True  # New participants' messages wait for a model decision.
     operator_participant_id: str = ""
     inbox_generation_tokens: int = 32
     max_pending_messages: int = 128
@@ -57,6 +58,8 @@ class Config:
     def __post_init__(self):
         if type(self.multi_user) is not bool:
             raise ValueError("multi_user must be a boolean")
+        if type(self.require_contact_consent) is not bool:
+            raise ValueError("require_contact_consent must be a boolean")
         if self.multi_user:
             from .conversations import identifier
             identifier(self.operator_participant_id, "operator_participant_id")
