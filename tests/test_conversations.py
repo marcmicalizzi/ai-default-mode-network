@@ -377,7 +377,7 @@ class ConversationTest(unittest.TestCase):
         client = RuntimeClient("http://127.0.0.1:8765", r.state["instance_id"])
         with patch.object(client, "request", return_value=r.status()), self.assertRaisesRegex(ValueError, "single-user"):
             client.status()
-        with self.assertRaisesRegex(ValueError, "trusted local fixtures"):
+        with self.assertRaisesRegex(ValueError, "dedicated authenticated conversation bridge"):
             serve(r, 0)
 
     def test_directory_pages_preserve_long_labels_and_operator_information(self):

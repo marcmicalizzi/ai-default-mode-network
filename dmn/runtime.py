@@ -1327,7 +1327,7 @@ class Runtime:
             }
             self._status["action_diagnostics"] = dict(self.state.get("action_diagnostics") or {})
             self._status["multi_user"] = {"enabled": bool(self.conversations),
-                "integration": "trusted_local_fixture_only" if self.conversations else "single_user",
+                "integration": "experimental_explicit_adapter_required" if self.conversations else "single_user",
                 "inbox_generation_tokens": self.config.inbox_generation_tokens if self.conversations else None,
                 "max_protected_action_tokens": self.config.max_protected_action_tokens if self.conversations else None}
             self._status["checkpoint"] = {**self.checkpoint_schedule.status(self.state["generated_tokens"]),

@@ -1,15 +1,17 @@
 # Multi-user runtime prototype
 
-Status: first implementation milestone, 2026-09-21. Opt-in, fresh-instance,
-trusted local Python fixtures only. No model is loaded by the verification
-script or unit tests. The existing single-user protocol remains the default.
+Status: runtime foundation and authenticated WebUI transport, 2026-09-21.
+Opt-in, fresh-instance experiments. The verification scripts and default unit
+tests load no model. The existing single-user protocol remains the default.
 
 This implements the runtime foundation of the
-[multi-user proposal](multi-user-interaction.md), not an enabled Open WebUI
-feature. The current HTTP UI and WebUI adapter refuse this experimental mode.
-The ordinary CLI also rejects it before creating an instance or loading a model.
-They must not expose a global outbox as if every message were addressed to their
-one user. Authenticated multi-user WebUI routing is the next milestone.
+[multi-user proposal](multi-user-interaction.md) and an experimental
+[authenticated Open WebUI adapter](multi-user-webui.md). The ordinary HTTP UI,
+single-user adapter and CLI still refuse multi-user mode. A dedicated backend
+endpoint scopes delivery to an immutable chat/owner binding; it has no global
+outbox, memory, cognition or operator-control endpoints. The integration is
+verified with a disposable authenticated WebUI and a scripted runtime, not a
+language model or the existing live instance.
 
 ## Run the disposable verification
 
@@ -44,8 +46,10 @@ event_id = runtime.enqueue_conversation("guest-chat", "Hello", "guest:message-1"
 runtime.request_unblock("guest", expected_block_revision=1, reason="Please reconsider")
 ```
 
-These methods are not authentication endpoints. A future adapter must establish
-the authenticated sender and immutable chat ownership before calling them. No
+These methods are not authentication endpoints. An adapter must establish
+the authenticated sender and immutable chat ownership before calling them. The
+experimental WebUI adapter checks the authenticated account, saved-chat owner
+and socket-session owner, including for admin accounts and retries. No
 participant-supplied identity field is accepted by `enqueue_conversation`:
 identity is resolved from the host-registered conversation. Registration cannot
 transfer an existing conversation to another participant or reopen a closed one.
@@ -126,13 +130,25 @@ single-user instances cannot silently switch contracts on restore or through
 reconstruction. Initial-context import is rejected in experimental mode; a
 deliberate migration procedure is still needed before using an existing instance.
 
-## Remaining integration
+## WebUI delivery and remaining integration
 
-The next milestone needs authenticated WebUI identities and scoped bridge
-credentials, multiple durable chat bindings, scoped retry/placeholder handling,
-independent destination retries, delivery feedback and presence. It also needs
-an operator directory/reconsideration UI and explicit first-contact handling.
-Only then should additional people use a real instance through WebUI.
+The dedicated WebUI adapter now provides authenticated identity mapping, a
+backend-only bridge credential, multiple durable chat bindings, chat-scoped
+retry/placeholder handling and per-destination delivery cursors. A missing chat
+does not prevent delivery to the others. Output persists atomically in WebUI's
+two chat representations; relay restart uses stable output IDs for replay.
+
+`delivery_status` events distinguish saved and failed persistence, with a
+best-effort account socket observation (`connected`, `disconnected`, `unknown`).
+They never claim chat visibility or reading. The bridge records at most one
+failure and one success per output, so retries cannot flood the inbox with the
+same report. These events enter the existing queue and action-boundary rules.
+
+An operator directory/reconsideration UI and explicit first-contact handling
+remain future work. The fixture creates saved chats through WebUI's API before
+submitting input; the ordinary browser's new-chat flow has not been validated
+for this adapter. Existing-instance migration and native-model trials are also
+required before inviting additional people to the live instance.
 
 Model-chosen attention holds, inbox pause, per-participant fair scheduling,
 participant refusal of contact and existing-instance migration remain proposed.

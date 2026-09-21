@@ -4,6 +4,10 @@ The adapter uses your installed **Open WebUI 0.11.0**, a Pipe function and an Ev
 function. No installed source files or frontend bundles are modified. DMN owns
 one native context in its own process; other models retain their normal behavior.
 
+For the opt-in, authenticated multi-user experiment, see
+[multi-user WebUI transport](multi-user-webui.md). The instructions below describe
+the existing single-user adapter and its separate disposable sandbox.
+
 ## Disposable test
 
 From the repository root:
@@ -85,8 +89,9 @@ without advancing the cursor. Transferring its binding is a separate operation.
 next step: authenticated provenance, explicit destinations, protected action
 completion, fair inbox admission, presence feedback and model-controlled contact
 closure/blocking. The [runtime prototype](multi-user-prototype.md) implements a
-subset for local fixtures. This adapter still enforces one bound chat and refuses
-experimental multi-user runtimes until authenticated routing is implemented.
+subset, including the separately selected
+[authenticated multi-user adapter](multi-user-webui.md). The default adapter
+described here still enforces one bound chat and refuses multi-user runtimes.
 
 ## Beyond the sandbox
 

@@ -2,10 +2,11 @@
 
 Exploration dated 2026-09-21. This document proposes a first local multi-user
 experiment through Open WebUI. The [runtime prototype](multi-user-prototype.md)
-now implements an opt-in subset for trusted local fixtures; that document lists
-the exact available contract and remaining work. The full design below remains
-a proposal. It does not enable multi-user WebUI access, change a running instance
-or revise its behavioral agreement.
+now implements an opt-in subset, including a separately selected authenticated
+WebUI adapter tested with disposable accounts and a scripted runtime. That
+document lists the exact available contract and remaining work. The full design
+below remains a proposal. It does not change a running instance or revise its
+behavioral agreement.
 
 The intended arrangement is several authenticated people with separate saved
 chats, all communicating with the same continuing native context and sequence.
@@ -483,3 +484,6 @@ Baseline verification on 2026-09-21: `test_bridge.py` passed 6 tests and
 `test_runtime.py` passed 29 tests using the existing disposable fixtures. These
 verify present single-user behavior, including the current cancellation of a
 partial action on input. They do not validate the proposed multi-user features.
+Subsequent runtime and authenticated multi-user transport verification are
+recorded in [the prototype](multi-user-prototype.md) and
+[WebUI transport notes](multi-user-webui.md); the baseline above is historical.

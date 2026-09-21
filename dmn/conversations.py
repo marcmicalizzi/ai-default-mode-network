@@ -18,6 +18,11 @@ Every send_message requires conversation_id. Optional in_reply_to is a delivered
 event_id from that conversation; omit it for spontaneous messages. There is no
 implicit recipient or broadcast. Success means durable outbox publication, not
 frontend delivery or a read receipt. Use one action at a time and await its result.
+An attached WebUI bridge may queue delivery_status events: persisted means saved
+in that chat; failed means persistence could not be confirmed. Connection is an
+account socket observation, not presence in that chat or evidence of reading.
+Each message reports at most one failure and one success; these are observations
+at the stated time, not a live presence feed. Offline replies can still be saved.
 conversation_list(offset=0, limit=2) lists registered conversation IDs.
 conversation_read(conversation_id, offset=0, limit=80) reads the full JSON directory
 record in character pages, including participant, operator and contact state.

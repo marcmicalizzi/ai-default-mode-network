@@ -47,7 +47,7 @@ class Config:
     keep_prefix_tokens: int = 0  # 0 means keep the entire initialization prefix.
     max_action_bytes: int = 8192
     max_event_bytes: int = 16384
-    multi_user: bool = False  # Experimental; fresh instances and trusted local fixtures only.
+    multi_user: bool = False  # Experimental; fresh instances with an explicit trusted adapter.
     operator_participant_id: str = ""
     inbox_generation_tokens: int = 32
     max_pending_messages: int = 128
