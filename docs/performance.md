@@ -208,46 +208,32 @@ The 4K transfer/retirement probe and 25K throughput comparison establish differe
 things. Neither replaces actual checkpoint verification on an opted-in resume,
 nor the hands-on fresh-instance trial before resuming valuable state.
 
-## The Gemma compact-cache obstacle
+## Experimental compact Gemma4 cache
 
-The 60K hybrid layout allocates about 26.8 GiB of Q8 KV across RAM and VRAM before
-model weights and working buffers. Only 24 of 61 layers are on the GPU. The
-original server used full model offload and the default compact sliding-window
-allocation. These have very different resource costs despite the same model,
-Q8 types and requested context capacity.
+The opt-in `experimental_compact_swa` policy now permits bounded retirement with
+compact allocation. It preserves the entire recent sliding window, validates
+all removal ranges before mutation, and pauses if protected spans leave too
+little room. It is restricted to the reviewed pinned Gemma4 implementation and
+F16/Q8 geometry, and requires flash attention and packed checkpoints.
 
-The [pinned native implementation](https://github.com/ggml-org/llama.cpp/blob/4df29be4f4c3673f428170fda944a5b19f743bb8/src/llama-kv-cache-iswa.cpp)
-requires equal global and sliding-window cache sizes before advertising context
-shifting. The upstream main source checked on 2026-09-20 retains that condition.
-Compact-cache native restore already passed earlier tests; retirement did not.
-Removing this guard alone would not establish safe retirement.
+A synthetic 31B Q4_K_M/Q8 test on the RTX 5090 measured **45.19 tokens/sec** with
+full GPU offload, 25K occupied tokens and 60K requested capacity. The previous
+full-cache hybrid configuration measured **2.24 tokens/sec**. Compact allocation
+reduces estimated KV reservation from 26.82 GiB to 2.96 GiB while preserving the
+global context capacity. These are individual runs, not a general speed guarantee.
 
-There is also a conversion problem: the [native state reader](https://github.com/ggml-org/llama.cpp/blob/4df29be4f4c3673f428170fda944a5b19f743bb8/src/llama-kv-cache.cpp)
-rejects a saved cache containing more cells than the destination allocation.
-Whether a particular full-cache snapshot exceeds compact capacity depends on
-its serialized occupied cells, not its original allocated capacity. Small
-snapshot size alone does not prove compatibility. Strict restore refuses this
-configuration change even before attempting native load, including when the
-placement opt-in is used. It must not silently reconstruct.
+Full-to-compact conversion also passed on a separate 4K-occupied synthetic
+checkpoint: every retained K/V row was byte-identical, loading reevaluated zero
+tokens, three retirements succeeded, and a fresh-process restart matched the next
+16 tokens and logits exactly. This does not guarantee identical future arithmetic
+between the old and new allocations or GPU placements.
 
-A candidate solution still needs these proofs on disposable state:
-
-1. Retirement handles the compact cache's retained sliding window, protected
-   spans, position changes and repeated turnover without reading evicted cells.
-2. Full-to-compact conversion preserves every still-applicable K/V value, global
-   cache, retained token IDs, logits, sampler RNG and runtime state, while
-   explicitly accounting for local cache entries it removes.
-3. Native restart and subsequent retirement preserve the converted state without
-   prompt replay. Compare continuation against an appropriate reference, not a
-   reconstructed prompt presented as exact restoration.
-4. The 31B/60K configuration passes a hands-on trial with uncongested VRAM and
-   its measured inference, input and snapshot costs are acceptable.
-
-No such conversion or native guard override is enabled by this performance patch.
-See [compact-cache-research.md](compact-cache-research.md) for the bounded native
-retirement investigation. Ordinary placement changes still fail strict checks
-unless explicitly opted into the byte-verifying path above; cache changes always
-remain outside that path.
+See [compact-cache evidence and limitations](compact-cache-research.md) for
+measurements, the opt-in example and reproduction. The conversion is still a
+research harness, **not an existing-instance migration command**. Ordinary
+strict restore, including the placement opt-in, continues to reject a cache
+allocation change. A lifecycle-aware migration and disposable interactive trial
+remain necessary before using this for valuable existing state.
 
 ## Shutdown latency
 

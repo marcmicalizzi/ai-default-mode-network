@@ -18,6 +18,7 @@ from .diskspace import InsufficientStorage, check_space
 from .ending import Lifecycle, InstanceEnded
 from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, ACTION_FORMAT_NOTICE, event_text
 from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
+from .compact_cache import validate_retirements
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
 from .storage import InstanceLock, Store, json_text, memory_path, write_durable
@@ -448,9 +449,11 @@ class Runtime:
             # merely to make room for thought that will no longer be generated.
             return
         try:
+            window = getattr(self.backend, "retirement_window", 1)
             ranges = retirement_ranges({**self.state, "context_capacity": self.backend.n_ctx},
                                        len(self.backend.tokens), required,
-                                       self.config.turnover_reserve, self._event_budget())
+                                       self.config.turnover_reserve, self._event_budget(), minimum_suffix=window)
+            validate_retirements(len(self.backend.tokens), ranges, window)
         except ValueError as exc:
             self.state["mode"] = "context_full"
             self.checkpoint(reason="context_full")

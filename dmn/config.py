@@ -19,6 +19,7 @@ class Config:
     type_k: str = "f16"
     type_v: str = "f16"
     swa_full: bool = True  # Preserve the pinned binding's original default.
+    experimental_compact_swa: bool = False
     pack_checkpoints: bool = False
     prompt_format: str = "model"
     jinja_thinking: bool = False
@@ -51,8 +52,12 @@ class Config:
             raise ValueError("unsupported sampler_order")
         if self.prompt_format not in {"model", "plain", "jinja"}:
             raise ValueError("prompt_format must be model, jinja or plain")
-        if any(type(value) is not bool for value in (self.swa_full, self.jinja_thinking, self.pack_checkpoints)):
-            raise ValueError("swa_full, jinja_thinking and pack_checkpoints must be booleans")
+        if any(type(value) is not bool for value in (self.swa_full, self.jinja_thinking, self.pack_checkpoints,
+                                                   self.experimental_compact_swa)):
+            raise ValueError("swa_full, jinja_thinking, pack_checkpoints and experimental_compact_swa must be booleans")
+        if self.experimental_compact_swa and (self.backend != "llama" or self.swa_full or not self.flash_attn
+                or not self.pack_checkpoints or self.type_k not in {"f16", "q8_0"} or self.type_v not in {"f16", "q8_0"}):
+            raise ValueError("experimental_compact_swa requires llama, swa_full=false, flash attention, packed checkpoints and F16/Q8 KV")
         if self.n_ctx < 2048 or not 1 <= self.n_batch <= self.n_ctx:
             raise ValueError("n_ctx must be >= 2048; n_batch must fit in n_ctx")
         if not 256 <= self.turnover_reserve <= self.n_ctx // 2:

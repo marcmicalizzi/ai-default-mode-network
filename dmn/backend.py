@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from .config import Config
+from .compact_cache import gemma4_retirement_window, validate_retirements
 from .diskspace import check_space
 from .storage import write_durable
 
@@ -118,6 +119,21 @@ class LlamaBackend:
             self.batch = api.llama_batch_init(config.n_batch, 0, 1)
             self.memory = api.llama_get_memory(self.ctx)
             self.can_shift = bool(api.llama_memory_can_shift(self.memory))
+            def metadata(key):
+                buffer = C.create_string_buffer(256)
+                size = api.llama_model_meta_val_str(self.model, key.encode(), buffer, len(buffer))
+                if size < 0:
+                    return ""
+                if size >= len(buffer):
+                    raise ValueError("unexpectedly large model metadata for compact retirement")
+                return buffer.value.decode("utf-8")
+            self.retirement_window = gemma4_retirement_window(config, metadata,
+                int(api.llama_model_n_swa(self.model)) if config.experimental_compact_swa else 0, package.__version__)
+            if config.experimental_compact_swa:
+                # The pinned composite ISWA guard rejects unequal cache sizes.
+                # Its two caches do implement shifting independently. Restrict
+                # every removal to positions older than the complete local window.
+                self.can_shift = True
             self.fingerprint["actual_n_ctx"] = self.n_ctx
             self.fingerprint["system_info"] = api.llama_print_system_info().decode("utf-8", "replace")
             template = api.llama_model_chat_template(self.model, None)
@@ -288,8 +304,7 @@ class LlamaBackend:
     def shift(self, keep, discard):
         if not self.can_shift:
             raise RuntimeError("this model's native memory cannot shift")
-        if not 0 <= keep < keep + discard < len(self.tokens):
-            raise ValueError("invalid context retirement range")
+        validate_retirements(len(self.tokens), [(keep, discard)], self.retirement_window)
         if not self.api.llama_memory_seq_rm(self.memory, 0, keep, keep + discard):
             raise RuntimeError("llama.cpp refused partial KV removal")
         self.api.llama_memory_seq_add(self.memory, 0, keep + discard, len(self.tokens), -discard)

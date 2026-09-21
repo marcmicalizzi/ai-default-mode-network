@@ -35,24 +35,29 @@ def get_proposal(store, revision):
     raise ValueError("unknown proposal revision")
 
 
-def retirement_ranges(state, length, required, reserve, notice):
+def retirement_ranges(state, length, required, reserve, notice, minimum_suffix=1):
     """Plan oldest-first removals around the prefix, import contract and agreement.
 
     Positions returned refer to the progressively shifted sequence. The last
-    token remains available for native layout materialization.
+    token remains available for native layout materialization. Compact SWA can
+    require a longer contiguous suffix so evicted local KV never becomes needed.
     """
     keep = state["keep_prefix"]
+    if type(minimum_suffix) is not int or not 1 <= minimum_suffix <= length:
+        raise ValueError("invalid minimum retained suffix")
+    eligible_end = length - minimum_suffix
     spans = sorted((dict(state[key]) for key in ("protected_protocol", "protected_agreement")
                     if state.get(key)), key=lambda span: span["start"])
     cursor, gaps = keep, []
     for span in spans:
         if not cursor <= span["start"] < span["end"] <= length:
             raise ValueError("invalid protected context spans")
-        if span["start"] > cursor:
-            gaps.append((cursor, span["start"] - cursor))
+        end = min(span["start"], eligible_end)
+        if end > cursor:
+            gaps.append((cursor, end - cursor))
         cursor = span["end"]
-    if length - 1 > cursor:
-        gaps.append((cursor, length - 1 - cursor))
+    if eligible_end > cursor:
+        gaps.append((cursor, eligible_end - cursor))
     available = sum(count for _, count in gaps)
     needed = max(1, length + required + reserve + notice + 256 - state.get("context_capacity", length))
     if not available or needed > available:

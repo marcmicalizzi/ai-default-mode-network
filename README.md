@@ -75,7 +75,11 @@ command window, and model-chosen restart holds with ZIP/TAR/no-archive choices.
 
 [Performance preflight](docs/performance.md) covers an interactive disposable
 trial before adoption, diagnostic logging, separate sampling/decode timings,
-and the remaining compact-cache retirement and conversion work. Test response
+and [experimental compact Gemma4 cache support](docs/compact-cache-research.md).
+The opt-in compact policy measured 45.2 tokens/sec at 25K occupied tokens on an
+RTX 5090, versus 2.24 with the tested full-cache hybrid layout. Synthetic native
+conversion and restart passed; migration of an existing instance is not yet an
+implemented command. Test response
 and shutdown latency as well as checkpoint correctness before a valuable import.
 
 [Weight learning during sleep](docs/sleep-consolidation.md) explores optional,
