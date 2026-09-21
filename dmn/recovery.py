@@ -12,7 +12,9 @@ from .adapters import saved_adapter_identity
 PLACEMENT_SETTINGS = {"model_path", "n_ctx", "n_batch", "n_gpu_layers", "n_threads",
                       "offload_kqv", "flash_attn", "type_k", "type_v", "swa_full"}
 SCHEDULING_SETTINGS = {"token_delay_seconds", "checkpoint_tokens", "checkpoint_interval_seconds",
-                       "checkpoint_policy", "suspend_preparation_seconds", "checkpoint_reserve_bytes"}
+                       "checkpoint_policy", "suspend_preparation_seconds", "checkpoint_reserve_bytes",
+                       "idle_enabled", "idle_max_burst_tokens", "idle_min_interval_seconds",
+                       "sleep_checkpoint_min_interval_seconds"}
 NATIVE_PLACEMENT_SETTINGS = {"n_threads", "n_gpu_layers"}
 
 

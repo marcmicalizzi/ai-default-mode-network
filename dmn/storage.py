@@ -94,6 +94,8 @@ class Store:
                 revision TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS sleep_runs (
                 id TEXT PRIMARY KEY, phase TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS activity_intents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, created REAL NOT NULL);
         ''')
         # Archive existing current values once when opening an older database.
         self.db.execute("""INSERT INTO memory_versions(path,revision,content,operation,created)
@@ -179,6 +181,24 @@ class Store:
                 else:
                     raise ValueError(f"unknown staged effect {op}")
             db.execute("INSERT INTO checkpoints(directory,created) VALUES(?,?)", (directory, now))
+            # The single inference owner captured all pending activity choices.
+            # Clear only in the same transaction that publishes their snapshot.
+            db.execute("DELETE FROM activity_intents")
+
+    def activity_intent(self):
+        with self.mutex:
+            row = self.db.execute("SELECT id,payload FROM activity_intents ORDER BY id DESC LIMIT 1").fetchone()
+            return {"revision": row["id"], **json.loads(row["payload"])} if row else None
+
+    def put_activity_intent(self, payload, now):
+        with self.transaction() as db:
+            latest = db.execute("SELECT directory FROM checkpoints ORDER BY id DESC LIMIT 1").fetchone()
+            if latest is None or payload["checkpoint"] != latest[0]:
+                raise ValueError("activity intent must refer to the current checkpoint")
+            revision = db.execute("INSERT INTO activity_intents(payload,created) VALUES(?,?)",
+                                  (json_text(payload), now)).lastrowid
+            db.execute("DELETE FROM activity_intents WHERE id<?", (revision,))
+            return revision
 
     def _archive_memory(self, db, path, content, operation, now):
         db.execute("INSERT INTO memory_versions VALUES(?,?,?,?,?)",

@@ -29,6 +29,16 @@ function bytes(n){const units=['B','KB','MB','GB','TB'];let i=0;while(n>=1000&&i
 function duration(n){return n<60?Math.floor(n)+'s':n<3600?Math.floor(n/60)+'m':(n/3600).toFixed(1)+'h'}
 function checkpointStatus(c){if(!c)return;$('unsaved').textContent=c.dirty?(c.unsaved_generated_tokens?c.unsaved_generated_tokens.toLocaleString()+' generated tokens':'Input or runtime changes'):'State checkpointed';$('unsaved-age').textContent=c.dirty?duration(c.unsaved_seconds||0)+' since first unsaved change':'';$('written').textContent=bytes(c.committed_snapshot_bytes||0);$('save-detail').textContent=c.in_progress?'Saving native state…':c.last?c.committed_count+' saves · last '+bytes(c.last.snapshot_bytes)+' in '+duration(c.last.duration_seconds):'';const limits=[];if(c.interval_seconds)limits.push(duration(c.interval_seconds));if(c.token_limit)limits.push(c.token_limit.toLocaleString()+' generated tokens');$('save-policy').textContent=(c.policy==='effects'?'Messages, memory changes and sleep':'All actions and delivered inputs')+' also checkpoint. Periodic limit: '+limits.join(' or ')+'. Write totals exclude scratch files and failed saves.'}
 const actionWarning=document.createElement('p');actionWarning.className='caption';actionWarning.setAttribute('role','status');actionWarning.hidden=true;$('composer').after(actionWarning);
+const activityMetric=document.createElement('div');activityMetric.className='metric';activityMetric.hidden=true;activityMetric.innerHTML='<span>Activity profile</span><strong id="activity-profile"></strong><div class="caption" id="activity-detail"></div>';$('mode').parentElement.after(activityMetric);
+const sleepPolicy=document.createElement('p');sleepPolicy.className='caption';sleepPolicy.id='sleep-policy';sleepPolicy.hidden=true;$('save-policy').after(sleepPolicy);
+function activityStatus(s){
+  const a=s.activity,c=s.checkpoint;activityMetric.hidden=!a?.enabled&&a?.mode!=='idle';
+  if(a){$('activity-profile').textContent=a.mode==='idle'?'Idle':'Focus';$('activity-detail').textContent=a.mode==='idle'?a.burst_tokens+' tokens per burst · '+duration(a.interval_seconds)+' quiet between bursts'+(s.mode==='active'?(a.next_in_seconds==null?' · burst available':' · next in '+duration(a.next_in_seconds)):' · '+s.mode.replaceAll('_',' ')):a.enabled?'Idle is available for the instance to choose.':'';}
+  sleepPolicy.hidden=!c?.sleep_min_interval_seconds&&!c?.activity_recovery;
+  if(c){sleepPolicy.textContent=c.sleep_min_interval_seconds?'Sleep choices are recorded immediately. Full sleep snapshots may wait '+duration(c.sleep_min_interval_seconds)+'.'+(c.sleep_save_in_seconds==null?'':' Pending save in '+duration(c.sleep_save_in_seconds)+'.'):'';
+    if(c.activity_recovery)sleepPolicy.textContent+=' The last activity recovery preserved the choice; unsaved processing may have been lost.';
+    if(c.sleep_min_interval_seconds)$('save-policy').textContent=$('save-policy').textContent.replace('Messages, memory changes and sleep','Messages and memory changes');}
+}
 function status(s){
   const diagnostic=s.action_diagnostics||{};actionWarning.hidden=!(diagnostic.rejected_actions||diagnostic.interrupted_frames);
   actionWarning.textContent='Action diagnostics since enabled: '+(diagnostic.rejected_actions||0)+' rejected actions ('+(diagnostic.rejected_message_attempts||0)+' message attempts), '+(diagnostic.interrupted_frames||0)+' interrupted frames. No private message contents are shown.';
@@ -38,7 +48,7 @@ function status(s){
   $('prompt-text').disabled=ended||s.mode==='held';$('propose-prompt').disabled=ended||s.mode==='held';
   if(s.mode==='staged')notice('Prepared without generation. Queue your first question, then start the instance.');
   if(held){notice('The instance has chosen a durable hold. Ordinary restart is blocked.');$('connection').textContent='Preserved';stream.close();}
-  checkpointStatus(s.checkpoint);const blocked=s.storage?.blocked;
+  checkpointStatus(s.checkpoint);activityStatus(s);const blocked=s.storage?.blocked;
   $('storage-warning').hidden=!blocked;$('retry_checkpoint').hidden=!blocked||ended;
   if(blocked){$('storage-warning').textContent='Inference paused. '+bytes(blocked.free_bytes)+' free; '+bytes(blocked.required_bytes)+' needed for '+blocked.purpose+' including reserve. Free space, then retry. Live state remains in memory.';$('save-detail').textContent='Waiting for storage; save has not completed.';}
   $('identity').textContent=s.instance_id;$('mode').textContent=s.mode.replaceAll('_',' ');

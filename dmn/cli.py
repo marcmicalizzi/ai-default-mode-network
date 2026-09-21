@@ -27,7 +27,13 @@ def main(argv=None):
     run.add_argument("--native-log-level", choices=["debug", "info", "warning", "error"],
                      help="native diagnostic verbosity (default: warning, or DMN_NATIVE_LOG_LEVEL); does not alter inference")
     run.add_argument("--checkpoint-policy", choices=["all_actions", "effects"],
-                     help="effects skips read-only/input saves; messages, memory changes and sleep still checkpoint")
+                     help="effects skips read-only/input saves; messages and memory changes still checkpoint")
+    run.add_argument("--idle-enabled", action=argparse.BooleanOptionalAction, default=None,
+                     help="offer model-selected idle pacing; no automatic switch into idle")
+    run.add_argument("--idle-max-burst-tokens", type=int, help="maximum ordinary generated tokens per idle burst")
+    run.add_argument("--idle-min-interval-seconds", type=float, help="minimum quiet interval after an idle burst")
+    run.add_argument("--sleep-checkpoint-min-interval-seconds", type=float,
+                     help="ordinary-sleep snapshot cooldown under effects policy; 0 preserves immediate saves")
     run.add_argument("--checkpoint-seconds", type=float, dest="checkpoint_interval_seconds",
                      help="time between completed saves when state changes; 0 disables this threshold")
     run.add_argument("--checkpoint-tokens", type=int,
@@ -181,7 +187,8 @@ def main(argv=None):
     if (args.import_bundle or args.initial_context) and args.instance.exists():
         parser.error("import requires a new instance directory")
     overrides = {key: getattr(args, key) for key in
-                 ("checkpoint_policy", "checkpoint_interval_seconds", "checkpoint_tokens", "suspend_preparation_seconds", "checkpoint_reserve_bytes")
+                 ("checkpoint_policy", "checkpoint_interval_seconds", "checkpoint_tokens", "suspend_preparation_seconds", "checkpoint_reserve_bytes",
+                  "idle_enabled", "idle_max_burst_tokens", "idle_min_interval_seconds", "sleep_checkpoint_min_interval_seconds")
                  if getattr(args, key) is not None}
     if overrides:
         try:

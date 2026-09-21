@@ -30,6 +30,11 @@ class CheckpointSchedule:
             return "time_limit"
         return None
 
+    def next_in(self):
+        if self.dirty_since is None or self.completed_at is None or not self.config.checkpoint_interval_seconds:
+            return None
+        return max(0, self.completed_at + self.config.checkpoint_interval_seconds - self.monotonic())
+
     def status(self, generated):
         now = self.monotonic()
         return {"policy": self.config.checkpoint_policy,

@@ -116,6 +116,26 @@ class SleepTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIsNone(effect)
 
+    def test_deep_sleep_full_handoff_overrides_ordinary_sleep_cooldown(self):
+        self.r.close()
+        self.config = dataclasses.replace(self.config, sleep_checkpoint_min_interval_seconds=300)
+        self.r = Runtime(self.root, self.config, self.factory(self.config), sleep_test_mode=True)
+        revision = self.compile()
+        self.review(revision)
+        self.generate({"op": "learning_execution_decide", "revision": revision, "decision": "approve"})
+        self.generate({"op": "sleep"})
+        self.assertIsNotNone(self.r.store.activity_intent())
+        self.r.enqueue("disposable fixture wake")
+        self.r.tick()
+        self.assertIsNotNone(self.r.store.activity_intent())
+        self.generate({"op": "deep_sleep", "revision": revision})
+        self.assertEqual(self.r.state["mode"], "deep_sleep")
+        self.assertEqual(self.r.state["checkpoint_reason"], "deep_sleep")
+        self.assertIsNone(self.r.store.activity_intent())
+        before = self.r.state["generated_tokens"]
+        self.assertFalse(self.r.tick())
+        self.assertEqual(self.r.state["generated_tokens"], before)
+
     def test_review_page_reserves_space_for_a_longer_delivery_timestamp(self):
         from dmn.protocol import event_text
         from dmn.sleep_plans import page

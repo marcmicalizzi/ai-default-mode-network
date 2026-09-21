@@ -42,7 +42,7 @@ def implementation_identity():
     from .backend import sha256_file
     return {name: sha256_file(Path(__file__).with_name(name)) for name in (
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
-        "runtime.py", "protocol.py", "learning.py")}
+        "runtime.py", "protocol.py", "learning.py", "activity.py", "checkpointing.py")}
 
 
 def put_recipe(store, value, now):
