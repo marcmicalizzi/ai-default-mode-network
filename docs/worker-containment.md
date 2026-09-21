@@ -84,11 +84,12 @@ retry training. Tiny-model success is not a 31B training feasibility result.
 
 ## Remaining production work
 
-The separate `run_gpu_research_worker` entrypoint now prepares the
-[tiny NF4 experiment](qlora-gpu-probe.md). It requires explicit opt-in and uses
+The separate `run_gpu_research_worker` entrypoint runs the
+[tiny NF4 experiment](qlora-gpu-probe.md) and explicit
+[31B feasibility probe](qlora-31b-probe.md). It requires explicit opt-in and uses
 the same RAM, process-tree and time containment, but exposes GPU 0 and provides
 **no total-process VRAM quota**. Environment-isolation tests launch children
-that only print strings; GPU training itself has not yet been validated. No DMN
+that only print strings; the separate tiny GPU experiment has now passed. No DMN
 recipe calls this entrypoint. The CPU worker always hides CUDA and clears the
 GPU research marker, including when inherited from the parent environment.
 

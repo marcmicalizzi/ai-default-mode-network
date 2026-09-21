@@ -117,9 +117,13 @@ and 31B training are not enabled.
 A [reusable base-provenance path](docs/base-provenance.md) now prepares and checks
 conversion/quantization evidence for a v2 CPU recipe, including text-only adapter
 targets inside the full Gemma wrapper. This remains a tiny-model integration path.
-The [separate NF4 GPU experiment](docs/qlora-gpu-probe.md) is prepared, with an
-inspection-only default; its GPU kernels still need validation after maintenance
-consent.
+The [separate NF4 GPU experiment](docs/qlora-gpu-probe.md) passed tiny-model training,
+PEFT reload, exact GGUF factor conversion and native checkpoint continuation on
+Windows/RTX 5090. It remains an explicit research tool with an inspection-only
+default, separate from the instance's learning service.
+The [pinned 31B NF4 probe](docs/qlora-31b-probe.md) also completed one rank-two
+update on 16 synthetic tokens on Windows/RTX 5090, peaking at 19.81 GiB of Torch
+allocations. Realistic training workloads and production adoption remain gated.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.
@@ -224,6 +228,13 @@ model-selected pace between focus and sleep. Idle keeps the same context and
 generates bounded bursts without checkpointing every pause. A separate opt-in
 ordinary-sleep cooldown records sleep choices immediately while coalescing full
 snapshots. Defaults retain the previous behavior; neither feature enables training.
+
+[Experimental multi-user conversations](docs/multi-user-prototype.md) add explicit
+message destinations, per-contact consent, blocking and fair inbox admission.
+The [authenticated Open WebUI integration](docs/multi-user-webui.md) isolates
+chat ownership and delivery. This is opt-in for fresh test instances; it does
+not migrate an existing single-user instance. Eligible input resumes idle
+activity without inserting itself inside an unfinished action.
 
 **Ending an instance** is a separate model choice. `end_instance` offers a
 permanent stop with an archive, or with deletion of its managed state. The model

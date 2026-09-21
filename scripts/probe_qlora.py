@@ -42,17 +42,19 @@ def inspect_fixture(folder):
         "gpu_policy": "explicit experiment only; PyTorch allocator cap is not a total process VRAM quota"}
 
 
-def execute(folder, output, torch_vram_mib):
+def execute(folder, output, torch_vram_mib, stream_source=False, vision_cpu=False):
     plan = inspect_fixture(folder)  # Refuse large/live assets before importing CUDA.
     if os.environ.get("DMN_GPU_PROBE_CONTAINED") != "1" or os.environ.get("CUDA_VISIBLE_DEVICES") != "0":
         raise ValueError("GPU execution requires the explicit contained research launcher")
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1")
+    from scripts.qlora_prepare import ALLOCATOR, configure_allocator
+    configure_allocator()
     import torch
     import bitsandbytes as bnb
-    from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
-    from transformers import BitsAndBytesConfig, Gemma4ForConditionalGeneration
+    from peft import LoraConfig, PeftModel, get_peft_model
+    from transformers import BitsAndBytesConfig, Gemma4Config, Gemma4ForConditionalGeneration
     if not torch.cuda.is_available():
         raise ValueError("CUDA training is unavailable; no fallback or partial validation")
     torch.set_num_threads(1)
@@ -65,20 +67,30 @@ def execute(folder, output, torch_vram_mib):
     torch.cuda.set_per_process_memory_fraction(budget / total, 0)
     torch.cuda.reset_peak_memory_stats(0)
     base = Path(plan["source"]) / "base"
+    device_map = {"": 0, **({"model.vision_tower": "cpu", "model.embed_vision": "cpu"} if vision_cpu else {})}
     quantization = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16,
+        llm_int8_enable_fp32_cpu_offload=vision_cpu,
         llm_int8_skip_modules=["lm_head", "model.vision_tower", "model.embed_vision", "model.audio_tower", "model.embed_audio"])
 
     def load():
+        if stream_source:
+            from scripts.safetensor_stream import state_dict
+            return Gemma4ForConditionalGeneration.from_pretrained(None, config=Gemma4Config.from_pretrained(base),
+                state_dict=state_dict(base), quantization_config=quantization, dtype=torch.bfloat16,
+                device_map=device_map, attn_implementation="eager")
         return Gemma4ForConditionalGeneration.from_pretrained(base, local_files_only=True,
-            quantization_config=quantization, dtype=torch.bfloat16, device_map={"": 0}, attn_implementation="eager")
+            quantization_config=quantization, dtype=torch.bfloat16, device_map=device_map, attn_implementation="eager")
 
     model = load()
     quantized = [name for name, module in model.named_modules() if isinstance(module, bnb.nn.Linear4bit)]
     if not quantized or any(not name.startswith("model.language_model.layers.") for name in quantized):
         raise ValueError("unexpected NF4 module set; vision/audio must remain frozen and outside quantization")
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False})
+    from scripts.qlora_prepare import prepare
+    model, staged_casts = prepare(model, large_tensor_bytes=1 if stream_source else 64 * 1024**2)
+    if vision_cpu and any(p.device.type != 'cpu' for n, p in model.named_parameters()
+                         if '.vision_tower.' in n or '.embed_vision.' in n):
+        raise ValueError('vision CPU placement was not preserved during preparation')
     model = get_peft_model(model, LoraConfig(task_type="CAUSAL_LM", r=2, lora_alpha=4,
         target_modules=plan["profile"]["target_modules"], lora_dropout=0., bias="none"))
     trainable = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
@@ -131,7 +143,7 @@ def execute(folder, output, torch_vram_mib):
     import gc
     gc.collect()
     torch.cuda.empty_cache()
-    restored = prepare_model_for_kbit_training(load(), use_gradient_checkpointing=False)
+    restored, _ = prepare(load(), large_tensor_bytes=1 if stream_source else 64 * 1024**2, gradient_checkpointing=False)
     restored = PeftModel.from_pretrained(restored, output / "adapter", local_files_only=True).eval()
     with torch.no_grad():
         reloaded = float(loss(restored))
@@ -140,6 +152,8 @@ def execute(folder, output, torch_vram_mib):
     if inspect_fixture(folder)["source_hashes"] != plan["source_hashes"]:
         raise ValueError("source fixture changed")
     write_durable(output / "result.json", {"completed": True, "synthetic_only": True, "gpu_execution": True,
+        "source_loader": "tensor_stream_v1" if stream_source else "safetensors_default",
+        "device_map": device_map, "cpu_staged_f32_casts": staged_casts,
         "plan": plan, "device": torch.cuda.get_device_name(0), "capability": list(torch.cuda.get_device_capability(0)),
         "packages": {name: importlib.metadata.version(name) for name in ("torch", "transformers", "peft", "bitsandbytes", "accelerate")},
         "quantized_modules": quantized, "trainable_parameters": parameters, "frozen_state_unchanged": True,
@@ -147,6 +161,7 @@ def execute(folder, output, torch_vram_mib):
         "loss_before": before, "loss_after": after, "loss_after_reload": reloaded, "training_seconds": elapsed,
         "torch_allocator_cap_bytes": budget, "peak_torch_allocated_bytes": torch.cuda.max_memory_allocated(0),
         "peak_torch_reserved_bytes": torch.cuda.max_memory_reserved(0), "total_process_vram_quota_enforced": False,
+        "torch_allocator_configuration": ALLOCATOR,
         "beneficial_learning_certified": False})
 
 
@@ -156,10 +171,12 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path)
     parser.add_argument("--torch-vram-mib", type=int, default=1024)
     parser.add_argument("--execute", action="store_true", help="requires contained launcher; actually uses CUDA")
+    parser.add_argument("--stream-source", action="store_true", help="test the bounded tensor-at-a-time loader")
+    parser.add_argument("--vision-cpu", action="store_true")
     args = parser.parse_args()
     if args.execute:
         if args.output is None:
             parser.error("execution requires a fresh --output directory")
-        execute(args.fixture, args.output, args.torch_vram_mib)
+        execute(args.fixture, args.output, args.torch_vram_mib, args.stream_source, args.vision_cpu)
     else:
         print(json.dumps(inspect_fixture(args.fixture), indent=2))

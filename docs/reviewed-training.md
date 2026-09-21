@@ -179,8 +179,11 @@ The v1 recipes require exact F32 base provenance. The first-adapter recipe refus
 existing adapters; the continuation recipe requires verified PEFT/GGUF lineage.
 The [v2 recipe](base-provenance.md) adds cached conversion/quantization provenance
 and explicit text targets in the full Gemma wrapper, still within the tiny CPU gate.
-The actual quantized 31B provenance, CUDA training and its resource envelope still need
-measured validation with maintenance consent.
+The separate [tiny NF4 experiment](qlora-gpu-probe.md) now validates GPU training,
+PEFT reload and exact factor transfer into native inference. The
+[31B resource experiment](qlora-31b-probe.md) probes the real pinned source with
+synthetic text. Neither enables an instance recipe: quantized 31B provenance,
+realistic workload sizing and production resource enforcement remain gates.
 
 For the production quantized-base path, a recipe needs more than matching repository
 names: pin the source weights/tokenizer, converter and quantizer implementations,

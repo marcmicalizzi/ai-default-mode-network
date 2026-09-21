@@ -1,5 +1,5 @@
 # Isolated GPU experiment only; never install in the inference environment.
-# Package availability checked 2026-09-21. GPU kernels await explicit validation.
+# Tiny NF4 GPU training/reload validated on Windows sm120, 2026-09-21.
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch==2.14.0+cu130
 transformers==5.17.0
