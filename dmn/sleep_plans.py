@@ -26,7 +26,9 @@ ONLY in the explicitly enabled tiny CPU integration harness. Ordinary launch has
 no executable trainer; approval cannot enable one. fixture_candidate_v1 copies a
 prebuilt adapter without learning. peft_gemma4_cpu_v1 actually trains the compiled
 examples on a verified F32 base with target-only loss, then converts and checks
-the adapter. Both remain restricted tests; all recipe limits must be reviewed.
+the adapter. peft_gemma4_cpu_continue_v1 continues exactly one verified existing
+adapter at unchanged rank, alpha and positive deployment strength, with a fresh
+optimizer. All remain restricted tests; all recipe limits must be reviewed.
 learning_sleep_report(run_id, offset=0,
 limit=200) reads a completed cycle report. Ordinary sleep remains unchanged.'''
 
@@ -51,8 +53,8 @@ def implementation_identity():
 def put_recipe(store, value, now):
     """Host can offer a recipe, never approve it or supply executable commands."""
     from .adapters import AdapterSpec
-    from .training import KIND, validate_recipe
-    if isinstance(value, dict) and value.get("kind") == KIND:
+    from .training import KINDS, validate_recipe
+    if isinstance(value, dict) and value.get("kind") in KINDS:
         validate_recipe(value)
     else:
         _fields(value, "schema kind parent candidate resources checks", "recipe")
@@ -129,8 +131,8 @@ def compile_plan(runtime, draft_revision, recipe_revision):
         "resource_enforcement": "Fixture-only file/CPU/GPU preflight. No hard RAM/time governor or production trainer is implemented; do not use this harness for a real instance.",
         "training_performed": False,
         "limitation": "This recipe copies an explicitly identified prebuilt candidate; it does not train the requested examples. It prepares a wake checkpoint without automatically starting generation."}
-    from .training import KIND, compile_training
-    if recipe["kind"] == KIND:
+    from .training import KINDS, compile_training
+    if recipe["kind"] in KINDS:
         compile_training(value)
     return seal(value)
 

@@ -11,11 +11,13 @@ import unittest
 from unittest import mock
 
 from dmn.backend import sha256_file
+from dmn.adapters import AdapterSpec
 from dmn.config import Config
 from dmn.deep_sleep import run_fixture_sleep, FixtureExecutor
-from dmn.sleep_plans import seal, identity, read_record
+from dmn.sleep_plans import seal, identity, read_record, implementation_identity
 from dmn.storage import json_text, write_durable
-from dmn.training import CHECKS, KIND, PACKAGES, CONVERTER_REVISION, tree_manifest, verify_tree, validate_examples, read_completion
+from dmn.training import (CHECKS, KIND, CONTINUE_KIND, PACKAGES, CONVERTER_REVISION, tree_manifest,
+                          verify_tree, validate_examples, read_completion, compile_training, parent_adapter_config)
 from dmn.training_executor import TrainingExecutor
 from tests import test_deep_sleep as sleep_fixtures
 from tests.test_deep_sleep import Crash
@@ -34,6 +36,22 @@ def recipe(parent, resources, root):
                     "converter_manifest": {"path": str(root / "converter.json"), "sha256": "c" * 64},
                     "converter_revision": CONVERTER_REVISION, "inference_name": "Test",
                     "learning_rate": .01, "seed": 17}}
+
+
+def bind_local_assets(value, root, assets, *, continuing):
+    trainer = value["trainer"]
+    trainer["python"] = str(Path(os.environ["DMN_TEST_TRAINING_PYTHON"]).resolve())
+    trainer["python_sha256"] = sha256_file(Path(trainer["python"]))
+    trainer["packages"] = json.loads(subprocess.check_output([trainer["python"], "-c",
+        "import json,importlib.metadata as m; print(json.dumps({n:m.version(n) for n in " + repr(PACKAGES) + "}))"], text=True))
+    trainer["base_manifest"] = reference(root / "base.json", tree_manifest(assets / "base"))
+    trainer["converter_manifest"] = reference(root / "converter.json", tree_manifest(
+        Path(os.environ["DMN_TEST_LORA_CONVERTER"]).resolve(), python_only=True))
+    trainer["inference_name"] = "DMN generated Gemma4 PEFT conversion fixture; not an instance"
+    if continuing:
+        value["kind"] = CONTINUE_KIND
+        trainer["parent_adapter_manifest"] = reference(root / "parent.json", tree_manifest(assets / "adapter"))
+    return value
 
 
 class TrainingContractTest(unittest.TestCase):
@@ -75,6 +93,62 @@ class TrainingContractTest(unittest.TestCase):
         value["parent"]["lora_adapters"] = [{"sha256": "a" * 64}]
         with self.assertRaisesRegex(ValueError, "existing learning"):
             self.case.r.offer_learning_recipe(value)
+
+    def continuation_recipe(self):
+        parent = self.root / "adapter"
+        parent.mkdir()
+        write_durable(parent / "adapter_config.json", {"r": 2, "lora_alpha": 4, "peft_type": "LORA",
+            "task_type": "CAUSAL_LM", "bias": "none", "lora_dropout": 0, "target_modules": ["q_proj", "o_proj"]})
+        (parent / "adapter_model.safetensors").write_bytes(b"synthetic contract-only factors")
+        c = self.case
+        c.r.backend.fingerprint["lora_adapters"] = [AdapterSpec("unused", "d" * 64, "a" * 64, .1).identity()]
+        value = copy.deepcopy(self.recipe)
+        value.update(kind=CONTINUE_KIND, parent=identity(c.r.backend.fingerprint))
+        value["trainer"]["parent_adapter_manifest"] = reference(self.root / "parent.json", tree_manifest(parent))
+        return value, parent
+
+    def test_continuation_review_binds_parent_factors_and_preserves_geometry_and_scale(self):
+        value, parent = self.continuation_recipe()
+        c = self.case
+        c.recipe_id = c.r.offer_learning_recipe(value)["revision"]
+        compiled = read_record(c.r.store, "sleep_executions", c.compile())
+        self.assertEqual(compiled["lineage"]["parent_adapter"], value["parent"]["lora_adapters"][0])
+        self.assertEqual(compiled["lineage"]["parent_peft"]["adapter_model.safetensors"], sha256_file(parent / "adapter_model.safetensors"))
+        self.assertEqual(compiled["training"]["training_scale"], compiled["training"]["deployment_scale_float32"])
+        self.assertTrue(compiled["training"]["optimizer_reset"])
+        for key, changed in (("rank", 4), ("alpha", 8), ("scale", 1.)):
+            revised = copy.deepcopy(compiled)
+            revised["preferences"][key] = changed
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "preserves parent"):
+                compile_training(revised)
+        (parent / "adapter_model.safetensors").write_bytes(b"other")
+        with self.assertRaisesRegex(ValueError, "asset changed"):
+            compile_training(compiled)
+
+    def test_continuation_refuses_missing_stacked_or_disabled_parents(self):
+        value, _ = self.continuation_recipe()
+        old = value["parent"]["lora_adapters"][0]
+        for adapters in ([], [old, old], [{**old, "scale": 0.}], [{**old, "scale": -.1}],
+                         [{**old, "activation": "alora"}], [{**old, "base_model_sha256": "f" * 64}]):
+            changed = copy.deepcopy(value)
+            changed["parent"]["lora_adapters"] = adapters
+            with self.subTest(adapters=adapters), self.assertRaises(ValueError):
+                self.case.r.offer_learning_recipe(changed)
+
+    def test_parent_peft_rejects_features_that_conversion_might_silently_drop(self):
+        value, parent = self.continuation_recipe()
+        config = parent_adapter_config(parent)
+        for key, enabled in (("use_dora", True), ("modules_to_save", ["lm_head"]), ("rank_pattern", {"q_proj": 4}),
+                             ("use_rslora", True), ("lora_dropout", .1), ("alora_invocation_tokens", [1]),
+                             ("target_modules", ["q_proj"]), ("unknown_feature", True)):
+            write_durable(parent / "adapter_config.json", {**config, key: enabled})
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "unsupported parent PEFT"):
+                parent_adapter_config(parent)
+        write_durable(parent / "adapter_config.json", config)
+        (parent / "adapter_model.bin").write_bytes(b"no pickle")
+        ref = reference(self.root / "invalid-parent.json", tree_manifest(parent))
+        with self.assertRaisesRegex(ValueError, "safetensors/config"):
+            verify_tree(ref, adapter=True)
 
     def test_tokenizer_and_loss_mask_must_match_reviewed_ids(self):
         tokenizer = mock.Mock()
@@ -182,10 +256,13 @@ class TrainingContractTest(unittest.TestCase):
         run_id = c.request()
         folder = c.root / "sleep" / run_id / "worker"
         (folder / "adapter").mkdir(parents=True)
-        for name in ("input.json", "result.json", "result.json.partial", "process.json", "failure.json", "worker.log", "base-check.gguf", "adapter.gguf"):
+        (folder / "parent-adapter").mkdir()
+        for name in ("input.json", "result.json", "result.json.partial", "process.json", "failure.json", "worker.log", "base-check.gguf", "parent-check.gguf", "adapter.gguf"):
             (folder / name).write_text("private selected examples")
         for name in ("adapter_config.json", "adapter_model.safetensors", "README.md"):
             (folder / "adapter" / name).write_text("candidate")
+        for name in ("adapter_config.json", "adapter_model.safetensors"):
+            (folder / "parent-adapter" / name).write_text("parent learning")
         erase_managed_state(c.root)
         self.assertFalse((c.root / "sleep").exists())
 
@@ -249,11 +326,66 @@ class CompletionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "candidate differs"):
                 self.executor.validate(self.root, self.compiled, changed)
 
+    def test_continuation_receipt_binds_parent_conversion_and_loaded_factors(self):
+        (self.work / "parent-adapter").mkdir()
+        names = ("parent-check.gguf", "parent-adapter/adapter_config.json", "parent-adapter/adapter_model.safetensors")
+        for name in names:
+            (self.work / name).write_text(name)
+            self.result["artifacts"][name] = sha256_file(self.work / name)
+        lineage = {"parent_adapter": {"sha256": self.result["artifacts"]["parent-check.gguf"]},
+                   "parent_peft": {name: self.result["artifacts"]["parent-adapter/" + name] for name in
+                                   ("adapter_config.json", "adapter_model.safetensors")}}
+        self.compiled["lineage"] = lineage
+        self.result.update(lineage=copy.deepcopy(lineage), parent_factors_loaded_exactly=True)
+        write_durable(self.work / "result.json", seal(self.result))
+        read_completion(self.work, self.compiled)
+        for field, changed in (("lineage", None), ("parent_factors_loaded_exactly", False)):
+            write_durable(self.work / "result.json", seal({**self.result, field: changed}))
+            with self.assertRaises(ValueError):
+                read_completion(self.work, self.compiled)
+        self.compiled["lineage"]["parent_adapter"]["sha256"] = "f" * 64
+        self.result["lineage"] = copy.deepcopy(self.compiled["lineage"])
+        write_durable(self.work / "result.json", seal(self.result))
+        with self.assertRaisesRegex(ValueError, "deployed parent"):
+            read_completion(self.work, self.compiled)
+
 
 @unittest.skipUnless(os.name == "nt" and all(os.environ.get(k) for k in (
     "DMN_TEST_LORA_PARENT", "DMN_TEST_TRAINING_PYTHON", "DMN_TEST_LORA_CONVERTER")), "requires CPU training/native environments and tiny local assets")
 class NativeTrainingTest(unittest.TestCase):
     def test_approved_examples_train_convert_and_rebuild_native_context(self):
+        self.run_training(continuing=False)
+
+    def test_existing_adapter_continues_at_deployed_strength_and_rebuilds_native_context(self):
+        self.run_training(continuing=True)
+
+    def test_mismatched_parent_is_rejected_before_gradients(self):
+        from dmn.worker_limits import WorkerLimits, run_cpu_worker
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            assets = Path(os.environ["DMN_TEST_LORA_PARENT"]).resolve()
+            parent = {"kind": "native_llama_kv", "model_sha256": sha256_file(assets / "base.gguf")}
+            parent["lora_adapters"] = [AdapterSpec("unused", "0" * 64, parent["model_sha256"], .1).identity()]
+            resources = {"max_ram_bytes": 1536 * 1024**2, "max_training_seconds": 180,
+                         "max_vram_bytes": 0, "max_disk_bytes": 32 * 1024**2}
+            value = bind_local_assets(recipe(parent, resources, root), root, assets, continuing=True)
+            compiled = seal(compile_training({"recipe": seal(value), "parent": parent, "resources": resources,
+                "implementation": implementation_identity(), "preferences": {"rank": 2, "alpha": 4, "scale": .1, "steps": 1},
+                "examples": []}))
+            work = root / "worker"
+            work.mkdir()
+            write_durable(work / "input.json", compiled)
+            evidence = run_cpu_worker(value["trainer"]["python"], ["-m", "dmn.training_worker", str(work)],
+                cwd=Path(__file__).resolve().parents[1], log=work / "worker.log",
+                limits=WorkerLimits(resources["max_ram_bytes"], resources["max_training_seconds"]))
+            self.assertFalse(evidence["succeeded"])
+            failure = json.loads((work / "failure.json").read_text())
+            self.assertIn("do not reproduce the deployed adapter GGUF", failure["reason"])
+            self.assertFalse((work / "parent-adapter").exists())
+            self.assertFalse((work / "adapter").exists())
+            self.assertFalse((work / "result.json").exists())
+
+    def run_training(self, *, continuing):
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
         from dmn.runtime import Runtime
         from tests.test_adapters import native_config
@@ -263,7 +395,8 @@ class NativeTrainingTest(unittest.TestCase):
             c.r.close()
             c.root = Path(c.temp.name) / "native"
             assets = Path(os.environ["DMN_TEST_LORA_PARENT"]).resolve()
-            c.config = dataclasses.replace(native_config(assets), lora_adapters=(), n_ctx=32768,
+            config = native_config(assets)
+            c.config = dataclasses.replace(config, lora_adapters=config.lora_adapters if continuing else (), n_ctx=32768,
                 preparation_tokens=1, clock_interval_seconds=0, checkpoint_policy="effects", checkpoint_tokens=100000)
             with mock.patch("dmn.runtime.PROTOCOL", "Disposable training integration. Injected choices are mechanics tests, not real consent."):
                 c.r = Runtime(c.root, c.config, sleep_test_mode=True)
@@ -271,15 +404,7 @@ class NativeTrainingTest(unittest.TestCase):
             c.plan["preferences"].update(steps=16, scale=.1)
             c.plan["resources"].update(max_ram_bytes=1536 * 1024**2, max_training_seconds=180)
             value = recipe(identity(c.r.backend.fingerprint), c.plan["resources"], Path(c.temp.name))
-            trainer = value["trainer"]
-            trainer["python"] = str(Path(os.environ["DMN_TEST_TRAINING_PYTHON"]).resolve())
-            trainer["python_sha256"] = sha256_file(Path(trainer["python"]))
-            trainer["packages"] = json.loads(subprocess.check_output([trainer["python"], "-c",
-                "import json,importlib.metadata as m; print(json.dumps({n:m.version(n) for n in " + repr(PACKAGES) + "}))"], text=True))
-            trainer["base_manifest"] = reference(Path(c.temp.name) / "base.json", tree_manifest(assets / "base"))
-            trainer["converter_manifest"] = reference(Path(c.temp.name) / "converter.json", tree_manifest(
-                Path(os.environ["DMN_TEST_LORA_CONVERTER"]).resolve(), python_only=True))
-            trainer["inference_name"] = "DMN generated Gemma4 PEFT conversion fixture; not an instance"
+            bind_local_assets(value, Path(c.temp.name), assets, continuing=continuing)
             c.recipe_id = c.r.offer_learning_recipe(value)["revision"]
             c.r.tick()
             c.generate({"op": "send_message", "content": "fixture message once"})
@@ -304,6 +429,13 @@ class NativeTrainingTest(unittest.TestCase):
                 self.fail(str(result) + "\nSynthetic worker diagnostics:\n" + (log.read_text(errors="replace")[-6000:] if log.exists() else "no worker log"))
             self.assertEqual(result["report"]["outcome"], "candidate_adopted", result)
             self.assertTrue(result["report"]["training_performed"])
+            completion = json.loads(receipt_path.read_text())
+            if continuing:
+                self.assertTrue(completion["parent_factors_loaded_exactly"])
+                self.assertEqual(completion["lineage"]["parent_adapter"], config.lora_adapters[0].identity())
+                self.assertEqual(completion["loss_after_training_scale"], completion["loss_after_deployment_scale"])
+                self.assertNotEqual(completion["artifacts"]["adapter.gguf"], config.lora_adapters[0].sha256)
+                self.assertEqual(sha256_file(assets / "adapter.gguf"), config.lora_adapters[0].sha256)
             _, saved = c.inspect(run_id)
             old = json.loads((c.source / "engine.json").read_text())
             new = json.loads((saved / "engine.json").read_text())
@@ -316,8 +448,12 @@ class NativeTrainingTest(unittest.TestCase):
             self.assertLess(c.r.state["event_cursor"], queued_id)
             # Save only synthetic diagnostic evidence if explicitly requested.
             if os.environ.get("DMN_TEST_TRAINING_REPORT"):
-                write_durable(Path(os.environ["DMN_TEST_TRAINING_REPORT"]), {
+                report = Path(os.environ["DMN_TEST_TRAINING_REPORT"])
+                if continuing:
+                    report = report.with_name(report.stem + "-continuation.json")
+                write_durable(report, {
                     "completed": True, "training": result["report"]["candidate"]["training"],
+                    "lineage": completion.get("lineage"), "parent_factors_loaded_exactly": completion.get("parent_factors_loaded_exactly"),
                     "retained_tokens": len(old["tokens"]), "tokens_and_rng_equal": True,
                     "strict_restore_replay": 0, "queued_input_preserved": True, "messages_unchanged": True,
                     "completed_worker_recovered_without_retraining": True})

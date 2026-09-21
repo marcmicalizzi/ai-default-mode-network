@@ -34,6 +34,8 @@ class TrainingExecutor(FixtureExecutor):
             raise ValueError("reviewed training interpreter changed")
         verify_tree(trainer["base_manifest"], base=True)
         verify_tree(trainer["converter_manifest"])
+        if compiled.get("lineage"):
+            verify_tree(trainer["parent_adapter_manifest"], adapter=True)
         # Any directory here means work may have started. Re-entry uses recover,
         # never deletes partial files or silently performs another training run.
         self.work.mkdir(exist_ok=False)
@@ -92,6 +94,7 @@ class TrainingExecutor(FixtureExecutor):
         spec = AdapterSpec(str(target), digest, compiled["parent"]["model_sha256"], compiled["preferences"]["scale"])
         return {"adapters": [dataclasses.asdict(spec)], "training_performed": True,
                 "execution": compiled["revision"], "receipt": result["revision"],
+                "lineage": result.get("lineage"),
                 "training": {key: result[key] for key in ("steps_completed", "training_seconds", "trainable_parameters",
                     "loss_before", "loss_after_training_scale", "loss_after_deployment_scale", "beneficial_learning_certified")}}
 

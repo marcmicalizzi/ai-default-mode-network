@@ -218,8 +218,8 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
         if run["phase"] == "Stopped":
             raise SleepPending("this plan chose to remain stopped after failure; ordinary launch cannot release it")
         compiled = read_record(store, "sleep_executions", run["execution"])
-        from .training import SCOPE, KIND
-        training = compiled["execution_scope"] == SCOPE and compiled["recipe"]["kind"] == KIND
+        from .training import SCOPE, KINDS
+        training = compiled["execution_scope"] == SCOPE and compiled["recipe"]["kind"] in KINDS
         if compiled["execution_scope"] != "disposable_mechanics_fixture_only" and not training:
             raise ValueError("no production trainer or resource enforcement is implemented")
         if compiled["implementation"] != implementation_identity():

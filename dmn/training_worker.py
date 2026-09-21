@@ -10,6 +10,7 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ import time
 from .backend import sha256_file
 from .sleep_plans import seal, implementation_identity
 from .storage import json_text, write_durable
-from .training import CHECKS, PACKAGES, SCOPE, validate_recipe, validate_examples, verify_tree
+from .training import CHECKS, PACKAGES, SCOPE, validate_recipe, validate_examples, verify_tree, parent_adapter_config
 
 
 def train(folder):
@@ -53,9 +54,31 @@ def train(folder):
     if sha256_file(folder / "base-check.gguf") != compiled["parent"]["model_sha256"]:
         raise ValueError("HF training base does not reproduce the exact inference GGUF")
 
+    lineage = compiled.get("lineage")
+    if lineage:
+        parent_path = verify_tree(trainer["parent_adapter_manifest"], adapter=True)
+        config = parent_adapter_config(parent_path)
+        if (config["r"] != prefs["rank"] or config["lora_alpha"] != prefs["alpha"] or
+                lineage["parent_adapter"] != compiled["parent"]["lora_adapters"][0]):
+            raise ValueError("parent adapter geometry or identity changed")
+        # Convert the bound original directory, including its model-card metadata.
+        # Keep an exact factor/config copy for audit and crash recovery. The worker
+        # never rewrites the running/source adapter or updates it in place.
+        convert("convert_lora_to_gguf.py", ["--base", str(base_path), "--outfile", str(folder / "parent-check.gguf"),
+                                         str(parent_path)])
+        if sha256_file(folder / "parent-check.gguf") != lineage["parent_adapter"]["sha256"]:
+            raise ValueError("parent PEFT files do not reproduce the deployed adapter GGUF")
+        snapshot = folder / "parent-adapter"
+        snapshot.mkdir()
+        for name, digest in lineage["parent_peft"].items():
+            shutil.copyfile(parent_path / name, snapshot / name)
+            if sha256_file(snapshot / name) != digest:
+                raise ValueError("parent PEFT files changed during copy")
+        verify_tree(trainer["parent_adapter_manifest"], adapter=True)
+
     import numpy as np
     import torch
-    from peft import LoraConfig, PeftModel, get_peft_model
+    from peft import LoraConfig, PeftModel, get_peft_model, get_peft_model_state_dict
     from transformers import Gemma4ForCausalLM, PreTrainedTokenizerFast
     from safetensors.numpy import load_file
 
@@ -74,12 +97,28 @@ def train(folder):
         return hashlib.sha256(tensor.detach().contiguous().numpy().tobytes()).hexdigest()
 
     frozen = [(p, tensor_hash(p)) for p in base.parameters()]
-    model = get_peft_model(base, LoraConfig(task_type="CAUSAL_LM", r=prefs["rank"], lora_alpha=int(prefs["alpha"]),
-        target_modules=["q_proj", "o_proj"], lora_dropout=0., bias="none", init_lora_weights=True))
+    if lineage:
+        model = PeftModel.from_pretrained(base, snapshot, is_trainable=True, local_files_only=True)
+        original = load_file(snapshot / "adapter_model.safetensors")
+        loaded = get_peft_model_state_dict(model)
+        if original.keys() != loaded.keys():
+            raise ValueError("loaded parent PEFT tensor set differs")
+        for name, tensor in loaded.items():
+            np.testing.assert_array_equal(tensor.detach().numpy(), original[name])
+    else:
+        model = get_peft_model(base, LoraConfig(task_type="CAUSAL_LM", r=prefs["rank"], lora_alpha=int(prefs["alpha"]),
+            target_modules=["q_proj", "o_proj"], lora_dropout=0., bias="none", init_lora_weights=True))
     params = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
     if len(params) != base.config.num_hidden_layers * 4 or any("lora_" not in name for name, _ in params):
         raise ValueError("unexpected trainable tensor set")
     examples = compiled["examples"]
+
+    def set_scale(network, scale):
+        for module in network.modules():
+            if hasattr(module, "set_scale"):
+                module.set_scale("default", scale)
+
+    set_scale(model, compiled["training"]["training_scale"])
 
     def loss_for(row, network=model):
         tokens = torch.tensor([row["tokens"]], dtype=torch.long)
@@ -117,11 +156,10 @@ def train(folder):
     model.save_pretrained(folder / "adapter", safe_serialization=True, save_embedding_layers=False)
     reloaded = PeftModel.from_pretrained(Gemma4ForCausalLM.from_pretrained(base_path, local_files_only=True,
         attn_implementation="eager"), folder / "adapter").eval()
+    set_scale(reloaded, compiled["training"]["training_scale"])
     if evaluate(reloaded) != learned:
         raise ValueError("PEFT save/reload changed selected-example losses")
-    for module in model.modules():
-        if hasattr(module, "set_scale"):
-            module.set_scale("default", compiled["training"]["deployment_scale_float32"])
+    set_scale(model, compiled["training"]["deployment_scale_float32"])
     deployed = evaluate()
     convert("convert_lora_to_gguf.py", ["--base", str(base_path), "--outfile", str(folder / "adapter.gguf"),
                                      str(folder / "adapter")])
@@ -145,17 +183,23 @@ def train(folder):
         raise ValueError("converted alpha differs")
     verify_tree(trainer["base_manifest"], base=True)
     verify_tree(trainer["converter_manifest"])
+    if lineage:
+        verify_tree(trainer["parent_adapter_manifest"], adapter=True)
     # Final, hash-bound completion is written only after every check. A supervisor
     # interrupted before recording Candidate can recover this without retraining.
     artifacts = {name: sha256_file(folder / name) for name in (
         "base-check.gguf", "adapter.gguf", "adapter/adapter_config.json", "adapter/adapter_model.safetensors")}
+    if lineage:
+        artifacts.update({name: sha256_file(folder / name) for name in (
+            "parent-check.gguf", "parent-adapter/adapter_config.json", "parent-adapter/adapter_model.safetensors")})
     result = seal({"schema": 1, "execution": compiled["revision"], "completed": True,
         "training_performed": True, "steps_completed": prefs["steps"], "training_seconds": seconds,
         "examples_sha256": hashlib.sha256(json_text(examples).encode()).hexdigest(),
         "trainable_parameters": sum(p.numel() for _, p in params), "artifacts": artifacts,
         "checks": {key: True for key in CHECKS if key != "retained_tokens_and_rng"},
         "loss_before": before, "loss_after_training_scale": learned, "loss_after_deployment_scale": deployed,
-        "beneficial_learning_certified": False, "optimizer_reset": True})
+        "beneficial_learning_certified": False, "optimizer_reset": True, "lineage": lineage,
+        "parent_factors_loaded_exactly": True if lineage else None})
     for name in artifacts:
         with (folder / name).open("r+b") as stream:
             os.fsync(stream.fileno())

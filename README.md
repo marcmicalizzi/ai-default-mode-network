@@ -110,8 +110,10 @@ limit, with timeout/cancellation and process-tree cleanup. It is an offline
 research harness; Linux containment and disk quotas remain outstanding.
 A [reviewed-plan CPU trainer](docs/reviewed-training.md) now connects exact approved
 examples/masks to real PEFT training, conversion, candidate recovery and native
-wake. Its first-adapter/F32 recipe remains restricted to tiny integration tests;
-production and 31B training are not enabled.
+wake. A continuation recipe verifies the previous PEFT/GGUF lineage and trains
+the existing factors at their current deployment strength, preserving rank and
+alpha. Both F32 recipes remain restricted to tiny integration tests; production
+and 31B training are not enabled.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

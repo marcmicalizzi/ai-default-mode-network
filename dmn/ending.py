@@ -183,8 +183,9 @@ def erase_managed_state(root):
             if re.fullmatch(r"[0-9a-f]{32}", entry.name):
                 remove_directory(entry, sleep, {"candidate.json", "candidate.json.partial"}, {
                     "worker": ({"input.json", "result.json", "result.json.partial", "process.json", "failure.json",
-                                "worker.log", "base-check.gguf", "adapter.gguf"}, {
-                        "adapter": ({"adapter_config.json", "adapter_model.safetensors", "README.md"}, {})})})
+                                "worker.log", "base-check.gguf", "parent-check.gguf", "adapter.gguf"}, {
+                        "adapter": ({"adapter_config.json", "adapter_model.safetensors", "README.md"}, {}),
+                        "parent-adapter": ({"adapter_config.json", "adapter_model.safetensors"}, {})})})
             else:
                 failures.append(str(entry.relative_to(root)))
         sleep.rmdir()

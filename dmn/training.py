@@ -14,6 +14,8 @@ from .learning import _fields
 from .storage import json_text
 
 KIND = "peft_gemma4_cpu_v1"
+CONTINUE_KIND = "peft_gemma4_cpu_continue_v1"
+KINDS = {KIND, CONTINUE_KIND}
 SCOPE = "reviewed_cpu_training_test_only"
 CHECKS = ["artifact_integrity", "retained_tokens_and_rng", "tokenizer_parity",
           "base_unchanged", "adapter_roundtrip", "finite_training"]
@@ -41,14 +43,21 @@ def tree_manifest(root, *, python_only=False):
     return {"root": str(root), "files": files, "python_only": python_only}
 
 
-def verify_tree(reference, *, base=False):
+def verify_tree(reference, *, base=False, adapter=False):
     value = read_bound_json(reference)
     _fields(value, "root files python_only", "file manifest")
     root = Path(value["root"])
     if not root.is_absolute() or not isinstance(value["files"], dict) or not value["files"]:
         raise ValueError("manifest requires an absolute root and explicit files")
-    if value["python_only"] is not (not base):
+    if base and adapter:
+        raise ValueError("ambiguous manifest scope")
+    python_only = not (base or adapter)
+    if value["python_only"] is not python_only:
         raise ValueError("unexpected manifest scope")
+    if adapter and (not {"adapter_config.json", "adapter_model.safetensors"} <= value["files"].keys() or
+                    value["files"].keys() - {"adapter_config.json", "adapter_model.safetensors", "README.md"} or
+                    sum(item["bytes"] for item in value["files"].values()) > 4 * 1024**2):
+        raise ValueError("parent adapter requires only tiny local PEFT safetensors/config assets")
     for name, expected in value["files"].items():
         parts = PurePosixPath(name).parts
         if not parts or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) or part in {".", ".."} for part in parts):
@@ -60,7 +69,7 @@ def verify_tree(reference, *, base=False):
             cursor = child
         if not cursor.is_file() or cursor.stat().st_size != expected["bytes"] or sha256_file(cursor) != expected["sha256"]:
             raise ValueError("bound training asset changed")
-    actual = tree_manifest(root, python_only=not base)
+    actual = tree_manifest(root, python_only=python_only)
     if actual != value:
         raise ValueError("training asset set changed")
     if base:
@@ -68,21 +77,36 @@ def verify_tree(reference, *, base=False):
             raise ValueError("base requires explicit config and fast tokenizer files")
         if any("/" in name or not name.endswith((".json", ".safetensors")) for name in value["files"]):
             raise ValueError("base permits only flat JSON and safetensors assets; no executable or pickle weights")
-    elif not {"convert_hf_to_gguf.py", "convert_lora_to_gguf.py"} <= value["files"].keys():
+    elif not adapter and not {"convert_hf_to_gguf.py", "convert_lora_to_gguf.py"} <= value["files"].keys():
         raise ValueError("pinned converter entrypoints are missing")
     return root
 
 
 def validate_recipe(value):
     _fields(value, "schema kind parent resources checks trainer", "CPU recipe")
-    if value["schema"] != 1 or value["kind"] != KIND or value["checks"] != CHECKS:
+    if value["schema"] != 1 or value["kind"] not in KINDS or value["checks"] != CHECKS:
         raise ValueError("unsupported CPU recipe or checks")
-    if (value["parent"].get("kind") != "native_llama_kv" or value["parent"].get("lora_adapters") or
-            value["parent"].get("research_lora")):
+    parent = value["parent"]
+    continuing = value["kind"] == CONTINUE_KIND
+    if parent.get("kind") != "native_llama_kv" or parent.get("research_lora"):
+        raise ValueError("CPU recipe requires a native parent without research weight overrides")
+    if not continuing and parent.get("lora_adapters"):
         raise ValueError("this first-adapter recipe requires an unadapted native parent; existing learning cannot be discarded")
+    if continuing:
+        from .adapters import AdapterSpec
+        adapters = parent.get("lora_adapters")
+        if not isinstance(adapters, list) or len(adapters) != 1:
+            raise ValueError("continuation requires exactly one active adapter; no stacking or merging")
+        old = adapters[0]
+        _fields(old, "sha256 base_model_sha256 scale activation", "parent adapter")
+        expected = AdapterSpec("identity-only", old["sha256"], old["base_model_sha256"], old["scale"]).identity()
+        if old != expected or old["base_model_sha256"] != parent["model_sha256"] or old["scale"] <= 0:
+            raise ValueError("continuation requires a positive whole-context parent strength and matching base")
     trainer = value["trainer"]
-    _fields(trainer, "python python_sha256 packages base_manifest converter_manifest converter_revision inference_name learning_rate seed", "trainer")
-    for reference in (trainer["base_manifest"], trainer["converter_manifest"]):
+    fields = "python python_sha256 packages base_manifest converter_manifest converter_revision inference_name learning_rate seed"
+    _fields(trainer, fields + (" parent_adapter_manifest" if continuing else ""), "trainer")
+    for key in ("base_manifest", "converter_manifest", *(("parent_adapter_manifest",) if continuing else ())):
+        reference = trainer[key]
         _fields(reference, "path sha256", "manifest reference")
         if not Path(reference["path"]).is_absolute() or not re.fullmatch(r"[0-9a-f]{64}", reference["sha256"]):
             raise ValueError("invalid manifest binding")
@@ -103,6 +127,29 @@ def validate_recipe(value):
         raise ValueError("CPU recipe requires a zero GPU budget")
 
 
+def parent_adapter_config(path):
+    """Narrow pinned PEFT contract; reject features the converter may ignore."""
+    config = json.loads((path / "adapter_config.json").read_text())
+    required = {"peft_type": "LORA", "task_type": "CAUSAL_LM", "bias": "none", "lora_dropout": 0}
+    neutral = dict.fromkeys(("alora_invocation_tokens", "arrow_config", "auto_mapping", "corda_config",
+        "eva_config", "exclude_modules", "kasa_config", "layer_replication", "layers_pattern", "layers_to_transform",
+        "lora_ga_config", "megatron_config", "modules_to_save", "monteclora_config", "revision", "target_parameters",
+        "trainable_token_indices", "use_bdlora", "velora_config"))
+    neutral.update(alpha_pattern={}, rank_pattern={}, loftq_config={}, ensure_weight_tying=False,
+        fan_in_fan_out=False, lora_bias=False, use_dora=False, use_qalora=False, use_rslora=False,
+        init_lora_weights=True, megatron_core="megatron.core", qalora_group_size=16)
+    metadata = {"base_model_name_or_path", "inference_mode", "peft_version"}
+    if (not isinstance(config, dict) or config.keys() - (required.keys() | neutral.keys() | metadata | {"r", "lora_alpha", "target_modules"}) or
+            any(config.get(k) != v for k, v in required.items()) or
+            any(config[k] != v for k, v in neutral.items() if k in config) or
+            sorted(config.get("target_modules", [])) != ["o_proj", "q_proj"] or
+            type(config.get("r")) is not int or not 1 <= config["r"] <= 64 or
+            type(config.get("lora_alpha")) not in (int, float) or not 1 <= config["lora_alpha"] <= 1024 or
+            int(config["lora_alpha"]) != config["lora_alpha"]):
+        raise ValueError("unsupported parent PEFT configuration; only plain fixed-rank q_proj/o_proj LoRA is validated")
+    return config
+
+
 def compile_training(value):
     """Add executable semantics before the immutable plan is sealed/reviewed."""
     prefs = value["preferences"]
@@ -116,15 +163,30 @@ def compile_training(value):
         raise ValueError("deployment strength is not representable")
     from .worker_limits import WorkerLimits
     WorkerLimits(value["resources"]["max_ram_bytes"], value["resources"]["max_training_seconds"])
+    continuing = value["recipe"]["kind"] == CONTINUE_KIND
+    training_scale = 1.
+    lineage = None
+    if continuing:
+        reference = value["recipe"]["trainer"]["parent_adapter_manifest"]
+        path = verify_tree(reference, adapter=True)
+        config = parent_adapter_config(path)
+        old = value["parent"]["lora_adapters"][0]
+        if (prefs["rank"] != config["r"] or prefs["alpha"] != config["lora_alpha"] or scale != old["scale"]):
+            raise ValueError("continuation preserves parent rank, alpha and deployment strength; implicit changes are refused")
+        training_scale = old["scale"]
+        lineage = {"parent_adapter": old, "parent_peft": {name: sha256_file(path / name) for name in
+            ("adapter_config.json", "adapter_model.safetensors")}, "rank": config["r"], "alpha": config["lora_alpha"]}
     value.update(execution_scope=SCOPE, training_requested=True,
-        adapter_operation="first_adapter_only; existing adapters rejected",
+        adapter_operation=("continue_single_adapter; preserve factors/rank/alpha/strength; replace parent, never stack"
+                           if continuing else "first_adapter_only; existing adapters rejected"),
+        lineage=lineage,
         resource_enforcement="Windows aggregate committed-memory limit and process-tree watchdog. Disk preflight only. Tiny CPU integration gate remains mandatory; no production execution.",
-        limitation="F32 base must reproduce the exact inference GGUF. No existing adapters, GPU, quantized-base provenance, hard disk quota or unattended service yet.",
+        limitation="F32 base must reproduce the exact inference GGUF. No GPU, quantized-base provenance, hard disk quota or unattended service yet.",
         training={"dtype": "float32", "device": "cpu", "threads": 1, "batch_size": 1,
                   "example_order": "round_robin_in_reviewed_order", "target_modules": ["q_proj", "o_proj"],
                   "optimizer": "AdamW", "optimizer_reset": True, "betas": [.9, .999], "epsilon": 1e-8,
                   "weight_decay": 0., "max_gradient_norm": 1., "dropout": 0.,
-                  "training_scale": 1., "deployment_scale_float32": scale,
+                  "training_scale": training_scale, "deployment_scale_float32": scale,
                   "loss": "mean_cross_entropy_on_shifted_target_labels_only; no padding/truncation",
                   "evaluation": "selected-example loss at training and deployment scale; no heldout or benefit guarantee"})
     return value
@@ -154,6 +216,9 @@ def read_completion(folder, compiled):
             result.get("execution") != compiled["revision"] or result.get("completed") is not True):
         raise ValueError("training completion identity failed")
     required = {"adapter.gguf", "adapter/adapter_config.json", "adapter/adapter_model.safetensors", "base-check.gguf"}
+    lineage = compiled.get("lineage")
+    if lineage:
+        required |= {"parent-check.gguf", "parent-adapter/adapter_config.json", "parent-adapter/adapter_model.safetensors"}
     if set(result["artifacts"]) != required:
         raise ValueError("training completion has unexpected artifacts")
     for name, digest in result["artifacts"].items():
@@ -166,6 +231,12 @@ def read_completion(folder, compiled):
             raise ValueError("completed training artifact changed")
     if result["artifacts"]["base-check.gguf"] != compiled["parent"]["model_sha256"]:
         raise ValueError("training base does not reproduce inference identity")
+    if result.get("lineage") != lineage:
+        raise ValueError("training completion lineage differs from the reviewed parent")
+    if lineage and (result["artifacts"]["parent-check.gguf"] != lineage["parent_adapter"]["sha256"] or
+                    any(result["artifacts"]["parent-adapter/" + name] != digest for name, digest in lineage["parent_peft"].items()) or
+                    result.get("parent_factors_loaded_exactly") is not True):
+        raise ValueError("continuation does not reproduce the deployed parent adapter and PEFT factors")
     if (result.get("checks") != {key: True for key in CHECKS if key != "retained_tokens_and_rng"} or
             result.get("steps_completed") != compiled["preferences"]["steps"] or
             result.get("examples_sha256") != hashlib.sha256(json_text(compiled["examples"]).encode()).hexdigest()):
