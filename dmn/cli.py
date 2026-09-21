@@ -49,6 +49,12 @@ def main(argv=None):
                      help="strict native restore with changed n_threads/n_gpu_layers; requires byte-identical state verification")
     inspect = commands.add_parser("inspect-instance", help="inspect committed state without loading a model")
     inspect.add_argument("--instance", type=Path, required=True)
+    compact = commands.add_parser("migrate-cache", help="offline native full-to-compact conversion; preserve source backup and never start inference")
+    compact.add_argument("--instance", type=Path, required=True)
+    compact.add_argument("--backup", type=Path, required=True, help="new separate recovery directory; original model/native installations remain in place")
+    compact.add_argument("--config", type=Path, help="optional target config; otherwise preserve saved settings and enable compact cache")
+    compact.add_argument("--gpu-layers", type=int, help="optional target offload count; -1 requests full GPU offload")
+    compact.add_argument("--threads", type=int, help="optional target CPU thread count")
     adopt = commands.add_parser("adopt-openwebui", help="explicitly bind a staged import to its unchanged source chat")
     adopt.add_argument("--instance", type=Path, required=True)
     adopt.add_argument("--database", type=Path, required=True)
@@ -85,6 +91,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "run" and args.native_log_level:
         os.environ["DMN_NATIVE_LOG_LEVEL"] = args.native_log_level
+    if args.command == "migrate-cache":
+        from .cache_migration import migrate_cache
+        result = migrate_cache(args.instance, Config.read(args.config) if args.config else None, args.backup,
+                               gpu_layers=args.gpu_layers, threads=args.threads)
+        print(json_text(result))
+        return 0
     if args.command == "adopt-openwebui":
         from .adoption import adopt_openwebui
         print(json_text(adopt_openwebui(args.instance, args.database, args.capture)))
@@ -95,7 +107,7 @@ def main(argv=None):
         if not state:
             parser.error("no committed instance")
         print(json_text({key: state.get(key) for key in ("instance_id", "mode", "hold", "last_hold",
-                          "generated_tokens", "checkpoint_at", "continuity")}))
+                          "generated_tokens", "checkpoint_at", "continuity", "cache_migration")}))
         return 0
     if args.command == "package-instance":
         from .packaging import package_instance

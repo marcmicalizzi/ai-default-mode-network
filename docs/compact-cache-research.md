@@ -1,10 +1,10 @@
 # Experimental compact Gemma4 cache
 
 Compact sliding-window retirement is available behind `experimental_compact_swa`,
-disabled by default. Full-to-compact conversion has passed synthetic native tests,
-but remains a research harness: there is **no instance migration command** and
-ordinary recovery rejects changing cache allocation. No valuable instance was
-used in this investigation.
+disabled by default. Full-to-compact conversion has passed synthetic native tests
+and is available through the separate offline `migrate-cache` command. Ordinary
+recovery still rejects changing cache allocation. Validation used disposable
+instances and synthetic state; it did not use private cognition as test input.
 
 ## Why it matters
 
@@ -144,13 +144,70 @@ runtime/reference tests, set `DMN_TEST_SWA_MODEL` to the generated tiny fixture
 and run `python -m unittest tests.test_compact_native -v`. Raw local reports,
 checkpoints, model paths and configurations are excluded from Git.
 
-## Before converting an existing instance
+## Pressure and interface trials
 
-A supported migration still needs a lifecycle-aware command that preserves the
-source checkpoint and environment, checks model/build identity and all snapshot
-hashes, preserves runtime/database state and holds, records the conversion, and
-verifies target native bytes without starting inference. The research codec
-alone does not provide those protections and must not be used to edit a live
-instance. A disposable hands-on UI/maintenance trial and a longer pressure soak
-remain necessary before valuable-instance adoption. No existing checkpoint or
-launch configuration was converted as part of this work.
+The full 31B compact backend completed twelve retirement/refill cycles near
+55,000 occupied tokens in 663 seconds. It retired 267,135 tokens cumulatively,
+preserved protected spans and the recent local window, and measured
+37.01–38.21 tokens/sec in its decode segments. Saves and byte-verified reloads
+passed on cycles 4, 8 and 12. A fresh-process final restore loaded 55,040 tokens
+without decoding or replay, then matched sixteen sampled tokens and all logits
+exactly (maximum difference 0.0). This is not a multi-day reliability test.
+
+`scripts/soak_compact_cache.py --config FULL_COMPACT_CONFIG --output NEW_DIRECTORY
+--tokens 55000 --cycles 12 --seconds 1800` reproduces that workload with an empty
+system prompt. It uses only new synthetic state and the production retirement
+planner. The same runtime-port guard as the research probe applies.
+
+A separate disposable 31B instance passed DMN browser message delivery, paragraph
+preservation and model-accepted shutdown with no rejected actions. The requested
+reply arrived in about six seconds; the final checkpoint saved in about three
+seconds. Startup took about 2m40s. This tested the DMN page, not the Open WebUI page.
+
+## Offline instance migration
+
+Stop the instance through its agreed maintenance path first. For the tested
+5090 configuration (all layers on GPU, eighteen CPU threads):
+
+```sh
+python -m dmn migrate-cache --instance data/instance --backup data/before-compact --gpu-layers -1 --threads 18
+```
+
+Choose placement for your hardware. Omitting placement arguments keeps the saved
+values. Configuration is derived from the latest committed checkpoint, with only
+`swa_full` and `experimental_compact_swa` changed. An optional `--config` must
+otherwise match; sampling, prompt, context capacity, KV precision, cadence and
+all unrelated settings cannot change in this operation.
+
+The command takes the instance lock and requires an open lifecycle with a saved
+`suspended`, `staged` or `context_full` state. It refuses held and ended instances.
+It verifies all registered snapshots and the model/native environment before
+conversion, requires a new backup directory outside the instance, and checks
+available disk space. It does not construct a Runtime, sample or evaluate tokens.
+
+The backup includes a verified SQLite copy, lifecycle, all registered checkpoints,
+the original import archive and DMN source. Its renamed database and lifecycle
+make it a recovery artifact rather than an executable instance. `preservation.json`
+contains the inventory and restoration instructions. **Model files and native
+installations are preserved in place, not bundled in this backup.** Keep those
+installations for rollback; this is not yet a portable Linux environment archive.
+
+The new native file is compared against every retained source KV byte, loaded by
+the compact backend with zero decode calls, and reserialized for exact byte
+verification. Engine/token/RNG and logits sidecars are copied unchanged. Runtime
+state and existing database contents remain intact. A single SQLite transaction
+publishes the new checkpoint and migration record only after verification and
+native teardown succeed. Failure keeps the old checkpoint selected; recovery
+copies and any unreferenced candidate remain available for inspection.
+
+Success leaves the instance stopped. The normal launch command then uses the
+new saved configuration, with strict native recovery. At actual resume, a factual
+event tells the instance what changed and that future arithmetic can differ.
+The source checkpoint remains untouched; normal later checkpoint pruning may
+retire its in-instance copy, while the separate backup remains until explicitly
+removed. The migration itself performs no pruning or automatic restart.
+
+Unit tests cover rollback, identity/configuration rejection, lifecycle/hold/lock
+refusal and database/sidecar preservation. `tests.test_cache_migration_native`
+adds a complete tiny native Runtime migration and verifies the one-time resume
+notice. Set `DMN_TEST_SWA_MODEL` to the random-weight fixture to run it.

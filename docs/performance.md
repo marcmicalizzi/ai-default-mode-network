@@ -229,12 +229,25 @@ tokens, three retirements succeeded, and a fresh-process restart matched the nex
 16 tokens and logits exactly. This does not guarantee identical future arithmetic
 between the old and new allocations or GPU placements.
 
-See [compact-cache evidence and limitations](compact-cache-research.md) for
-measurements, the opt-in example and reproduction. The conversion is still a
-research harness, **not an existing-instance migration command**. Ordinary
-strict restore, including the placement opt-in, continues to reject a cache
-allocation change. A lifecycle-aware migration and disposable interactive trial
-remain necessary before using this for valuable existing state.
+A longer synthetic soak completed twelve retirement/refill cycles near 55K
+occupied tokens in 663 seconds, retiring 267,135 tokens cumulatively. The measured
+decode segments sustained 37.01–38.21 tokens/sec. Three intermediate native
+reloads and a fresh-process final restore passed; the next sixteen sampled
+tokens and logits matched exactly. This is an eleven-minute test, not evidence
+of multi-day reliability.
+
+A separate disposable 31B DMN UI trial delivered a requested two-paragraph
+reply in about six seconds with no rejected actions. The instance accepted a
+cooperative shutdown and saved its final native checkpoint in about three
+seconds. Initial startup still took about 2m40s. The UI now distinguishes a
+completed shutdown from a dropped connection; ordinary pause retains Resume.
+
+See [compact-cache evidence and offline migration](compact-cache-research.md) for
+the opt-in example, reproduction and the `migrate-cache` command. It checks a
+stopped instance, preserves a verified recovery copy, and publishes the converted
+checkpoint only after native byte verification without inference. Ordinary strict
+restore, including the placement opt-in, continues to reject an allocation change;
+conversion requires this separate explicit command.
 
 ## Shutdown latency
 

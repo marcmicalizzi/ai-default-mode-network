@@ -139,6 +139,7 @@ class Runtime:
                     "recovery": "last_committed_checkpoint; uncommitted computation may have been lost",
                     **({"previous_suspension": self.state["last_suspension"]} if self.state.get("last_suspension") else {}),
                 })
+                self._announce_cache_migration()
                 for marker, contract_text in (("ending_protocol", ENDING_CONTRACT),
                                                ("maintenance_protocol", MAINTENANCE_CONTRACT),
                                                ("prompt_protocol", PROMPT_CONTRACT),
@@ -327,6 +328,20 @@ class Runtime:
             if action == "shutdown":
                 self.exit_requested.set()
             self.suspend_requested.set()
+
+    def _announce_cache_migration(self):
+        if not self.state.get("cache_migration_notice_pending"):
+            return True
+        # Separate bounded event: the resume payload can be truncated. Staged
+        # instances defer this until explicit start; interrupted delivery retries.
+        delivered = self._append_event("cache_allocation_changed", {
+            "fact": "While stopped, compact allocation preserved all global and applicable local KV bytes; removed only masked local rows; no prompt replay. Future arithmetic may differ.",
+            "window": self.state["cache_migration"]["window"],
+            "masked_local_cells_removed": self.state["cache_migration"]["masked_local_cells_removed"],
+        })
+        if delivered:
+            self.state.pop("cache_migration_notice_pending", None)
+        return delivered
 
     def _event_tokens(self, kind, payload, delivery=None):
         marked = self.state.get("event_format") == "cognition_v2"
@@ -1075,6 +1090,8 @@ class Runtime:
                 self.state["mode"] = self.state.get("mode_before_suspend", "active")
                 self.checkpoint(reason="resume")
         if self.state["mode"] in {"staged", "held", "suspended", "context_full", "error"}:
+            return False
+        if not self._announce_cache_migration():
             return False
         event = self.store.next_event(self.state["event_cursor"])
         if event:

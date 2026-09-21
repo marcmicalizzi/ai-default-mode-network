@@ -77,9 +77,11 @@ command window, and model-chosen restart holds with ZIP/TAR/no-archive choices.
 trial before adoption, diagnostic logging, separate sampling/decode timings,
 and [experimental compact Gemma4 cache support](docs/compact-cache-research.md).
 The opt-in compact policy measured 45.2 tokens/sec at 25K occupied tokens on an
-RTX 5090, versus 2.24 with the tested full-cache hybrid layout. Synthetic native
-conversion and restart passed; migration of an existing instance is not yet an
-implemented command. Test response
+RTX 5090, versus 2.24 with the tested full-cache hybrid layout; a 12-cycle
+retirement soak near 55K sustained 37–38 tokens/sec. The offline
+[`migrate-cache` command](docs/compact-cache-research.md#offline-instance-migration)
+preserves a verified recovery copy and checks native conversion without inference.
+A disposable 31B UI trial passed message delivery and cooperative shutdown. Test response
 and shutdown latency as well as checkpoint correctness before a valuable import.
 
 [Weight learning during sleep](docs/sleep-consolidation.md) explores optional,

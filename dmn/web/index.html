@@ -20,11 +20,11 @@
 <footer>Experimental runtime. State preservation is an engineering property, not a claim about consciousness or personal identity.</footer>
 </main>
 <script>
-const $=id=>document.getElementById(id);let eventCursor=0;let ended=false;let held=false;let promptBase=null;const seen=new Set();
-function notice(text){$('notice').textContent=text}
+const $=id=>document.getElementById(id);let eventCursor=0;let ended=false;let held=false;let shutdownComplete=false;let promptBase=null;const seen=new Set();
+function notice(text){$('notice').textContent=shutdownComplete?'Shutdown complete. State saved. Run the startup command and reload this page to resume.':text}
 async function api(path,body){const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-DMN-Request':'1'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error||response.status);return result}
 function message(key,role,content,stamp){if(seen.has(key))return;seen.add(key);$('empty')?.remove();const box=document.createElement('div');box.className='message '+role;const title=document.createElement('small');title.textContent=(role==='user'?'You · event':'Instance · message')+' · '+new Date(stamp*1000).toLocaleTimeString();const text=document.createElement('div');text.textContent=content;box.append(title,text);box.dataset.stamp=stamp;const next=[...$('conversation').children].find(node=>Number(node.dataset.stamp)>stamp);$('conversation').insertBefore(box,next||null);$('conversation').scrollTop=$('conversation').scrollHeight}
-async function inputs(){if(ended)return;const events=await api('/api/events?after='+eventCursor);for(const event of events){eventCursor=Math.max(eventCursor,event.id);if(event.kind==='user_message')message('e'+event.id,'user',event.payload.content,event.created)}}
+async function inputs(){if(ended||shutdownComplete)return;const events=await api('/api/events?after='+eventCursor);for(const event of events){eventCursor=Math.max(eventCursor,event.id);if(event.kind==='user_message')message('e'+event.id,'user',event.payload.content,event.created)}}
 function bytes(n){const units=['B','KB','MB','GB','TB'];let i=0;while(n>=1000&&i<units.length-1){n/=1000;i++}return n.toFixed(i?1:0)+' '+units[i]}
 function duration(n){return n<60?Math.floor(n)+'s':n<3600?Math.floor(n/60)+'m':(n/3600).toFixed(1)+'h'}
 function checkpointStatus(c){if(!c)return;$('unsaved').textContent=c.dirty?(c.unsaved_generated_tokens?c.unsaved_generated_tokens.toLocaleString()+' generated tokens':'Input or runtime changes'):'State checkpointed';$('unsaved-age').textContent=c.dirty?duration(c.unsaved_seconds||0)+' since first unsaved change':'';$('written').textContent=bytes(c.committed_snapshot_bytes||0);$('save-detail').textContent=c.in_progress?'Saving native state…':c.last?c.committed_count+' saves · last '+bytes(c.last.snapshot_bytes)+' in '+duration(c.last.duration_seconds):'';const limits=[];if(c.interval_seconds)limits.push(duration(c.interval_seconds));if(c.token_limit)limits.push(c.token_limit.toLocaleString()+' generated tokens');$('save-policy').textContent=(c.policy==='effects'?'Messages, memory changes and sleep':'All actions and delivered inputs')+' also checkpoint. Periodic limit: '+limits.join(' or ')+'. Write totals exclude scratch files and failed saves.'}
@@ -33,6 +33,7 @@ function status(s){
   const diagnostic=s.action_diagnostics||{};actionWarning.hidden=!(diagnostic.rejected_actions||diagnostic.interrupted_frames);
   actionWarning.textContent='Action diagnostics since enabled: '+(diagnostic.rejected_actions||0)+' rejected actions ('+(diagnostic.rejected_message_attempts||0)+' message attempts), '+(diagnostic.interrupted_frames||0)+' interrupted frames. No private message contents are shown.';
   ended=['ending','ended','end_failed'].includes(s.mode);held=s.mode==='held';
+  shutdownComplete=s.mode==='suspended'&&s.checkpoint_reason==='shutdown';
   $('start_staged').hidden=s.mode!=='staged';$('start_staged').disabled=ended;
   $('prompt-text').disabled=ended||s.mode==='held';$('propose-prompt').disabled=ended||s.mode==='held';
   if(s.mode==='staged')notice('Prepared without generation. Queue your first question, then start the instance.');
@@ -57,20 +58,25 @@ function status(s){
     if(s.ending?.error||s.ending?.archive_error)notice($('notice').textContent+' '+(s.ending.error||s.ending.archive_error));
     if(s.mode!=='ending')stream.close();
   }else if(s.error)notice(s.error);
+  if(shutdownComplete){
+    $('connection').textContent='Shutdown complete';notice('');stream.close();
+    for(const id of ['suspend','shutdown','resume','send','content','maintenance-reason','prompt-text','propose-prompt','refresh-prompts','retry_checkpoint','start_staged','more-memories'])$(id).disabled=true;
+    for(const button of $('memory-list').querySelectorAll('button'))button.disabled=true;
+  }
 }
-async function refreshPrompts(){const p=await api('/api/prompts');const previous=promptBase;promptBase=p.active.revision;if(previous&&previous!==promptBase)notice('The instance approved a new agreement; its checkpoint is committed.');
+async function refreshPrompts(){if(shutdownComplete)return;const p=await api('/api/prompts');const previous=promptBase;promptBase=p.active.revision;if(previous&&previous!==promptBase)notice('The instance approved a new agreement; its checkpoint is committed.');
 $('active-prompt').textContent='Current · '+p.active.status+' · '+promptBase+'\n'+(p.active.text??((Array.isArray(p.active.base)?p.active.base.map(m=>m.role+': '+m.content).join('\n\n'):p.active.base)+'\n\nDMN guidance (provisional):\n'+p.active.dmn_guidance));
 $('prompt-history').textContent='';for(const item of p.proposals){const box=document.createElement('details');const title=document.createElement('summary');title.textContent=item.status+' · '+item.author+' · '+item.revision;const text=document.createElement('pre');text.textContent=item.text;box.append(title,text);$('prompt-history').append(box)}
 if(p.pending)notice('Prompt decision is awaiting a durable checkpoint.');}
 $('refresh-prompts').onclick=()=>refreshPrompts().catch(e=>notice(e.message));
 $('prompts').ontoggle=()=>{if($('prompts').open)refreshPrompts().catch(e=>notice(e.message))};
 $('prompt-form').onsubmit=async e=>{e.preventDefault();try{if(!promptBase)await refreshPrompts();await api('/api/prompts',{text:$('prompt-text').value,base_revision:promptBase});notice('Proposal queued for the instance’s review; active agreement is unchanged.');await refreshPrompts()}catch(e){notice(e.message)}};
-const stream=new EventSource('/api/stream');stream.addEventListener('open',()=>{if(!ended&&!held)$('connection').textContent='Connected'});stream.addEventListener('error',()=>{if(!ended&&!held)$('connection').textContent='Reconnecting'});stream.addEventListener('status',event=>{status(JSON.parse(event.data));inputs().catch(e=>notice(e.message))});stream.addEventListener('message',event=>{const m=JSON.parse(event.data);message('m'+m.id,'model',m.content,m.created)});
-$('composer').onsubmit=async event=>{event.preventDefault();if(ended)return;$('send').disabled=true;try{const r=await api('/api/events',{content:$('content').value});$('content').value='';notice('Event '+r.event_id+' queued. A response is optional.');await inputs()}catch(e){notice(e.message)}finally{$('send').disabled=ended}};
+const stream=new EventSource('/api/stream');stream.addEventListener('open',()=>{if(!ended&&!held&&!shutdownComplete)$('connection').textContent='Connected'});stream.addEventListener('error',()=>{if(!ended&&!held&&!shutdownComplete)$('connection').textContent='Reconnecting'});stream.addEventListener('status',event=>{status(JSON.parse(event.data));inputs().catch(e=>notice(e.message))});stream.addEventListener('message',event=>{const m=JSON.parse(event.data);message('m'+m.id,'model',m.content,m.created)});
+$('composer').onsubmit=async event=>{event.preventDefault();if(ended||held||shutdownComplete)return;$('send').disabled=true;try{const r=await api('/api/events',{content:$('content').value});$('content').value='';notice('Event '+r.event_id+' queued. A response is optional.');await inputs()}catch(e){notice(e.message)}finally{$('send').disabled=ended||held||shutdownComplete}};
 $('retry_checkpoint').onclick=async()=>{try{await api('/api/control',{action:'retry_checkpoint'});notice('Storage check requested.')}catch(e){notice(e.message)}};
 $('start_staged').onclick=async()=>{try{await api('/api/control',{action:'start_staged'});notice('Start requested; queued input will be delivered first.')}catch(e){notice(e.message)}};
 for(const action of ['suspend','shutdown','resume'])$(action).onclick=async()=>{try{const result=await api('/api/control',{action,...(action==='resume'?{}:{reason:$('maintenance-reason').value||null})});notice(result.requires_model_acceptance?'Maintenance request '+result.request_id+' sent. The reply appears under Instance.':'Resume requested.')}catch(e){notice(e.message)}};
 let memoryOffset=0;async function loadMemories(){const paths=await api('/api/memories?offset='+memoryOffset);for(const path of paths){const b=document.createElement('button');b.className='secondary memory';b.textContent=path;b.onclick=async()=>{try{$('memory-content').textContent=(await api('/api/memories?path='+encodeURIComponent(path))).content}catch(e){notice(e.message)}};$('memory-list').append(b)}memoryOffset+=paths.length;$('more-memories').hidden=paths.length<100;if(!memoryOffset)$('memory-list').textContent='No memories written.'}
-$('memories').ontoggle=async()=>{if(!$('memories').open)return;$('memory-list').textContent='';memoryOffset=0;try{await loadMemories()}catch(e){notice(e.message)}};$('more-memories').onclick=()=>loadMemories().catch(e=>notice(e.message));
+$('memories').ontoggle=async()=>{if(!$('memories').open||shutdownComplete)return;$('memory-list').textContent='';memoryOffset=0;try{await loadMemories()}catch(e){notice(e.message)}};$('more-memories').onclick=()=>loadMemories().catch(e=>notice(e.message));
 </script>
 </html>
