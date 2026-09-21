@@ -81,6 +81,13 @@ suspended. Use a separate conversation for ordinary completion models. Deleting
 the display conversation does not stop the independent instance: delivery pauses
 without advancing the cursor. Transferring its binding is a separate operation.
 
+[Multiple people sharing one instance](multi-user-interaction.md) explores the
+next step: authenticated provenance, explicit destinations, protected action
+completion, fair inbox admission, presence feedback and model-controlled contact
+closure/blocking. The [runtime prototype](multi-user-prototype.md) implements a
+subset for local fixtures. This adapter still enforces one bound chat and refuses
+experimental multi-user runtimes until authenticated routing is implemented.
+
 ## Beyond the sandbox
 
 The `persistent-dmn` package must be importable in Open WebUI's Python environment.

@@ -47,8 +47,28 @@ class Config:
     keep_prefix_tokens: int = 0  # 0 means keep the entire initialization prefix.
     max_action_bytes: int = 8192
     max_event_bytes: int = 16384
+    multi_user: bool = False  # Experimental; fresh instances and trusted local fixtures only.
+    operator_participant_id: str = ""
+    inbox_generation_tokens: int = 32
+    max_pending_messages: int = 128
+    max_pending_messages_per_participant: int = 16
+    max_protected_action_tokens: int = 4096
 
     def __post_init__(self):
+        if type(self.multi_user) is not bool:
+            raise ValueError("multi_user must be a boolean")
+        if self.multi_user:
+            from .conversations import identifier
+            identifier(self.operator_participant_id, "operator_participant_id")
+        elif self.operator_participant_id:
+            raise ValueError("operator_participant_id requires multi_user")
+        for name in ("inbox_generation_tokens", "max_pending_messages",
+                     "max_pending_messages_per_participant", "max_protected_action_tokens"):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= 65536:
+                raise ValueError(f"{name} must be an integer from 1 to 65536")
+        if self.max_pending_messages_per_participant > self.max_pending_messages:
+            raise ValueError("per-participant pending limit exceeds total pending limit")
         if not isinstance(self.lora_adapters, (list, tuple)):
             raise ValueError("lora_adapters must be an ordered list")
         specs = []

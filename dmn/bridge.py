@@ -33,6 +33,8 @@ class RuntimeClient:
         status = self.request("/api/status")
         if status["instance_id"] != self.instance_id:
             raise ValueError("DMN instance changed; refusing to attach this conversation")
+        if (status.get("multi_user") or {}).get("enabled"):
+            raise ValueError("This single-user Open WebUI adapter cannot attach to an experimental multi-user runtime")
         return status
 
     def enqueue(self, chat_id, message_id, content):

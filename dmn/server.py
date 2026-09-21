@@ -13,6 +13,9 @@ from .ending import InstanceEnded
 
 
 def serve(runtime, port=8765):
+    if runtime.config.multi_user:
+        raise ValueError("Experimental multi-user mode currently supports trusted local fixtures only; "
+                         "the HTTP UI and authenticated WebUI adapter are not implemented")
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
