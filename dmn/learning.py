@@ -199,8 +199,11 @@ def plan_action(runtime, action):
 
 def _fits(runtime, result):
     from .protocol import event_text
+    # Planning and delivery sample wall time separately. Float formatting (and
+    # tokenization of its digits) can grow between them; never size a page to the
+    # last token and then truncate it merely because the clock advanced.
     return len(runtime.backend.tokenize(event_text("action_result", result, runtime.now(),
-        resume_cognition=True))) <= runtime._event_budget()
+        resume_cognition=True))) <= runtime._event_budget() - 32
 
 
 OPERATIONS = {"learning_plan_help", "learning_plan_create", "learning_plan_read",

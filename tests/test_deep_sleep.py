@@ -116,6 +116,18 @@ class SleepTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIsNone(effect)
 
+    def test_review_page_reserves_space_for_a_longer_delivery_timestamp(self):
+        from dmn.protocol import event_text
+        from dmn.sleep_plans import page
+        result = {"op": "learning_execution_read", "ok": True}
+        full = {**result, "content": "x" * 250, "total_characters": 250, "next_offset": 250}
+        budget = len(self.r.backend.tokenize(event_text("action_result", full, 1.0, resume_cognition=True)))
+        with mock.patch.object(self.r, "now", return_value=1.0), mock.patch.object(self.r, "_event_budget", return_value=budget):
+            actual = page(self.r, result, "x" * 250, {"limit": 250})
+        delivered = event_text("action_result", actual, 1780000000.1234567, resume_cognition=True)
+        self.assertLessEqual(len(self.r.backend.tokenize(delivered)), budget)
+        self.assertLess(actual["next_offset"], 250)
+
     def test_review_required_and_external_approval_cannot_execute(self):
         revision = self.compile()
         self.generate({"op": "learning_execution_decide", "revision": revision, "decision": "approve"})
