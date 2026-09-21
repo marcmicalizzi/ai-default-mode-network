@@ -99,6 +99,10 @@ class StorageCapacityTest(unittest.TestCase):
         self.assertEqual(self.create().store.latest().parent, saved.parent)
 
     def exercise_pending_effect(self, action, observe):
+        # The demo backend uses one token per character. Keep this storage
+        # recovery check clear of retirement: protocol growth otherwise puts
+        # the notice exactly at that boundary depending on timestamp length.
+        self.config = dataclasses.replace(self.config, n_ctx=16384)
         r = self.create(frames(action, {"op": "sleep"}))
         saved, timestamp = r.store.latest(), r.state["checkpoint_at"]
         self.free = 0

@@ -195,6 +195,9 @@ def main(argv=None):
             config = dataclasses.replace(config, **overrides)
         except ValueError as exc:
             parser.error(str(exc))
+    if config.multi_user:
+        parser.error("Experimental multi-user mode requires an explicit authenticated adapter; "
+                     "use scripts/verify_multi_user.py or scripts/verify_multi_user_webui.py for disposable checks. No model was loaded.")
     runtime = Runtime(args.instance, config, kv_recovery=args.kv_recovery, initial_context=args.initial_context,
                       prepare_only=args.prepare_only, start_staged=args.start_staged,
                       release_hold=args.release_hold, resume_condition=args.resume_condition,

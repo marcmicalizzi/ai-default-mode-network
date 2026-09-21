@@ -51,7 +51,7 @@ def implementation_identity():
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
         "runtime.py", "protocol.py", "learning.py", "training.py", "training_worker.py",
         "training_executor.py", "training_models.py", "base_provenance.py", "provenance_native.py", "worker_limits.py",
-        "activity.py", "checkpointing.py")}
+        "activity.py", "checkpointing.py", "conversations.py", "contacts.py")}
 
 
 def put_recipe(store, value, now):

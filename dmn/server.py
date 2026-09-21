@@ -13,6 +13,9 @@ from .ending import InstanceEnded
 
 
 def serve(runtime, port=8765):
+    if runtime.config.multi_user:
+        raise ValueError("Experimental multi-user mode requires the dedicated authenticated conversation bridge; "
+                         "the ordinary HTTP UI is single-user only")
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 

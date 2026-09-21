@@ -130,6 +130,11 @@ context reconstruction, native restore and second-worker learning regression.
 The shared implementation identity includes both activity/checkpoint scheduling
 and the complete training stack; neither side's review binding was dropped.
 
+Multi-user integration also tests idle preemption, partial-action preservation,
+inbox fairness and filtered input after sleep-guard recovery. Blocked or otherwise
+suppressed messages do not wake the instance. An eligible message resumes focus;
+an unfinished action completes before the message enters the context.
+
 Run the scripted recovery comparison and unit tests without loading weights:
 
 ```text

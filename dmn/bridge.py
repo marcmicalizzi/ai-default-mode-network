@@ -33,6 +33,8 @@ class RuntimeClient:
         status = self.request("/api/status")
         if status["instance_id"] != self.instance_id:
             raise ValueError("DMN instance changed; refusing to attach this conversation")
+        if (status.get("multi_user") or {}).get("enabled"):
+            raise ValueError("This single-user Open WebUI adapter cannot attach to an experimental multi-user runtime")
         return status
 
     def enqueue(self, chat_id, message_id, content):
@@ -58,7 +60,7 @@ class BridgeLedger:
                 event_id INTEGER);
         ''')
 
-    def binding(self):
+    def binding(self, chat_id=None):
         row = self.db.execute("SELECT * FROM binding").fetchone()
         return dict(row) if row else None
 
@@ -78,11 +80,11 @@ class BridgeLedger:
             self.db.execute("INSERT OR IGNORE INTO receipts VALUES(?,?,?,NULL)", (message_id, digest, assistant_id))
         return dict(prior) if prior else None
 
-    def get_receipt(self, message_id):
+    def get_receipt(self, message_id, chat_id=None):
         row = self.db.execute("SELECT * FROM receipts WHERE message_id=?", (message_id,)).fetchone()
         return dict(row) if row else None
 
-    def accepted(self, message_id, event_id):
+    def accepted(self, message_id, event_id, chat_id=None):
         with self.db:
             self.db.execute("UPDATE receipts SET event_id=? WHERE message_id=?", (event_id, message_id))
 
@@ -90,7 +92,7 @@ class BridgeLedger:
         with self.db:
             self.db.execute("UPDATE binding SET cursor=max(cursor,?)", (cursor,))
 
-    def placeholders(self):
+    def placeholders(self, chat_id=None):
         return {r[0] for r in self.db.execute("SELECT assistant_id FROM receipts WHERE event_id IS NOT NULL")}
 
     def close(self):
@@ -124,6 +126,8 @@ def attach_message(chat, instance_id, message, placeholders=()):
             "parentId": prior.get("parentId") if reusable else parent,
             "childrenIds": [], "model": MODEL_ID, "modelName": "DMN", "done": True,
             "timestamp": message["created"], "meta": {"dmn_delivery": key}}
+    if "conversation_id" in message:
+        node["meta"].update(dmn_conversation_id=message["conversation_id"], dmn_in_reply_to=message.get("in_reply_to"))
     nodes[node_id] = node
     if not reusable and parent:
         children = nodes[parent].setdefault("childrenIds", [])
