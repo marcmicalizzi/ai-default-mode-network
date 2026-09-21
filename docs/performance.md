@@ -30,7 +30,7 @@ CPU measurement, not model throughput; it does not resolve CPU layer offload.
 Ordering/tie tests and both sampler chains match the previous implementation.
 A native CPU fixture preserves fingerprint, restored KV, RNG and eight subsequent
 tokens/logits exactly across logging verbosity changes, with zero prompt replay.
-The expanded Windows suite passes 176 tests, including native CPU tests, in 71.2 seconds.
+The expanded Windows suite passes 183 tests, including native CPU tests, in 76.1 seconds.
 A separate CPU checkpoint created by the original production code also restored
 strictly under the proposed code and matched 24 subsequent tokens and logits
 exactly, without prompt replay. These checks use disposable state only.
@@ -91,6 +91,33 @@ include CPU time/core equivalents and instantaneous GPU memory/utilization/power
 For the measured 31B/60K layout, 24 to 30 GPU layers adds roughly 1.60 GiB of
 weights plus 2.68 GiB of KV, excluding changes in compute buffers and backend
 representation. This is a sizing estimate, not a verified fit or speedup.
+
+### Adaptive placement direction
+
+DMN currently uses an explicit GPU-layer count. A future startup policy could
+choose among measured placements using free VRAM, a configurable VRAM reserve,
+and a system-RAM ceiling. Fitting the most layers is not proof of best throughput;
+benchmark the candidates and retain the resolved settings in each checkpoint.
+Full-cache allocation depends on capacity, not just the occupied token count.
+
+The pinned llama.cpp revision already has
+[startup fitting support](https://github.com/ggml-org/llama.cpp/blob/4df29be4f4c3673f428170fda944a5b19f743bb8/common/fit.h)
+in its common C++ helpers. Our Python backend does not invoke it. That fitter
+assumes unlimited system memory and can adjust unset parameters, so directly
+adopting its defaults would not establish DMN's resource or continuity contract.
+Keep context capacity, cache format and inference identity fixed; change only
+the supported placement settings and apply native-state verification on restore.
+
+Changing placement during inference requires more work: reserve resources,
+reach a consistent boundary, preserve state, reload with the new placement and
+verify it before continuing. Frequent fluctuations should not trigger repeated
+large checkpoint writes or reloads; such a policy would need separate thresholds,
+a cooldown and accounting for temporary RAM/disk use. It must never use prompt
+reconstruction as an automatic escape from a failed transfer. Exact saved-state
+transfer also does not guarantee identical future CPU/GPU arithmetic.
+
+These are design requirements, not an implemented auto-fit or live-migration
+feature. The current opt-in below is the bounded primitive being tested first.
 
 ### Native restoration after a placement change
 

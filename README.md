@@ -196,6 +196,12 @@ Actions must begin on a new line. For example:
 
 Available operations are `send_message`, `sleep`, `end_instance`, `cancel_end`, `maintenance_reply`, `clock`, `memory_write`, `memory_read`, `memory_list`, `memory_move`, `memory_delete`, `memory_history`, and `event_read`. Exact fields are in [dmn/protocol.py](dmn/protocol.py). Reads are paged; memory categories are freely chosen logical paths, not filesystem access. A directory-like prefix has no imposed significance. There is no shell, web, email, or general filesystem tool access.
 
+Literal line breaks and tabs inside quoted action text are accepted without
+changing that text. Other malformed recognized frames return specific failure
+feedback; nothing is sent or executed from a rejected frame. The local UI shows
+content-free rejection/interruption counts. See [action delivery](docs/action-delivery.md)
+for formatting, feedback, delivery guarantees and privacy boundaries.
+
 Fresh instances require a current memory read and its `expected_revision` before replacing, moving or deleting an existing memory. Retirement invalidates old read permissions. Prior versions remain inspectable through `memory_history` and `memory_read(revision=...)`; the model chooses whether to restore one. Existing checkpoints retain their original action contract. See [memory revisions and retirement](docs/memory-revisions.md) for guarantees, limits and examples.
 
 Only generated action frames execute. User input and retrieved memory are inserted as escaped external-event data and never passed to the action parser. This is a routing boundary, **not** a guarantee against semantic prompt injection: a model may choose an action after reading an event. Internal text is journaled locally and never sent to the communication UI.

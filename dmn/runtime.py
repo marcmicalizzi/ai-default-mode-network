@@ -16,7 +16,7 @@ from .checkpointing import CheckpointSchedule
 from .config import Config
 from .diskspace import InsufficientStorage, check_space
 from .ending import Lifecycle, InstanceEnded
-from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, event_text
+from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, ACTION_FORMAT_NOTICE, event_text
 from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
@@ -141,7 +141,8 @@ class Runtime:
                 for marker, contract_text in (("ending_protocol", ENDING_CONTRACT),
                                                ("maintenance_protocol", MAINTENANCE_CONTRACT),
                                                ("prompt_protocol", PROMPT_CONTRACT),
-                                               ("hold_protocol", HOLD_CONTRACT)):
+                                               ("hold_protocol", HOLD_CONTRACT),
+                                               ("action_format_protocol", ACTION_FORMAT_NOTICE)):
                     if self.state.get(marker) or self.suspend_requested.is_set():
                         continue
                     # Announce an added capability; never replace the old seed.
@@ -152,7 +153,7 @@ class Runtime:
                     self._ensure_space(len(contract))
                     if not self.suspend_requested.is_set():
                         self._eval(contract)
-                        self.state[marker] = "choice_v1"
+                        self.state[marker] = "literal_whitespace_v1" if marker == "action_format_protocol" else "choice_v1"
                 if not self.state.get("agreement"):
                     self.state["agreement"] = bootstrap(config.system_prompt, "See preserved original runtime seed.",
                                                         "legacy bootstrap; no model approval recorded")
@@ -169,6 +170,7 @@ class Runtime:
                     "ending_protocol": "choice_v1",
                     "maintenance_protocol": "choice_v1", "maintenance": None,
                     "prompt_protocol": "choice_v1", "hold_protocol": "choice_v1",
+                    "action_format_protocol": "literal_whitespace_v1",
                     "agreement": bootstrap(config.system_prompt, PROTOCOL, "host-supplied provisional bootstrap"),
                     "prompt_decisions": {},
                 }
@@ -371,6 +373,8 @@ class Runtime:
     def _cancel_action(self, reason):
         if not self.parser.cancel():
             return {}
+        diagnostics = self.state.setdefault("action_diagnostics", {})
+        diagnostics["interrupted_frames"] = diagnostics.get("interrupted_frames", 0) + 1
         notice = {"partial_action_cancelled": True,
                   "action_effects": "NONE. The incomplete action did not execute. Retry it if wanted; await a successful action_result."}
         self.store.record("partial_action_cancelled", {"reason": reason,
@@ -506,6 +510,18 @@ class Runtime:
             else:
                 result, effect = self._plan_action(action, effects)
             results.append(result)
+            if not result["ok"]:
+                diagnostics = self.state.setdefault("action_diagnostics", {})
+                diagnostics["rejected_actions"] = diagnostics.get("rejected_actions", 0) + 1
+                message = action.get("op") == "send_message" or (
+                    action.get("op") == "__invalid__" and action.get("attempted_op") == "send_message")
+                if message:
+                    diagnostics["rejected_message_attempts"] = diagnostics.get("rejected_message_attempts", 0) + 1
+                code = action.get("error_code")
+                diagnostics["last_problem"] = {"category": code if action.get("op") == "__invalid__"
+                    and code in ("invalid_json", "frame_too_large") else "action_rejected",
+                    "operation": "send_message" if message else "other_or_unknown",
+                    "generated_token": self.state["generated_tokens"]}
             if effect:
                 effects.append(effect)
         if effects and effects[0]["op"] == "end_instance":
@@ -573,7 +589,10 @@ class Runtime:
         result = {"op": op, "ok": True}
         effect = None
         try:
-            if op == "hold_instance":
+            if op == "__invalid__":
+                raise ValueError("Invalid action format; nothing was executed or sent. " + action.get("error", "Malformed JSON")
+                                 + ". Retry a complete corrected frame if wanted.")
+            elif op == "hold_instance":
                 hold = make_hold(action, self.now())
                 effect = {"op": op, "hold": hold}
                 result.update(hold_id=hold["id"], status="held_after_checkpoint")
@@ -747,7 +766,11 @@ class Runtime:
                             "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "hold_instance", "prompt_current", "prompt_propose", "prompt_read", "prompt_decide", "clock", "event_read",
                                 "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"]}, None
                 raise ValueError(action.get("error", "unknown operation"))
-        except (ValueError, KeyError, TypeError, OverflowError) as exc:
+        except KeyError as exc:
+            result = {"op": op, "ok": False,
+                      "error": f"Missing required field {exc}. Nothing was executed or sent; retry a complete corrected action if wanted."}
+            effect = None
+        except (ValueError, TypeError, OverflowError) as exc:
             result = {"op": op, "ok": False, "error": str(exc)}
             effect = None
         return result, effect
@@ -1112,6 +1135,7 @@ class Runtime:
                 self._status["maintenance"] = {**self._status["maintenance"], "status": "accepting"}
             self._status.update(active_tokens=len(self.backend.tokens), context_capacity=self.backend.n_ctx,
                                 native_context_retirement_supported=self.backend.can_shift, process_id=os.getpid())
+            self._status["action_diagnostics"] = dict(self.state.get("action_diagnostics") or {})
             self._status["checkpoint"] = {**self.checkpoint_schedule.status(self.state["generated_tokens"]),
                                            **self._checkpoint_metrics}
             self._status["storage"] = {"reserve_bytes": self.config.checkpoint_reserve_bytes,

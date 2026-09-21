@@ -2,6 +2,49 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+
+
+ACTION_FORMAT_NOTICE = '''Action text accepts literal newlines, carriage returns and tabs inside
+quoted JSON strings, preserving those characters exactly. Ordinary JSON escaping
+also works. Other malformed JSON is rejected: no effect or message is delivered
+from a rejected frame. Its action_result explains the formatting error; retry a
+complete corrected frame if you still want the action. This update does not
+resend earlier rejected messages. Only a successful send_message action publishes
+a message; writing a memory, including a path named /responses, does not send it.'''
+
+
+def decode_action(raw):
+    """Tolerate literal whitespace inside strings, without guessing JSON structure."""
+    text = raw.decode("utf-8")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Model-generated prose often contains actual line breaks in content.
+        # Escape only these three characters *inside* strings. Do not repair
+        # quotes, commas, truncated frames, invalid escapes or other controls.
+        result, quoted, escaped = [], False, False
+        whitespace = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+        for char in text:
+            if quoted and not escaped and char in whitespace:
+                result.append(whitespace[char])
+                continue
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif quoted and char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = not quoted
+        return json.loads("".join(result))
+
+
+def invalid_action(raw, error, code):
+    # The UI receives a fixed category and, only when unambiguous, the operation.
+    # Never include generated prose or arbitrary field values in diagnostics.
+    message = re.match(rb'\s*\{\s*"op"\s*:\s*"send_message"\s*[,}]', raw)
+    return {"op": "__invalid__", "error": error, "error_code": code,
+            "attempted_op": "send_message" if message else None}
 
 
 ENDING_CONTRACT = '''end_instance(mode): optionally request a permanent end, choosing "archive" or "erase".
@@ -91,7 +134,7 @@ then rename it without overwriting another.
 memory_delete(path, expected_revision): read current memory first, then intentionally remove it.
 event_read(event_id, offset=0, limit=2000): inspect delivered input too large for one insertion.
 clock(): obtain factual UTC time and elapsed times.
-''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '''
+''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
 Paths are your own logical organization, e.g. /self, /memories, /interests,
 /unfinished, /goals, /private; none of these categories is mandatory.
 Runtime records and KV snapshots are distinct from your editable memories.
@@ -170,16 +213,17 @@ class ActionParser:
                     self.in_frame = False
                     self.line_start = False
                     try:
-                        obj = json.loads(raw)
+                        obj = decode_action(raw)
                         if not isinstance(obj, dict) or not isinstance(obj.get("op"), str):
                             raise ValueError("action needs a string op")
                         results.append(obj)
                     except (ValueError, UnicodeError) as exc:
-                        results.append({"op": "__invalid__", "error": str(exc)})
+                        results.append(invalid_action(raw, str(exc), "invalid_json"))
                 elif len(self.buffer) > self.max_bytes:
+                    raw = self.buffer
                     self.cancel()
                     self.line_start = False
-                    results.append({"op": "__invalid__", "error": "action frame exceeds byte limit"})
+                    results.append(invalid_action(raw, "action frame exceeds byte limit", "frame_too_large"))
             elif self.line_start:
                 self.buffer += value
                 if self.buffer == self.start:

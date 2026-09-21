@@ -27,7 +27,9 @@ def require_idle(config, port=8765):
     if small_cpu_fixture:
         return
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=2):
+        # Windows can take just over two seconds to report a closed local port.
+        # A shorter timeout mistakes that normal refusal for an unknown state.
+        with socket.create_connection(("127.0.0.1", port), timeout=6):
             pass
     except ConnectionRefusedError:
         return

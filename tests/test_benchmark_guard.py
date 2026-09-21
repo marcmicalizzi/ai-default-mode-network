@@ -2,6 +2,7 @@ import dataclasses
 import socket
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from dmn.config import Config
@@ -9,6 +10,15 @@ from scripts.benchmark_inference import require_idle
 
 
 class BenchmarkGuardTest(unittest.TestCase):
+    def test_closed_port_is_idle_but_timeout_remains_unknown(self):
+        config = Config(n_gpu_layers=1)
+        with patch("scripts.benchmark_inference.socket.create_connection", side_effect=ConnectionRefusedError) as connect:
+            require_idle(config)
+        self.assertGreater(connect.call_args.kwargs["timeout"], 2)
+        with patch("scripts.benchmark_inference.socket.create_connection", side_effect=TimeoutError):
+            with self.assertRaisesRegex(RuntimeError, "Cannot establish"):
+                require_idle(config)
+
     def test_active_runtime_blocks_competing_model_but_allows_tiny_cpu_fixture(self):
         with tempfile.TemporaryDirectory() as folder, socket.socket() as listener:
             model = Path(folder) / "fixture.gguf"
