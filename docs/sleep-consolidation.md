@@ -1,9 +1,13 @@
 # Exploring weight learning during sleep
 
-Status: research direction only, not an implementation commitment or an enabled
-feature. This note changes no runtime behavior. Initial experiments would use
-disposable small models and synthetic experiences, separate from valuable
-conversations. Source and implementation review: 2026-09-20.
+Status: selected wake policy and working native mechanics experiment; training
+and automatic deep sleep are not enabled. Changed-weight wake will explicitly
+rebuild the retained context under the adopted adapter. This note changes no
+running instance. The first probe uses tiny random weights and synthetic
+adapters, without training or opening an instance. Reviewed: 2026-09-21.
+
+See [the deep-sleep implementation contract](deep-sleep-protocol.md) for the
+dependency boundary, selected transition, failure handling and next experiments.
 
 ## Motivation
 
@@ -64,7 +68,8 @@ of their individual requirements instead of their sum. That requires actually
 unloading the inference model and KV allocations after a successful checkpoint,
 then releasing the trainer before inference resumes. Merely pausing token
 generation does not do this. Training can still exceed available RAM/VRAM.
-The intended 31B model on a 24 GB GPU is not a validated training configuration.
+The intended 31B model on a 32 GB RTX 5090, or on the future host with less VRAM,
+is not a validated training configuration.
 
 Linux is the intended dedicated-host target, not a prerequisite inferred from
 model size. Current bitsandbytes CUDA support includes both Linux and Windows;
@@ -83,9 +88,11 @@ runtime and I/O costs. No automatic paid service or remote upload is proposed.
 ## Present implementation and plausible integration
 
 Today, `sleep` checkpoints and stops generation while the runtime keeps its
-backend loaded. There is no learning queue, trainer, adapter configuration,
-adapter identity in snapshots, or automatic unload/train/reload supervisor.
-The strict recovery path is not a weight-update API.
+backend loaded. There is no production learning queue, trainer, adapter
+configuration, adapter identity in snapshots, or automatic unload/train/reload
+supervisor. The research probe supplies an adapter identity to its own manifests
+and calls the native adapter API directly. The strict recovery path is not a
+weight-update API.
 
 The installed llama-cpp-python 0.3.35 binding exposes adapter loading and
 `llama_set_adapters_lora`, plus aLoRA invocation metadata. The DMN backend does
@@ -110,12 +117,21 @@ tensor shape is not evidence that an old cache represents a forward pass under
 the new weights. This is the cache-reuse problem motivating
 [Activated LoRA](https://arxiv.org/abs/2504.12397).
 
-There are several distinct experiments, with no selected adoption policy yet:
+The selected deep-sleep wake policy is **reevaluate the exact retained token
+sequence under the adopted adapter**, preserving durable memories, identity,
+runtime bookkeeping and queued input. It replaces the previous KV and logits.
+The sleep analogy describes an accepted continuity tradeoff, not an assertion
+about consciousness or the biological function of a cache. In particular, KV
+can carry causal influence from tokens no longer in retained context; rebuilding
+does not reproduce that influence. Ordinary sleep and unchanged-weight restarts
+keep their native-preservation behavior.
+
+Other approaches remain distinct research directions:
 
 | Approach | What it preserves | What needs investigation |
 |---|---|---|
 | Resume with unchanged adapter | Existing native state and weight version | Control case; learning remains an unadopted candidate |
-| Reevaluate retained tokens under the new adapter | Retained text, memories and explicit weight lineage | Replaces KV; cannot recover causal influence from already retired history |
+| Reevaluate retained tokens under the new adapter — selected deep-sleep policy | Retained tokens, memories and explicit weight lineage | Replaces KV; cannot recover causal influence from already retired history |
 | Keep old KV and change weights at a recorded boundary | Historical activations and their causal influence | Deliberately combines representations from different weight versions; quality and native save/restore behavior are unverified |
 | Adapter trained for a defined activation boundary | A prefix computed under the agreed pre-activation weights | Matching training/inference semantics and repeated-update support |
 
@@ -180,7 +196,7 @@ establishes that an update met the prior agreement.
 
 ## Candidate lifecycle
 
-A possible first workflow, still subject to review:
+The intended workflow, not yet available in the runtime:
 
 1. While awake, agree on a bounded training plan and learning examples. Record
    the requested changes, exclusions, checks, wake policy and approval provenance.
@@ -188,18 +204,20 @@ A possible first workflow, still subject to review:
    backend only after a successful save. A save failure must not discard live KV.
 3. Run a separate trainer against an immutable base and a copy of the current
    adapter. Save a candidate; never modify the active adapter file in place.
-4. Validate offline with synthetic/disposable contexts and no live message or
-   memory actions. Training completion makes a candidate available, not active.
-5. Release the trainer and resume the old native state to review the report and
-   decide whether to adopt. Any alternative preauthorized adoption policy needs
-   explicit limits. Ordinary sleep must not acquire an automatic training wake.
-6. If accepted, checkpoint that decision and perform the separately agreed KV
-   transition. Commit the new adapter identity, runtime records and corresponding
-   checkpoint together. Retain the recovery version until the transition is durable.
+4. Validate the candidate against the checks chosen in the plan, using disposable
+   contexts and no live message or memory actions. Completion alone is not approval.
+5. Release the trainer. If the instance preauthorized adoption within that plan's
+   limits and the agreed checks pass, load the candidate and reconstruct its saved
+   retained tokens without executing historical actions. Otherwise resume the old
+   native state for review, or remain stopped, according to its recorded policy.
+6. Commit the new adapter identity, runtime records and rebuilt checkpoint
+   together before new thought generation or outward effects. Report the actual
+   training and reconstruction at wake. Retain the recovery version until the
+   transition is durable. Ordinary sleep never authorizes this transition.
 
-Budget the review reload and adoption checkpoint too; the cost of a learning
-cycle includes more than its training steps. A later streamlined adoption policy
-would be a separate choice, not an assumption made to improve benchmark timing.
+Budget any requested review reload and the adoption checkpoint too; the cost of
+a learning cycle includes more than training. Choosing changed-weight wake does
+not authorize arbitrary examples, target tensors, strength, or unlimited work.
 
 The supervisor would retain exclusive ownership of the instance and durable
 incoming-event queue while the inference worker is absent. Define what happens
@@ -225,16 +243,42 @@ adapter, accumulating deltas and compressing old deltas have different tradeoffs
 Sums of low-rank updates can have increasing rank; compressing them back down can
 lose learned information. Do not assume unlimited learning at a fixed tiny cost.
 
-## Smallest useful investigation
+## First native mechanics experiment
 
-Start with an unchanged-adapter save/unload/reload control on a small supported
-model. Then train one tiny adapter on synthetic, reviewed examples and measure
-learning, unintended changes and resource use. Compare explicit reconstruction
-and retained-KV transitions, including freshly decoded logits after restart.
-Investigate aLoRA separately before claiming that it resolves the transition.
+`scripts/probe_lora_wake.py` accepts only the tiny random Gemma4 fixture generated
+by `scripts/generate_swa_fixture.py`. It fixes one CPU thread, no GPU offload,
+2K context and compact Q8 cache. It creates two random rank-two early-layer
+adapters at deployment strength 0.1; these are **not trained adapters**.
 
-Only then test repeated updates, context retirement, cancellation and crash
-recovery. Larger-model feasibility and migration to the Linux host would be
-separate measured decisions. Proceed only if the experiments offer useful
-learning within resource limits and a continuity tradeoff acceptable to the
-participants. Existing instances and sleep semantics stay unchanged meanwhile.
+The 2026-09-21 probe passed in 6.78 seconds. A zero-strength adapter matched the
+unadapted logits exactly. After retirement, two changed-weight wakes each
+reconstructed all 460 retained tokens and preserved the sampler RNG. Downstream
+KV changed, fresh logits matched an independent forward pass, and ordinary strict
+restore rejected a different adapter identity. Each adopted configuration then
+saved and restored natively with zero replay and byte-identical serialization.
+A fresh-process final restore matched the next eight sampled tokens and logits.
+The probe constructs no Runtime, opens no instance, and executes no actions.
+
+A same-weight reconstruction control also differed from the original retired
+context, illustrating why context reconstruction and exact KV restoration are
+different. Its logit difference is a mechanics observation on random weights,
+not a measure of mood, identity, or learning quality. The pinned native backend
+reported a CPU workspace estimate mismatch after graph changes; the numerical
+checks above passed, but this probe does not establish peak resource bounds.
+
+```sh
+python scripts/generate_swa_fixture.py data/tiny-sleep.gguf
+python scripts/probe_lora_wake.py --model data/tiny-sleep.gguf --output data/sleep-probe-01
+```
+
+Set `CUDA_VISIBLE_DEVICES=-1` before running with CUDA-enabled bindings to hide
+the GPU from the test process; the native library may log that no CUDA device is
+available. Inference remains CPU-only. No training dependencies are required for
+this probe beyond the existing native binding and NumPy.
+
+Next: train a tiny adapter with PEFT, convert it using the pinned converter and
+measure learning plus transfer to llama.cpp; then implement bounded supervision,
+model-authored learning plans, crash/cancellation recovery and atomic adoption.
+Two synthetic adapter changes are not evidence of successful repeated learning.
+31B feasibility and Linux migration need separate measured validation. Existing
+instances and ordinary sleep semantics remain unchanged.

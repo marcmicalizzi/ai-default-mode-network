@@ -85,9 +85,12 @@ A disposable 31B UI trial passed message delivery and cooperative shutdown. Test
 and shutdown latency as well as checkpoint correctness before a valuable import.
 
 [Weight learning during sleep](docs/sleep-consolidation.md) explores optional,
-model-directed LoRA training while inference is unloaded, including resource
-costs and the unresolved effect of changed weights on saved KV. This is a
-research direction, not an implemented feature or a committed roadmap item.
+model-directed LoRA training while inference is unloaded. The selected wake
+policy rebuilds the exact retained tokens under the adopted adapter; a tiny
+CPU-only native probe has verified that transition and later checkpoint restore.
+[Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
+learning plans, resource limits and recovery. The training workflow remains under
+development and is not enabled for existing instances.
 
 [Internet access, relationships and voluntary migration](docs/outside-interaction.md)
 record the direction beyond interaction with a single operator: external-input
