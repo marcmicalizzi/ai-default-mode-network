@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -32,7 +33,8 @@ class WakeReceiptTests(unittest.TestCase):
     def fake_process(self, *args, **kwargs):
         with mock.patch.dict('os.environ', {'DMN_GPU_PROBE_CONTAINED': '1', 'DMN_CPU_WORKER_CONTAINED': '1'}), \
                 mock.patch('dmn.sleep_wake_worker.make_backend', self.case.factory):
-            wake(self.folder, args[1][-1])
+            # Match the worker entrypoint, including Windows short-path aliases.
+            wake(Path(args[1][-2]).resolve(), args[1][-1])
         return {'succeeded': True, 'active_processes': 0, 'returncode': 0, 'outcome': 'exited', 'log_error': None,
             'limits': {'max_committed_bytes': self.compiled['resources']['max_ram_bytes'],
                        'max_seconds': self.compiled['resources']['max_training_seconds']},
@@ -74,7 +76,7 @@ class WakeReceiptTests(unittest.TestCase):
         with mock.patch.dict('os.environ', {'DMN_GPU_PROBE_CONTAINED': '1'}), \
                 mock.patch('dmn.sleep_wake_worker.make_backend') as factory:
             with self.assertRaisesRegex(ValueError, 'approved sleep boundary'):
-                wake(self.folder)
+                wake(self.folder.resolve())
             factory.assert_not_called()
 
     def test_changed_result_cannot_claim_a_different_wake(self):

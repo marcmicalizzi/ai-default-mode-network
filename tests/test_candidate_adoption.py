@@ -106,7 +106,7 @@ class CandidateAdoptionTests(unittest.TestCase):
                        (reused['revision'], json_text(reused), 'completed', 0))
             db.execute('INSERT INTO sleep_runs VALUES(?,?,?)',
                        (adopted['id'], 'WakeCommitted', json_text(adopted)))
-        work = c.root / 'sleep' / self.run_id / 'worker'
+        work = c.r.root / 'sleep' / self.run_id / 'worker'
         (work / 'adapter').mkdir(parents=True)
         (work / 'adapter/adapter_config.json').write_text('{}')
         (work / 'adapter/adapter_model.safetensors').write_bytes(b'synthetic factors')
