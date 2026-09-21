@@ -10,7 +10,9 @@ quoted JSON strings, preserving those characters exactly. Ordinary JSON escaping
 also works. Other malformed JSON is rejected: no effect or message is delivered
 from a rejected frame. Its action_result explains the formatting error; retry a
 complete corrected frame if you still want the action. This update does not
-resend earlier rejected messages. Only a successful send_message action publishes
+resend earlier rejected messages. Earlier versions could report malformed JSON
+as an unavailable operation; those rejected frames had no effects.
+Only a successful send_message action publishes
 a message; writing a memory, including a path named /responses, does not send it.'''
 
 

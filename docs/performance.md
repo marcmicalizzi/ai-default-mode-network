@@ -30,7 +30,7 @@ CPU measurement, not model throughput; it does not resolve CPU layer offload.
 Ordering/tie tests and both sampler chains match the previous implementation.
 A native CPU fixture preserves fingerprint, restored KV, RNG and eight subsequent
 tokens/logits exactly across logging verbosity changes, with zero prompt replay.
-The expanded Windows suite passes 183 tests, including native CPU tests, in 76.1 seconds.
+The expanded Windows suite passes 184 tests, including native CPU tests, in 84.0 seconds.
 A separate CPU checkpoint created by the original production code also restored
 strictly under the proposed code and matched 24 subsequent tokens and logits
 exactly, without prompt replay. These checks use disposable state only.
@@ -56,7 +56,7 @@ single-thread CPU fixture with at most 4K context and a model no larger than
 16 MiB. This guard is a preflight check, not a GPU reservation or a way to detect
 every unrelated process. Check resource use and keep other model servers stopped
 before running a large comparison. A tiny CPU fixture exercised the harness while
-the primary instance remained active; no 31B performance improvement is claimed yet.
+the primary instance remained active; that fixture alone establishes no 31B speedup.
 
 For an idle-machine comparison, keep the model, occupied token count, quantization,
 sampling settings, warmup, power settings and other workloads comparable. Record
@@ -91,6 +91,38 @@ include CPU time/core equivalents and instantaneous GPU memory/utilization/power
 For the measured 31B/60K layout, 24 to 30 GPU layers adds roughly 1.60 GiB of
 weights plus 2.68 GiB of KV, excluding changes in compute buffers and backend
 representation. This is a sizing estimate, not a verified fit or speedup.
+
+### Measured desktop comparison (2026-09-20)
+
+A preliminary screen on an RTX 5090 with an i9-10980XE (18 physical cores),
+the pinned 31B Q4_K_M model, 60K capacity, full SWA allocation and Q8 K/V used
+25K synthetic occupied tokens, eight warmup tokens and 64 measured tokens per
+case. Every case used the proposed logging/sampling code; the baseline refers
+to the original placement settings. Each model ran in a separate process.
+
+| GPU layers | CPU threads | Tokens/s |
+| --- | --- | --- |
+| 24 | 6 | 1.10 |
+| 24 | 8 | 1.46 |
+| 24 | 12 | 1.68 |
+| 27 | 12 | 1.91 |
+| 30 | 12 | 2.03 |
+| 24 | 6, baseline recheck | 1.08 |
+| 30 | 18, additional comparison | 2.24 |
+
+The baseline recheck differed by about 2%; the fastest case was about 2.04 times
+the initial baseline. This was one measured run per setting, not a repeated
+statistical comparison. Small CPU diagnostics overlapped parts of the initial
+screen, including the 30-layer/12-thread decode measurement. Backup and suite
+work finished before the final 18-thread decode measurement. Startup timings
+are not controlled comparisons; repeat with no competing work before treating
+small differences between nearby settings as established.
+
+The 27-layer case left about 4.6 GiB of free VRAM, versus about 2.4 GiB at
+30 layers. These instantaneous device readings include desktop applications.
+Retirement can need additional working memory; fitting normal inference alone
+does not establish a usable continuous-run placement. These results do not
+recover the former full-GPU server throughput or validate compact cache.
 
 ### Adaptive placement direction
 
