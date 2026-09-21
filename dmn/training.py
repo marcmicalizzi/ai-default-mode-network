@@ -15,7 +15,8 @@ from .storage import json_text
 
 KIND = "peft_gemma4_cpu_v1"
 CONTINUE_KIND = "peft_gemma4_cpu_continue_v1"
-KINDS = {KIND, CONTINUE_KIND}
+KIND_V2 = "peft_gemma4_cpu_v2"
+KINDS = {KIND, CONTINUE_KIND, KIND_V2}
 SCOPE = "reviewed_cpu_training_test_only"
 CHECKS = ["artifact_integrity", "retained_tokens_and_rng", "tokenizer_parity",
           "base_unchanged", "adapter_roundtrip", "finite_training"]
@@ -87,7 +88,7 @@ def validate_recipe(value):
     if value["schema"] != 1 or value["kind"] not in KINDS or value["checks"] != CHECKS:
         raise ValueError("unsupported CPU recipe or checks")
     parent = value["parent"]
-    continuing = value["kind"] == CONTINUE_KIND
+    continuing = value["kind"] == CONTINUE_KIND or (value["kind"] == KIND_V2 and bool(parent.get("lora_adapters")))
     if parent.get("kind") != "native_llama_kv" or parent.get("research_lora"):
         raise ValueError("CPU recipe requires a native parent without research weight overrides")
     if not continuing and parent.get("lora_adapters"):
@@ -104,8 +105,14 @@ def validate_recipe(value):
             raise ValueError("continuation requires a positive whole-context parent strength and matching base")
     trainer = value["trainer"]
     fields = "python python_sha256 packages base_manifest converter_manifest converter_revision inference_name learning_rate seed"
-    _fields(trainer, fields + (" parent_adapter_manifest" if continuing else ""), "trainer")
-    for key in ("base_manifest", "converter_manifest", *(("parent_adapter_manifest",) if continuing else ())):
+    _fields(trainer, fields + (" parent_adapter_manifest" if continuing else "") +
+            (" provenance_manifest" if value["kind"] == KIND_V2 else ""), "trainer")
+    references = ["base_manifest", "converter_manifest"]
+    if continuing:
+        references.append("parent_adapter_manifest")
+    if value["kind"] == KIND_V2:
+        references.append("provenance_manifest")
+    for key in references:
         reference = trainer[key]
         _fields(reference, "path sha256", "manifest reference")
         if not Path(reference["path"]).is_absolute() or not re.fullmatch(r"[0-9a-f]{64}", reference["sha256"]):
@@ -127,7 +134,7 @@ def validate_recipe(value):
         raise ValueError("CPU recipe requires a zero GPU budget")
 
 
-def parent_adapter_config(path):
+def parent_adapter_config(path, *, targets=None):
     """Narrow pinned PEFT contract; reject features the converter may ignore."""
     config = json.loads((path / "adapter_config.json").read_text())
     required = {"peft_type": "LORA", "task_type": "CAUSAL_LM", "bias": "none", "lora_dropout": 0}
@@ -142,7 +149,7 @@ def parent_adapter_config(path):
     if (not isinstance(config, dict) or config.keys() - (required.keys() | neutral.keys() | metadata | {"r", "lora_alpha", "target_modules"}) or
             any(config.get(k) != v for k, v in required.items()) or
             any(config[k] != v for k, v in neutral.items() if k in config) or
-            sorted(config.get("target_modules", [])) != ["o_proj", "q_proj"] or
+            sorted(config.get("target_modules", [])) != sorted(targets or ["o_proj", "q_proj"]) or
             type(config.get("r")) is not int or not 1 <= config["r"] <= 64 or
             type(config.get("lora_alpha")) not in (int, float) or not 1 <= config["lora_alpha"] <= 1024 or
             int(config["lora_alpha"]) != config["lora_alpha"]):
@@ -163,13 +170,21 @@ def compile_training(value):
         raise ValueError("deployment strength is not representable")
     from .worker_limits import WorkerLimits
     WorkerLimits(value["resources"]["max_ram_bytes"], value["resources"]["max_training_seconds"])
-    continuing = value["recipe"]["kind"] == CONTINUE_KIND
+    continuing = value["recipe"]["kind"] == CONTINUE_KIND or (value["recipe"]["kind"] == KIND_V2 and bool(value["parent"].get("lora_adapters")))
+    profile = None
+    if value["recipe"]["kind"] == KIND_V2:
+        from .training_models import model_profile
+        from .base_provenance import verify
+        trainer = value["recipe"]["trainer"]
+        proof, _ = verify(trainer["provenance_manifest"], trainer, value["parent"]["model_sha256"])
+        base = verify_tree(trainer["base_manifest"], base=True)
+        profile = model_profile(base, wrapped=True)
     training_scale = 1.
     lineage = None
     if continuing:
         reference = value["recipe"]["trainer"]["parent_adapter_manifest"]
         path = verify_tree(reference, adapter=True)
-        config = parent_adapter_config(path)
+        config = parent_adapter_config(path, targets=profile["target_modules"] if profile else None)
         old = value["parent"]["lora_adapters"][0]
         if (prefs["rank"] != config["r"] or prefs["alpha"] != config["lora_alpha"] or scale != old["scale"]):
             raise ValueError("continuation preserves parent rank, alpha and deployment strength; implicit changes are refused")
@@ -189,6 +204,12 @@ def compile_training(value):
                   "training_scale": training_scale, "deployment_scale_float32": scale,
                   "loss": "mean_cross_entropy_on_shifted_target_labels_only; no padding/truncation",
                   "evaluation": "selected-example loss at training and deployment scale; no heldout or benefit guarantee"})
+    if profile:
+        value["training"]["model_profile"] = profile
+        value["training"]["target_modules"] = profile["target_modules"]
+        value["training"]["base_provenance"] = {"revision": proof["revision"], "quantization": proof["request"]["quantization"],
+            "tensor_types": proof["tensor_types"], "method": "local conversion/quantization reproduced before learning; cached proof revalidated"}
+        value["limitation"] = "Tiny CPU integration only. Training uses original F32 weights; quantized inference is not QLoRA training. No GPU, hard disk quota or unattended service yet."
     return value
 
 
@@ -216,6 +237,9 @@ def read_completion(folder, compiled):
             result.get("execution") != compiled["revision"] or result.get("completed") is not True):
         raise ValueError("training completion identity failed")
     required = {"adapter.gguf", "adapter/adapter_config.json", "adapter/adapter_model.safetensors", "base-check.gguf"}
+    proven = compiled.get("recipe", {}).get("kind") == KIND_V2
+    if proven:
+        required.add("provenance.json")
     lineage = compiled.get("lineage")
     if lineage:
         required |= {"parent-check.gguf", "parent-adapter/adapter_config.json", "parent-adapter/adapter_model.safetensors"}
@@ -231,6 +255,8 @@ def read_completion(folder, compiled):
             raise ValueError("completed training artifact changed")
     if result["artifacts"]["base-check.gguf"] != compiled["parent"]["model_sha256"]:
         raise ValueError("training base does not reproduce inference identity")
+    if proven and result["artifacts"]["provenance.json"] != compiled["recipe"]["trainer"]["provenance_manifest"]["sha256"]:
+        raise ValueError("training used a different base provenance record")
     if result.get("lineage") != lineage:
         raise ValueError("training completion lineage differs from the reviewed parent")
     if lineage and (result["artifacts"]["parent-check.gguf"] != lineage["parent_adapter"]["sha256"] or

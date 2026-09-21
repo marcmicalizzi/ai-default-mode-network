@@ -1,7 +1,9 @@
-"""Windows process-tree limits for trusted, offline CPU research workers.
+"""Windows process-tree limits for trusted, offline research workers.
 
 This is not a code sandbox or a production sleep executor. In particular it
-does not enforce a disk quota or authorize a recipe, dataset or weight change.
+does not enforce disk or total-process VRAM quotas, or authorize a recipe,
+dataset or weight change. CUDA is hidden in the default CPU entrypoint; the
+separate GPU research entrypoint requires explicit opt-in.
 Unsupported hosts fail before launching anything; there is no polling-only RAM
 fallback. The inference environment needs no additional dependencies.
 """
@@ -219,6 +221,22 @@ class SuspendedPython:
 
 
 def run_cpu_worker(python, arguments, *, cwd, log, limits, cancelled=lambda: False):
+    """Contained trusted CPU worker; CUDA stays hidden regardless of caller env."""
+    return _run_worker(python, arguments, cwd=cwd, log=log, limits=limits, cancelled=cancelled, gpu_research=False)
+
+
+def run_gpu_research_worker(python, arguments, *, cwd, log, limits, allow_gpu=False, cancelled=lambda: False):
+    """Explicit research only: RAM/time/tree containment, NOT a total VRAM quota.
+
+    No DMN learning recipe calls this. The caller must obtain the maintenance
+    agreement before opting in. Visibility alone does not constrain GPU memory.
+    """
+    if allow_gpu is not True:
+        raise ValueError("GPU research requires explicit opt-in; CUDA remains unused")
+    return _run_worker(python, arguments, cwd=cwd, log=log, limits=limits, cancelled=cancelled, gpu_research=True)
+
+
+def _run_worker(python, arguments, *, cwd, log, limits, cancelled, gpu_research):
     """Run trusted Python code inside an OS-limited process tree; return evidence.
 
     The supervisor retains a job handle. It resumes the suspended child only
@@ -246,6 +264,9 @@ def run_cpu_worker(python, arguments, *, cwd, log, limits, cancelled=lambda: Fal
             OPENBLAS_NUM_THREADS="1", TOKENIZERS_PARALLELISM="false", HF_HUB_OFFLINE="1",
             TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1", PYTHONNOUSERSITE="1",
             PYTHONDONTWRITEBYTECODE="1")
+        environment.pop("DMN_GPU_PROBE_CONTAINED", None)
+        if gpu_research:
+            environment.update(CUDA_VISIBLE_DEVICES="0", DMN_GPU_PROBE_CONTAINED="1")
         process = SuspendedPython([str(python), *arguments], cwd, environment, job)
 
         def drain():
@@ -298,7 +319,8 @@ def run_cpu_worker(python, arguments, *, cwd, log, limits, cancelled=lambda: Fal
                 "succeeded": outcome == "exited" and process.returncode == 0 and not drained["error"],
                 "elapsed_seconds": time.monotonic() - started, "limits": dataclasses.asdict(limits),
                 "memory_enforcement": "windows_job_aggregate_commit", "wall_time_enforcement": "supervisor_watchdog",
-                "disk_quota_enforced": False, "gpu_policy": "trusted_cpu_code_and_hidden_cuda_devices",
+                "disk_quota_enforced": False,
+                "gpu_policy": ("explicit_gpu_research; no total process VRAM quota" if gpu_research else "trusted_cpu_code_and_hidden_cuda_devices"),
                 **snapshot, "log_bytes_seen": drained["bytes_seen"], "log_bytes_written": drained["bytes_written"],
                 "log_truncated": drained["bytes_seen"] > drained["bytes_written"], "log_error": drained["error"]}
     finally:

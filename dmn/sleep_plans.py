@@ -28,7 +28,10 @@ prebuilt adapter without learning. peft_gemma4_cpu_v1 actually trains the compil
 examples on a verified F32 base with target-only loss, then converts and checks
 the adapter. peft_gemma4_cpu_continue_v1 continues exactly one verified existing
 adapter at unchanged rank, alpha and positive deployment strength, with a fresh
-optimizer. All remain restricted tests; all recipe limits must be reviewed.
+optimizer. peft_gemma4_cpu_v2 uses cached verified conversion/quantization evidence
+and exact text-decoder targets, including in the full Gemma wrapper; it still
+trains frozen F32 source weights, not NF4/QLoRA. All remain tiny CPU tests; all
+recipe limits must be reviewed.
 learning_sleep_report(run_id, offset=0,
 limit=200) reads a completed cycle report. Ordinary sleep remains unchanged.'''
 
@@ -47,7 +50,7 @@ def implementation_identity():
     return {name: sha256_file(Path(__file__).with_name(name)) for name in (
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
         "runtime.py", "protocol.py", "learning.py", "training.py", "training_worker.py",
-        "training_executor.py", "worker_limits.py")}
+        "training_executor.py", "training_models.py", "base_provenance.py", "provenance_native.py", "worker_limits.py")}
 
 
 def put_recipe(store, value, now):

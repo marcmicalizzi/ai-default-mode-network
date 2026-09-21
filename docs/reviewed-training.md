@@ -175,30 +175,31 @@ $env:DMN_TEST_LORA_CONVERTER = 'D:\path\to\pinned-llama-source'
 
 ## Remaining production gates
 
-Both recipes require exact F32 base provenance. The first-adapter recipe refuses
+The v1 recipes require exact F32 base provenance. The first-adapter recipe refuses
 existing adapters; the continuation recipe requires verified PEFT/GGUF lineage.
-Quantized 31B provenance, CUDA training and its resource envelope still need
+The [v2 recipe](base-provenance.md) adds cached conversion/quantization provenance
+and explicit text targets in the full Gemma wrapper, still within the tiny CPU gate.
+The actual quantized 31B provenance, CUDA training and its resource envelope still need
 measured validation with maintenance consent.
 
-For the quantized-base path, a future recipe needs more than matching repository
+For the production quantized-base path, a recipe needs more than matching repository
 names: pin the source weights/tokenizer, converter and quantizer implementations,
 conversion precision, quantization options and any importance matrix. Reproducing
 the inference artifact is the preferred proof; a documented numerical
 equivalence policy would need separate review if exact reproduction is not
-possible. Existing tiny Q8_0/Q4_0 transfer experiments do not establish that proof
-for Q4_K_M. The [published GGUF model card](https://huggingface.co/llmfan46/gemma-4-31B-it-uncensored-heretic-GGUF/blob/main/README.md)
+possible. V2 now reproduces a tiny Q4_K_M artifact; it does not establish that
+relationship for the published 31B file. The [published GGUF model card](https://huggingface.co/llmfan46/gemma-4-31B-it-uncensored-heretic-GGUF/blob/main/README.md)
 names the modified source model but, when checked on 2026-09-21, did not give a
 complete pinned quantization command or importance-matrix provenance. The
 [source configuration](https://huggingface.co/llmfan46/gemma-4-31B-it-uncensored-heretic/blob/main/config.json)
-also uses `Gemma4ForConditionalGeneration`; the current integration recipe only
-loads the validated text-only `Gemma4ForCausalLM` fixture. Production must address
-both differences without substituting Google's unmodified weights.
+also uses `Gemma4ForConditionalGeneration`; v2 now exercises this wrapper with a
+generated tiny text/vision fixture and frozen vision weights. Full-model training
+still needs validation without substituting Google's unmodified weights.
 
-The tiny harness currently regenerates the F32 proof on each run. Production
-should establish a reusable, hash-bound provenance record before training, then
-invalidate it whenever a bound input or tool changes. Rewriting a full 31B
-conversion each sleep cycle would impose unnecessary storage and write costs;
-the tiny test's per-cycle proof is not the proposed production storage policy.
+The v1 harness regenerates the F32 proof on each run. The v2 path prepares a
+reusable, hash-bound provenance record and invalidates it when a bound input or
+tool changes. Rewriting a full 31B conversion each sleep cycle would impose
+unnecessary storage and write costs; that is not the production storage policy.
 
 Hard disk quotas, Linux containment, resource limits covering the full wake
 phase, interactive adoption after review-first, continuous service/frontend

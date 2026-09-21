@@ -18,7 +18,8 @@ import time
 from .backend import sha256_file
 from .sleep_plans import seal, implementation_identity
 from .storage import json_text, write_durable
-from .training import CHECKS, PACKAGES, SCOPE, validate_recipe, validate_examples, verify_tree, parent_adapter_config
+from .training import CHECKS, KIND_V2, PACKAGES, SCOPE, validate_recipe, validate_examples, verify_tree, parent_adapter_config
+from .training_models import model_profile, load_base, factor_names
 
 
 def train(folder):
@@ -37,27 +38,33 @@ def train(folder):
     converter = verify_tree(trainer["converter_manifest"])
     if sum(p.stat().st_size for p in base_path.iterdir()) > 4 * 1024**2:
         raise ValueError("CPU integration gate currently permits only tiny local training bases")
-    config_data = json.loads((base_path / "config.json").read_text())
-    if (config_data.get("architectures") != ["Gemma4ForCausalLM"] or config_data.get("auto_map") or
-            config_data.get("attention_dropout", 0) != 0):
-        raise ValueError("CPU recipe requires the validated text-only Gemma4 architecture without dropout/custom code")
+    profile = model_profile(base_path, wrapped=recipe["kind"] == KIND_V2)
+    if recipe["kind"] == KIND_V2 and profile != compiled["training"]["model_profile"]:
+        raise ValueError("training model profile differs from the reviewed geometry")
 
-    # Conversion is deliberately before learning: an unrelated training base
-    # must fail without spending any gradient steps on it. A later quantized
-    # recipe needs a different, measured provenance proof.
+    # Verify the inference relationship before spending gradient steps. V1
+    # reproduces F32 here; v2 rechecks its separately prepared quantization proof.
     def convert(script, arguments):
         subprocess.run([sys.executable, str(converter / script), "--outtype", "f32", *arguments],
                        check=True, stdin=subprocess.DEVNULL, cwd=converter)
 
-    convert("convert_hf_to_gguf.py", ["--model-name", trainer["inference_name"], "--outfile",
-                                   str(folder / "base-check.gguf"), str(base_path)])
+    if recipe["kind"] == KIND_V2:
+        from .base_provenance import verify
+        _, proven = verify(trainer["provenance_manifest"], trainer, compiled["parent"]["model_sha256"])
+        shutil.copyfile(proven / "base.gguf", folder / "base-check.gguf")
+        shutil.copyfile(Path(trainer["provenance_manifest"]["path"]), folder / "provenance.json")
+        if sha256_file(folder / "provenance.json") != trainer["provenance_manifest"]["sha256"]:
+            raise ValueError("base provenance changed during copy")
+    else:
+        convert("convert_hf_to_gguf.py", ["--model-name", trainer["inference_name"], "--outfile",
+                                       str(folder / "base-check.gguf"), str(base_path)])
     if sha256_file(folder / "base-check.gguf") != compiled["parent"]["model_sha256"]:
         raise ValueError("HF training base does not reproduce the exact inference GGUF")
 
     lineage = compiled.get("lineage")
     if lineage:
         parent_path = verify_tree(trainer["parent_adapter_manifest"], adapter=True)
-        config = parent_adapter_config(parent_path)
+        config = parent_adapter_config(parent_path, targets=profile["target_modules"] if recipe["kind"] == KIND_V2 else None)
         if (config["r"] != prefs["rank"] or config["lora_alpha"] != prefs["alpha"] or
                 lineage["parent_adapter"] != compiled["parent"]["lora_adapters"][0]):
             raise ValueError("parent adapter geometry or identity changed")
@@ -79,7 +86,7 @@ def train(folder):
     import numpy as np
     import torch
     from peft import LoraConfig, PeftModel, get_peft_model, get_peft_model_state_dict
-    from transformers import Gemma4ForCausalLM, PreTrainedTokenizerFast
+    from transformers import PreTrainedTokenizerFast
     from safetensors.numpy import load_file
 
     if torch.version.cuda is not None:
@@ -89,9 +96,8 @@ def train(folder):
     torch.manual_seed(trainer["seed"])
     torch.use_deterministic_algorithms(True)
     tokenizer = PreTrainedTokenizerFast.from_pretrained(base_path, local_files_only=True)
-    base = Gemma4ForCausalLM.from_pretrained(base_path, local_files_only=True,
-                                            attn_implementation="eager").float().cpu().eval()
-    validate_examples(compiled["examples"], tokenizer, base.config.vocab_size, base.config.max_position_embeddings)
+    base = load_base(base_path, profile)
+    validate_examples(compiled["examples"], tokenizer, profile["vocab_size"], profile["max_position_embeddings"])
 
     def tensor_hash(tensor):
         return hashlib.sha256(tensor.detach().contiguous().numpy().tobytes()).hexdigest()
@@ -107,9 +113,9 @@ def train(folder):
             np.testing.assert_array_equal(tensor.detach().numpy(), original[name])
     else:
         model = get_peft_model(base, LoraConfig(task_type="CAUSAL_LM", r=prefs["rank"], lora_alpha=int(prefs["alpha"]),
-            target_modules=["q_proj", "o_proj"], lora_dropout=0., bias="none", init_lora_weights=True))
+            target_modules=compiled["training"]["target_modules"], lora_dropout=0., bias="none", init_lora_weights=True))
     params = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
-    if len(params) != base.config.num_hidden_layers * 4 or any("lora_" not in name for name, _ in params):
+    if {name for name, _ in params} != factor_names(profile):
         raise ValueError("unexpected trainable tensor set")
     examples = compiled["examples"]
 
@@ -154,8 +160,7 @@ def train(folder):
         raise ValueError("nonfinite learned adapter")
     learned = evaluate()
     model.save_pretrained(folder / "adapter", safe_serialization=True, save_embedding_layers=False)
-    reloaded = PeftModel.from_pretrained(Gemma4ForCausalLM.from_pretrained(base_path, local_files_only=True,
-        attn_implementation="eager"), folder / "adapter").eval()
+    reloaded = PeftModel.from_pretrained(load_base(base_path, profile), folder / "adapter").eval()
     set_scale(reloaded, compiled["training"]["training_scale"])
     if evaluate(reloaded) != learned:
         raise ValueError("PEFT save/reload changed selected-example losses")
@@ -169,11 +174,11 @@ def train(folder):
     factors = {t.name: t.data for t in reader.tensors}
     peft = load_file(folder / "adapter/adapter_model.safetensors")
     expected = {}
-    for layer in range(base.config.num_hidden_layers):
+    for layer in range(profile["num_hidden_layers"]):
         for hf, native in (("q_proj", "attn_q"), ("o_proj", "attn_output")):
             for side in ("A", "B"):
                 expected[f"blk.{layer}.{native}.weight.lora_{side.lower()}"] = peft[
-                    f"base_model.model.model.layers.{layer}.self_attn.{hf}.lora_{side}.weight"]
+                    f"base_model.model.{profile['text_prefix']}.layers.{layer}.self_attn.{hf}.lora_{side}.weight"]
     if factors.keys() != expected.keys() or len(peft) != len(expected):
         raise ValueError("converted tensor set differs")
     for name, values in expected.items():
@@ -189,6 +194,8 @@ def train(folder):
     # interrupted before recording Candidate can recover this without retraining.
     artifacts = {name: sha256_file(folder / name) for name in (
         "base-check.gguf", "adapter.gguf", "adapter/adapter_config.json", "adapter/adapter_model.safetensors")}
+    if recipe["kind"] == KIND_V2:
+        artifacts["provenance.json"] = sha256_file(folder / "provenance.json")
     if lineage:
         artifacts.update({name: sha256_file(folder / name) for name in (
             "parent-check.gguf", "parent-adapter/adapter_config.json", "parent-adapter/adapter_model.safetensors")})

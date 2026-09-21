@@ -84,6 +84,14 @@ retry training. Tiny-model success is not a 31B training feasibility result.
 
 ## Remaining production work
 
+The separate `run_gpu_research_worker` entrypoint now prepares the
+[tiny NF4 experiment](qlora-gpu-probe.md). It requires explicit opt-in and uses
+the same RAM, process-tree and time containment, but exposes GPU 0 and provides
+**no total-process VRAM quota**. Environment-isolation tests launch children
+that only print strings; GPU training itself has not yet been validated. No DMN
+recipe calls this entrypoint. The CPU worker always hides CUDA and clears the
+GPU research marker, including when inherited from the parent environment.
+
 The [reviewed-plan CPU trainer](reviewed-training.md) now connects a constrained
 real recipe to the durable sleep phases, using this launcher. The standalone
 experiment above is unchanged; the integrated recipe remains a tiny test path.

@@ -13,7 +13,7 @@ from .deep_sleep import FixtureExecutor
 from .ending import _owned, _sync_directory
 from .storage import write_durable
 from .sleep_plans import seal
-from .training import read_completion, verify_tree
+from .training import KIND_V2, read_completion, verify_tree
 from .worker_limits import WorkerLimits, run_cpu_worker
 
 
@@ -34,6 +34,9 @@ class TrainingExecutor(FixtureExecutor):
             raise ValueError("reviewed training interpreter changed")
         verify_tree(trainer["base_manifest"], base=True)
         verify_tree(trainer["converter_manifest"])
+        if compiled["recipe"]["kind"] == KIND_V2:
+            from .base_provenance import verify
+            verify(trainer["provenance_manifest"], trainer, compiled["parent"]["model_sha256"])
         if compiled.get("lineage"):
             verify_tree(trainer["parent_adapter_manifest"], adapter=True)
         # Any directory here means work may have started. Re-entry uses recover,

@@ -114,6 +114,12 @@ wake. A continuation recipe verifies the previous PEFT/GGUF lineage and trains
 the existing factors at their current deployment strength, preserving rank and
 alpha. Both F32 recipes remain restricted to tiny integration tests; production
 and 31B training are not enabled.
+A [reusable base-provenance path](docs/base-provenance.md) now prepares and checks
+conversion/quantization evidence for a v2 CPU recipe, including text-only adapter
+targets inside the full Gemma wrapper. This remains a tiny-model integration path.
+The [separate NF4 GPU experiment](docs/qlora-gpu-probe.md) is prepared, with an
+inspection-only default; its GPU kernels still need validation after maintenance
+consent.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

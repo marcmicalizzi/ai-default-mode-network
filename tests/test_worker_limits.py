@@ -9,10 +9,18 @@ import time
 import unittest
 from unittest.mock import patch
 
-from dmn.worker_limits import WorkerLimits, WindowsJob, run_cpu_worker
+from dmn.worker_limits import WorkerLimits, WindowsJob, run_cpu_worker, run_gpu_research_worker
 
 
 class LimitsTest(unittest.TestCase):
+    def test_gpu_research_cannot_launch_without_explicit_opt_in(self):
+        with patch("dmn.worker_limits._run_worker") as launch:
+            for choice in (False, None, "yes", 1):
+                with self.subTest(choice=choice), self.assertRaisesRegex(ValueError, "explicit opt-in"):
+                    run_gpu_research_worker(sys.executable, [], cwd=Path.cwd(), log=Path("unused.log"),
+                        limits=WorkerLimits(128 * 1024**2, 5), allow_gpu=choice)
+            launch.assert_not_called()
+
     def test_rejects_invalid_resource_ceilings(self):
         for values in ({"max_committed_bytes": True}, {"max_committed_bytes": 2**64},
                        {"max_seconds": float("nan")}, {"max_seconds": float("inf")},
@@ -52,6 +60,19 @@ class WindowsWorkerTest(unittest.TestCase):
         # Windows venv launchers/console helpers also belong to the job.
         self.assertGreaterEqual(result["total_processes"], 2)
         self.assertGreater(result["os_peak_job_memory_bytes"], 0)
+
+    def test_gpu_research_visibility_is_explicit_and_does_not_leak_into_cpu_jobs(self):
+        # Inspect environment strings only: neither child imports CUDA or a model.
+        code = "import os; print(os.environ['CUDA_VISIBLE_DEVICES'], os.environ.get('DMN_GPU_PROBE_CONTAINED'))"
+        result = run_gpu_research_worker(sys.executable, ["-c", code], cwd=self.root, log=self.root / "gpu-env.log",
+            limits=WorkerLimits(128 * 1024**2, 10), allow_gpu=True)
+        self.assertTrue(result["succeeded"])
+        self.assertEqual((self.root / "gpu-env.log").read_text().strip(), "0 1")
+        self.assertIn("no total process VRAM quota", result["gpu_policy"])
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0", "DMN_GPU_PROBE_CONTAINED": "1"}):
+            cpu = self.run_code(code)
+        self.assertTrue(cpu["succeeded"])
+        self.assertEqual((self.root / "worker.log").read_text().strip(), "-1 None")
 
     def test_os_refuses_large_allocation(self):
         result = self.run_code("bytearray(256 * 1024**2)", max_committed_bytes=64 * 1024**2)

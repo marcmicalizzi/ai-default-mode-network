@@ -16,7 +16,7 @@ from dmn.config import Config
 from dmn.deep_sleep import run_fixture_sleep, FixtureExecutor
 from dmn.sleep_plans import seal, identity, read_record, implementation_identity
 from dmn.storage import json_text, write_durable
-from dmn.training import (CHECKS, KIND, CONTINUE_KIND, PACKAGES, CONVERTER_REVISION, tree_manifest,
+from dmn.training import (CHECKS, KIND, CONTINUE_KIND, KIND_V2, PACKAGES, CONVERTER_REVISION, tree_manifest,
                           verify_tree, validate_examples, read_completion, compile_training, parent_adapter_config)
 from dmn.training_executor import TrainingExecutor
 from tests import test_deep_sleep as sleep_fixtures
@@ -257,7 +257,7 @@ class TrainingContractTest(unittest.TestCase):
         folder = c.root / "sleep" / run_id / "worker"
         (folder / "adapter").mkdir(parents=True)
         (folder / "parent-adapter").mkdir()
-        for name in ("input.json", "result.json", "result.json.partial", "process.json", "failure.json", "worker.log", "base-check.gguf", "parent-check.gguf", "adapter.gguf"):
+        for name in ("input.json", "result.json", "result.json.partial", "process.json", "failure.json", "worker.log", "base-check.gguf", "parent-check.gguf", "provenance.json", "adapter.gguf"):
             (folder / name).write_text("private selected examples")
         for name in ("adapter_config.json", "adapter_model.safetensors", "README.md"):
             (folder / "adapter" / name).write_text("candidate")
@@ -349,6 +349,17 @@ class CompletionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "deployed parent"):
             read_completion(self.work, self.compiled)
 
+    def test_provenance_copy_must_match_the_reviewed_record(self):
+        (self.work / "provenance.json").write_text("synthetic cached proof")
+        digest = sha256_file(self.work / "provenance.json")
+        self.compiled["recipe"] = {"kind": KIND_V2, "trainer": {"provenance_manifest": {"sha256": digest}}}
+        self.result["artifacts"]["provenance.json"] = digest
+        write_durable(self.work / "result.json", seal(self.result))
+        read_completion(self.work, self.compiled)
+        self.compiled["recipe"]["trainer"]["provenance_manifest"]["sha256"] = "e" * 64
+        with self.assertRaisesRegex(ValueError, "different base provenance"):
+            read_completion(self.work, self.compiled)
+
 
 @unittest.skipUnless(os.name == "nt" and all(os.environ.get(k) for k in (
     "DMN_TEST_LORA_PARENT", "DMN_TEST_TRAINING_PYTHON", "DMN_TEST_LORA_CONVERTER")), "requires CPU training/native environments and tiny local assets")
@@ -358,6 +369,10 @@ class NativeTrainingTest(unittest.TestCase):
 
     def test_existing_adapter_continues_at_deployed_strength_and_rebuilds_native_context(self):
         self.run_training(continuing=True)
+
+    @unittest.skipUnless(os.environ.get("DMN_TEST_FULL_PROVENANCE"), "requires generated full-wrapper provenance fixture")
+    def test_full_wrapper_quantized_base_training_and_continuation(self):
+        self.run_training(continuing=False, provenance=Path(os.environ["DMN_TEST_FULL_PROVENANCE"]).resolve())
 
     def test_mismatched_parent_is_rejected_before_gradients(self):
         from dmn.worker_limits import WorkerLimits, run_cpu_worker
@@ -385,7 +400,7 @@ class NativeTrainingTest(unittest.TestCase):
             self.assertFalse((work / "adapter").exists())
             self.assertFalse((work / "result.json").exists())
 
-    def run_training(self, *, continuing):
+    def run_training(self, *, continuing, provenance=None):
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
         from dmn.runtime import Runtime
         from tests.test_adapters import native_config
@@ -398,6 +413,8 @@ class NativeTrainingTest(unittest.TestCase):
             config = native_config(assets)
             c.config = dataclasses.replace(config, lora_adapters=config.lora_adapters if continuing else (), n_ctx=32768,
                 preparation_tokens=1, clock_interval_seconds=0, checkpoint_policy="effects", checkpoint_tokens=100000)
+            if provenance:
+                c.config = dataclasses.replace(c.config, model_path=str(provenance.parent / "base.gguf"))
             with mock.patch("dmn.runtime.PROTOCOL", "Disposable training integration. Injected choices are mechanics tests, not real consent."):
                 c.r = Runtime(c.root, c.config, sleep_test_mode=True)
             c.plan["checks"] = CHECKS
@@ -405,6 +422,11 @@ class NativeTrainingTest(unittest.TestCase):
             c.plan["resources"].update(max_ram_bytes=1536 * 1024**2, max_training_seconds=180)
             value = recipe(identity(c.r.backend.fingerprint), c.plan["resources"], Path(c.temp.name))
             bind_local_assets(value, Path(c.temp.name), assets, continuing=continuing)
+            if provenance:
+                proof = json.loads(provenance.read_text())
+                value["kind"] = KIND_V2
+                value["trainer"].update(proof["request"]["conversion"])
+                value["trainer"]["provenance_manifest"] = {"path": str(provenance), "sha256": sha256_file(provenance)}
             c.recipe_id = c.r.offer_learning_recipe(value)["revision"]
             c.r.tick()
             c.generate({"op": "send_message", "content": "fixture message once"})
@@ -446,14 +468,42 @@ class NativeTrainingTest(unittest.TestCase):
             self.assertEqual(c.r.state["last_restore"]["prompt_tokens_reevaluated"], 0)
             self.assertEqual(len(c.r.store.messages()), 1)
             self.assertLess(c.r.state["event_cursor"], queued_id)
+            continuation = None
+            if provenance:
+                self.assertEqual(completion["trainable_parameters"], 3584)
+                self.assertEqual(sha256_file(provenance), value["trainer"]["provenance_manifest"]["sha256"])
+                parent = identity(c.r.backend.fingerprint)
+                c.r.close()
+                # Worker-level second-cycle test only. It installs an inactive
+                # candidate; it does not pretend to obtain another approval or
+                # adopt that candidate into the disposable Runtime.
+                value["parent"] = parent
+                value["trainer"]["parent_adapter_manifest"] = reference(Path(c.temp.name) / "continuation-parent.json",
+                    tree_manifest(receipt_path.parent / "adapter"))
+                compiled = json.loads((receipt_path.parent / "input.json").read_text())
+                compiled.update(parent=parent, recipe=seal(value))
+                compiled = seal(compile_training({k: v for k, v in compiled.items() if k != "revision"}))
+                second = Path(c.temp.name) / "second-worker"
+                second.mkdir()
+                candidate = TrainingExecutor(second).candidate(c.root, compiled)
+                second_receipt = json.loads((second / "worker/result.json").read_text())
+                self.assertTrue(second_receipt["parent_factors_loaded_exactly"])
+                self.assertEqual(second_receipt["trainable_parameters"], 3584)
+                self.assertEqual(len(candidate["adapters"]), 1)
+                self.assertEqual(candidate["lineage"]["parent_adapter"], parent["lora_adapters"][0])
+                self.assertEqual(second_receipt["loss_after_training_scale"], second_receipt["loss_after_deployment_scale"])
+                continuation = candidate["training"]
             # Save only synthetic diagnostic evidence if explicitly requested.
             if os.environ.get("DMN_TEST_TRAINING_REPORT"):
                 report = Path(os.environ["DMN_TEST_TRAINING_REPORT"])
                 if continuing:
                     report = report.with_name(report.stem + "-continuation.json")
+                if provenance:
+                    report = report.with_name(report.stem + "-full-quantized.json")
                 write_durable(report, {
                     "completed": True, "training": result["report"]["candidate"]["training"],
                     "lineage": completion.get("lineage"), "parent_factors_loaded_exactly": completion.get("parent_factors_loaded_exactly"),
+                    "full_wrapper_continuation": continuation,
                     "retained_tokens": len(old["tokens"]), "tokens_and_rng_equal": True,
                     "strict_restore_replay": 0, "queued_input_preserved": True, "messages_unchanged": True,
                     "completed_worker_recovered_without_retraining": True})
