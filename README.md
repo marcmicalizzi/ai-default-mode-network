@@ -219,6 +219,12 @@ These modes verify the saved token/RNG/runtime metadata, preserve durable memori
 
 **Sleep** is a model decision, distinct from operator suspension. `sleep()` and EOG wait indefinitely for an event. `sleep(seconds)` also wakes on its timer. Clock updates do not wake a sleeping model. Restart preserves that choice. Resume restores the pre-suspension mode; send a message if you want to introduce an event to an inactive instance.
 
+[Optional idle activity and sleep-save cooldown](docs/idle-state.md) add a
+model-selected pace between focus and sleep. Idle keeps the same context and
+generates bounded bursts without checkpointing every pause. A separate opt-in
+ordinary-sleep cooldown records sleep choices immediately while coalescing full
+snapshots. Defaults retain the previous behavior; neither feature enables training.
+
 **Ending an instance** is a separate model choice. `end_instance` offers a
 permanent stop with an archive, or with deletion of its managed state. The model
 chooses the mode and confirms its own request; no operator approval is required.

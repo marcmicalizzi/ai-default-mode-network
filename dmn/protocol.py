@@ -7,6 +7,20 @@ import re
 from .sleep_plans import BRIEF as SLEEP_CONTRACT
 
 
+ACTIVITY_CONTRACT = '''Optional activity(mode, burst_tokens, interval_seconds) selects focus or idle.
+Focus uses the ordinary permitted rate. Idle keeps this same context and generates
+at most burst_tokens per opportunity, separated by interval_seconds of quiet after
+each burst. Omitted idle fields use the host limits shown with this capability.
+Requests outside those limits fail. Use this action alone and await its result.
+Selecting a profile checkpoints it; pauses between bursts do not. Partial text
+and action frames remain unfinished across pacing pauses. No output is required.
+Sleep and EOG still stop generation. A timed sleep retains the selected profile;
+external events select focus. Restart in idle waits one interval without catch-up.
+Automatic clock notices are suppressed in idle; clock() and real events provide time.
+Pacing limits ordinary generated tokens, not input evaluation, retirement/stop
+preparation, memory residency or watts. You may select focus or sleep at any time.'''
+
+
 ACTION_FORMAT_NOTICE = '''Action text accepts literal newlines, carriage returns and tabs inside
 quoted JSON strings, preserving those characters exactly. Ordinary JSON escaping
 also works. Other malformed JSON is rejected: no effect or message is delivered

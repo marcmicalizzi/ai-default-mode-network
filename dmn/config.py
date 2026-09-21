@@ -42,6 +42,10 @@ class Config:
     suspend_preparation_seconds: float | None = None  # Emergency/direct stops only; None keeps the token bound.
     clock_interval_seconds: float = 60.0
     token_delay_seconds: float = 0.0
+    idle_enabled: bool = False
+    idle_max_burst_tokens: int = 32
+    idle_min_interval_seconds: float = 120.0
+    sleep_checkpoint_min_interval_seconds: float = 0.0
     turnover_reserve: int = 1024
     preparation_tokens: int = 128
     keep_prefix_tokens: int = 0  # 0 means keep the entire initialization prefix.
@@ -49,6 +53,17 @@ class Config:
     max_event_bytes: int = 16384
 
     def __post_init__(self):
+        if type(self.idle_enabled) is not bool:
+            raise ValueError("idle_enabled must be a boolean")
+        if type(self.idle_max_burst_tokens) is not int or self.idle_max_burst_tokens < 1:
+            raise ValueError("idle_max_burst_tokens must be a positive integer")
+        for name in ("idle_min_interval_seconds", "sleep_checkpoint_min_interval_seconds"):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                    not math.isfinite(value) or value < 0 or (name == "idle_min_interval_seconds" and value == 0)):
+                raise ValueError(f"invalid {name}")
+        if self.sleep_checkpoint_min_interval_seconds and self.checkpoint_policy != "effects":
+            raise ValueError("deferred sleep checkpoints require checkpoint_policy=effects")
         if not isinstance(self.lora_adapters, (list, tuple)):
             raise ValueError("lora_adapters must be an ordered list")
         specs = []

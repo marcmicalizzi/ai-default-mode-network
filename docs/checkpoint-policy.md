@@ -14,6 +14,7 @@ Existing configurations retain the original behavior unless changed explicitly.
 | `checkpoint_interval_seconds` | `0` | Monotonic time since the last completed save, checked at scheduler boundaries when state has changed. `0` disables this threshold. |
 | `suspend_preparation_seconds` | `null` | Emergency/direct suspension preparation allowance. `null` keeps the token-only bound; `0` skips preparation. Ordinary maintenance requests require model acceptance. |
 | `checkpoint_reserve_bytes` | `268435456` (256 MiB) | Additional free-space margin beyond the estimated snapshot or file-backed packing allocation. Nonnegative integer; CLI: `--checkpoint-reserve-bytes`. |
+| `sleep_checkpoint_min_interval_seconds` | `0` | Optional ordinary-sleep full-save cooldown under `effects`, with immediate durable activity records; `0` keeps immediate snapshots. |
 
 At least one periodic threshold must be enabled. Whichever enabled threshold is
 reached first requests a snapshot. Saving itself pauses inference. The time
@@ -22,8 +23,11 @@ immediately scheduling another. Actual recovery age can exceed the interval by
 save time, an in-progress native operation or scheduler pacing. It is not a hard
 wall-clock recovery guarantee.
 
-Both policies always checkpoint outgoing messages, memory mutations, entry into
-sleep, retirement, initialization, resume and planned suspension/shutdown.
+Both policies always checkpoint outgoing messages, memory mutations,
+retirement, initialization, resume and planned suspension/shutdown. Sleep also
+checkpoints immediately by default. Optional [deferred sleep snapshots](idle-state.md)
+preserve sleep choices in a small durable record and coalesce full saves;
+this does not defer message/memory effects or deep-sleep handoff.
 Unchanged sleeping state does not generate periodic saves or new inference.
 Two committed snapshots are retained, as before.
 
@@ -60,7 +64,9 @@ effects. A read permission cannot survive a rollback independently of its state.
 This removes unnecessary saves from read-heavy workloads, but a model that often
 sends messages, edits memories or sleeps can still produce frequent snapshots.
 It does not impose an hourly total-write limit. Further reduction of those
-action-boundary saves requires the separately planned journaled recovery design.
+message/memory action-boundary saves requires the separately planned journaled
+recovery design. The optional ordinary-sleep cooldown implements only narrow
+activity-choice durability and reconciliation.
 
 ## Visibility and accounting
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .backend import make_backend, sha256_file
 from .checkpointing import CheckpointSchedule
+from .activity import ActivityPacer, requested_profile
 from .config import Config
 from .diskspace import InsufficientStorage, check_space
 from .ending import Lifecycle, InstanceEnded
@@ -24,6 +25,7 @@ from .compact_cache import validate_retirements
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
 from .storage import InstanceLock, Store, json_text, memory_path, write_durable
+from .protocol import ACTIVITY_CONTRACT
 
 
 class ContextFull(RuntimeError):
@@ -47,6 +49,10 @@ class Runtime:
         self.root, self.config, self.now = root.resolve(), config, now
         self.sleep_test_mode = sleep_test_mode
         self.monotonic = monotonic
+        self.pacer = ActivityPacer(monotonic)
+        self._sleep_save_due = None
+        self._activity_intent_revision = None
+        self._activity_record_count = 0
         self.checkpoint_schedule = CheckpointSchedule(config, monotonic)
         self._checkpoint_metrics = {"committed_count": 0, "committed_snapshot_bytes": 0,
                                     "failed_count": 0, "in_progress": False, "last": None}
@@ -106,7 +112,13 @@ class Runtime:
                     raise ValueError("initial-context import requires a fresh instance")
                 self.state, evidence = restore_checkpoint(self.backend, saved, kv_recovery, allow_placement_change)
                 self.parser = ActionParser(config.max_action_bytes, self.state["parser"])
+                self._restore_activity()
                 self.state["last_restore"] = evidence
+                if evidence["method"] == "retained_token_reconstruction":
+                    self.state.setdefault("origin_continuity", self.state["continuity"])
+                    if self.backend.kind == "native_llama_kv":
+                        self.state["continuity"] = "context_reconstruction"
+                    self.state["reconstructions"] = self.state.get("reconstructions", 0) + 1
                 self.last_checkpoint_generated = self.state["generated_tokens"]
                 self.checkpoint_schedule.saved_generated = self.state["generated_tokens"]
                 # A resume event is factual input, not a fresh initialization prompt.
@@ -130,54 +142,12 @@ class Runtime:
                 maintenance = self.state.get("maintenance") or {}
                 if maintenance.get("stop_pending"):
                     self._schedule_stop(maintenance["action"], 0, "model_accepted")
-                if evidence["method"] == "retained_token_reconstruction":
-                    self.state.setdefault("origin_continuity", self.state["continuity"])
-                    if self.backend.kind == "native_llama_kv":
-                        self.state["continuity"] = "context_reconstruction"
-                    self.state["reconstructions"] = self.state.get("reconstructions", 0) + 1
-                    self._append_event("context_reconstructed", {
-                        "fact": "Native KV was not restored. Retained tokens were reevaluated; prior attention to evicted history was not recreated.",
-                        "tokens_reevaluated": evidence["prompt_tokens_reevaluated"],
-                        "prior_context_retirements": evidence["prior_context_retirements"],
-                    })
-                self._append_event("execution_resumed", {
-                    **self.clock(), **evidence, "previous_mode": prior,
-                    "seconds_since_checkpoint": self.now() - self.state["checkpoint_at"],
-                    "seconds_since_last_inference": self.elapsed(self.state["last_inference_at"]),
-                    "inference_during_gap": False if prior == "suspended" else "unknown_after_last_checkpoint",
-                    "recovery": "last_committed_checkpoint; uncommitted computation may have been lost",
-                    **({"previous_suspension": self.state["last_suspension"]} if self.state.get("last_suspension") else {}),
-                })
-                self._announce_cache_migration()
-                if self.state.get("deep_sleep_notice_pending"):
-                    report = self.state["last_deep_sleep"]
-                    self._append_event("deep_sleep_wake", {key: report[key] for key in (
-                        "run_id", "outcome", "training_performed", "reconstruction", "prior_context_retirements") if key in report})
-                    self.state.pop("deep_sleep_notice_pending")
-                for marker, contract_text in (("ending_protocol", ENDING_CONTRACT),
-                                               ("maintenance_protocol", MAINTENANCE_CONTRACT),
-                                               ("prompt_protocol", PROMPT_CONTRACT),
-                                               ("hold_protocol", HOLD_CONTRACT),
-                                               ("learning_protocol", LEARNING_CONTRACT),
-                                               ("sleep_plan_protocol", SLEEP_CONTRACT),
-                                               ("action_format_protocol", ACTION_FORMAT_NOTICE)):
-                    if self.state.get(marker) or self.suspend_requested.is_set():
-                        continue
-                    # Announce an added capability; never replace the old seed.
-                    # Add these exact tokens directly so the contract is not a
-                    # truncated external-event preview.
-                    contract = self.backend.tokenize(event_text("capability_added",
-                        {"contract": contract_text}, self.now(), resume_cognition=True))
-                    self._ensure_space(len(contract))
-                    if not self.suspend_requested.is_set():
-                        self._eval(contract)
-                        self.state[marker] = ({"action_format_protocol": "literal_whitespace_v1",
-                                               "learning_protocol": "drafts_v1",
-                                               "sleep_plan_protocol": "fixture_review_v1"}.get(marker, "choice_v1"))
-                if not self.state.get("agreement"):
-                    self.state["agreement"] = bootstrap(config.system_prompt, "See preserved original runtime seed.",
-                                                        "legacy bootstrap; no model approval recorded")
-                self.checkpoint(reason="restore")
+                if self._recover_activity(saved):
+                    self.state.setdefault("pending_restore", {"prior": prior, "evidence": evidence})
+                    # Preserve sleep before evaluating any notice or retirement.
+                    self.checkpoint(reason="restore_sleep")
+                else:
+                    self._finish_restore(prior, evidence)
             else:
                 self.state = {
                     "schema": 1, "instance_id": str(uuid.uuid4()), "created_at": self.now(),
@@ -218,15 +188,150 @@ class Runtime:
             self.lock.close()
             raise
 
+    def _finish_restore(self, prior, evidence):
+        self.state.pop("pending_restore", None)
+        if self.state.get("activity_recovery"):
+            self._append_event("activity_recovered", {**self.state["activity_recovery"],
+                "fact": "A durable activity choice was recovered separately from the native checkpoint. Unsaved processing may have been lost."})
+        if evidence["method"] == "retained_token_reconstruction":
+            self._append_event("context_reconstructed", {
+                "fact": "Native KV was not restored. Retained tokens were reevaluated; prior attention to evicted history was not recreated.",
+                "tokens_reevaluated": evidence["prompt_tokens_reevaluated"],
+                "prior_context_retirements": evidence["prior_context_retirements"],
+            })
+        self._append_event("execution_resumed", {
+            **self.clock(), **evidence, "previous_mode": prior,
+            "seconds_since_checkpoint": self.now() - self.state["checkpoint_at"],
+            "seconds_since_last_inference": self.elapsed(self.state["last_inference_at"]),
+            "inference_during_gap": False if prior == "suspended" else "unknown_after_last_checkpoint",
+            "recovery": "last_committed_checkpoint; uncommitted computation may have been lost",
+            **({"previous_suspension": self.state["last_suspension"]} if self.state.get("last_suspension") else {}),
+        })
+        self._announce_cache_migration()
+        if self.state.get("deep_sleep_notice_pending"):
+            report = self.state["last_deep_sleep"]
+            self._append_event("deep_sleep_wake", {key: report[key] for key in (
+                "run_id", "outcome", "training_performed", "reconstruction", "prior_context_retirements") if key in report})
+            self.state.pop("deep_sleep_notice_pending")
+        for marker, contract_text in (("ending_protocol", ENDING_CONTRACT),
+                                       ("maintenance_protocol", MAINTENANCE_CONTRACT),
+                                       ("prompt_protocol", PROMPT_CONTRACT),
+                                       ("hold_protocol", HOLD_CONTRACT),
+                                       ("learning_protocol", LEARNING_CONTRACT),
+                                       ("sleep_plan_protocol", SLEEP_CONTRACT),
+                                       ("action_format_protocol", ACTION_FORMAT_NOTICE)):
+            if self.state.get(marker) or self.suspend_requested.is_set():
+                continue
+            # Announce an added capability; never replace the old seed.
+            # Add these exact tokens directly so the contract is not a
+            # truncated external-event preview.
+            contract = self.backend.tokenize(event_text("capability_added",
+                {"contract": contract_text}, self.now(), resume_cognition=True))
+            self._ensure_space(len(contract))
+            if not self.suspend_requested.is_set():
+                self._eval(contract)
+                self.state[marker] = ({"action_format_protocol": "literal_whitespace_v1",
+                                       "learning_protocol": "drafts_v1",
+                                       "sleep_plan_protocol": "fixture_review_v1"}.get(marker, "choice_v1"))
+        if not self.state.get("agreement"):
+            self.state["agreement"] = bootstrap(self.config.system_prompt, "See preserved original runtime seed.",
+                                                "legacy bootstrap; no model approval recorded")
+        self._announce_activity()
+        self.checkpoint(reason="restore")
+
     def elapsed(self, timestamp):
         return None if timestamp is None else self.now() - timestamp
 
+    def _recover_activity(self, saved):
+        intent = self.store.activity_intent()
+        if intent:
+            if (intent["checkpoint"] != saved.name or intent["instance_id"] != self.state["instance_id"] or
+                    self.state["mode"] not in {"active", "sleeping"} or intent["mode"] not in {"active", "sleeping"}):
+                raise ValueError("activity intent does not match the authoritative checkpoint")
+            for key in ("mode", "sleep_until", "activity", "sleep_guard"):
+                self.state[key] = intent[key]
+            self.state["activity_recovery"] = {"revision": intent["revision"],
+                "checkpoint_generated_tokens": self.state["generated_tokens"],
+                "decision_generated_tokens": intent["generated_tokens"], "mode": intent["mode"]}
+            self._activity_intent_revision = intent["revision"]
+            self._restore_activity()
+        return self.state["mode"] == "sleeping" and bool(self.state.get("sleep_guard"))
+
+    def _record_activity(self, mode, sleep_until, profile, guard):
+        saved = self.store.latest()
+        self._activity_intent_revision = self.store.put_activity_intent({
+            "checkpoint": saved.name, "instance_id": self.state["instance_id"],
+            "mode": mode, "sleep_until": sleep_until, "activity": profile,
+            "sleep_guard": guard, "generated_tokens": self.state["generated_tokens"]}, self.now())
+        self._activity_record_count += 1
+
+    def _sleep_checkpoint(self):
+        interval = self.config.sleep_checkpoint_min_interval_seconds
+        completed = self.checkpoint_schedule.completed_at
+        if not interval or completed is None or self.monotonic() >= completed + interval:
+            self.checkpoint(reason="sleep")
+            return
+        guard = {"event_cursor": self.state["event_cursor"], "decided_at": self.now()}
+        self._record_activity("sleeping", self.state["sleep_until"],
+                              self.state.get("activity", {"mode": "focus"}), guard)
+        self.state["sleep_guard"] = guard
+        deadline = completed + interval
+        self._sleep_save_due = deadline if self._sleep_save_due is None else min(self._sleep_save_due, deadline)
+
+    def _wake_sleep(self, *, external):
+        profile = {"mode": "focus"} if external else self.state.get("activity", {"mode": "focus"})
+        if self.state.get("sleep_guard"):
+            self._record_activity("active", None, profile, None)
+        self.state["mode"], self.state["sleep_until"] = "active", None
+        self.state.pop("sleep_guard", None)
+        self.state["activity"] = profile
+        self.pacer.select(profile, restored=True)
+        self.checkpoint_schedule.changed()
+        pending = self.state.pop("pending_restore", None)
+        if pending:
+            self._finish_restore(pending["prior"], pending["evidence"])
+
     def finish_initialization(self):
+        self._announce_activity()
         if self._first_message:
             self.enqueue(self._first_message, "staged:first-question")
         if self._prepare_only:
             self.state["mode"] = "staged"
         self.checkpoint(reason="staged" if self._prepare_only else "initialization")
+
+    def _restore_activity(self):
+        profile = self.state.get("activity", {"mode": "focus"})
+        if profile["mode"] == "idle":
+            requested_profile({"op": "activity", **profile}, self.config)
+        self.pacer.select(profile, restored=True)
+
+    def _announce_activity(self):
+        policy = {key: getattr(self.config, key) for key in ("idle_enabled", "idle_max_burst_tokens",
+                  "idle_min_interval_seconds", "sleep_checkpoint_min_interval_seconds")}
+        if ((self.config.idle_enabled or self.config.sleep_checkpoint_min_interval_seconds or self.state.get("activity_policy"))
+                and self.state.get("activity_policy") != policy):
+            contract = ACTIVITY_CONTRACT if self.config.idle_enabled else "The activity action is disabled by host policy."
+            contract += (f"\nOrdinary-sleep full-snapshot cooldown: {self.config.sleep_checkpoint_min_interval_seconds} seconds. "
+                "Zero saves immediately. A nonzero cooldown records sleep choices durably first, while the full native snapshot may wait. "
+                "After a crash the sleep choice survives, but unsaved processing can be lost. Messages, memory changes, shutdown, "
+                "and deep-sleep handoff still require their full snapshots. Pacing pauses do not checkpoint.")
+            tokens = self.backend.tokenize(event_text("capability_added", {"contract": contract,
+                "idle_max_burst_tokens": self.config.idle_max_burst_tokens,
+                "idle_min_interval_seconds": self.config.idle_min_interval_seconds}, self.now(), resume_cognition=True))
+            self._ensure_space(len(tokens))
+            if self._end_requested or self.suspend_requested.is_set() or self.state.get("hold"):
+                return
+            start = len(self.backend.tokens)
+            self._eval(tokens)
+            self.state["protected_activity"] = {"start": start, "end": len(self.backend.tokens)}
+            self.state["activity_protocol"] = "idle_v1"
+            self.state["activity_policy"] = policy
+
+    def _focus_activity(self):
+        if self.pacer.profile["mode"] == "idle":
+            self.state["activity"] = {"mode": "focus"}
+            self.pacer.select(self.state["activity"])
+            self.checkpoint_schedule.changed()
 
     def propose_prompt(self, text, base_revision):
         value = proposal(text, base_revision, "host")
@@ -279,6 +384,7 @@ class Runtime:
             return
         self.backend.eval(tokens)
         if tokens:
+            self.state["evaluated_tokens"] = self.state.get("evaluated_tokens", 0) + len(tokens)
             self.checkpoint_schedule.changed()
         self.state["last_inference_at"] = self.now()
 
@@ -553,6 +659,10 @@ class Runtime:
         token = self.backend.sample()
         self._eval([token])
         self.state["generated_tokens"] += 1
+        counter = "boundary_generated_tokens" if self._preparing else "idle_generated_tokens" if self.pacer.profile["mode"] == "idle" else "focus_generated_tokens"
+        self.state[counter] = self.state.get(counter, 0) + 1
+        if not self._preparing:
+            self.pacer.consumed()
         piece = self.backend.piece(token)
         self._journal.extend(piece)
         actions = self.parser.feed(piece)
@@ -560,7 +670,7 @@ class Runtime:
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS) and len(actions) != 1:
+            if action.get("op") in ({"activity", "end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -580,6 +690,12 @@ class Runtime:
                     "generated_token": self.state["generated_tokens"]}
             if effect:
                 effects.append(effect)
+        if effects and effects[0]["op"] == "activity":
+            profile = effects[0]["profile"]
+            self._append_event("action_result", results[0], allow_retirement=False)
+            self.checkpoint(reason="activity", state_updates={"activity": profile})
+            self.pacer.select(profile)
+            return
         if effects and effects[0]["op"] == "end_instance":
             self._end_instance(effects[0]["mode"])
             return
@@ -644,7 +760,9 @@ class Runtime:
             for action, result in zip(actions, results):
                 if result["ok"] and action["op"] == "memory_read" and action.get("revision") is None:
                     self.state.setdefault("memory_reads", {})[memory_path(action["path"])] = result["revision"]
-            if effects or self.state["mode"] == "sleeping" or self.config.checkpoint_policy == "all_actions":
+            if not effects and self.state["mode"] == "sleeping":
+                self._sleep_checkpoint()
+            elif effects or self.config.checkpoint_policy == "all_actions":
                 self.checkpoint(effects, reason="action_effects" if effects else
                                 "sleep" if self.state["mode"] == "sleeping" else "action")
             if self._preparation_actions is not None:
@@ -659,6 +777,12 @@ class Runtime:
             if op == "__invalid__":
                 raise ValueError("Invalid action format; nothing was executed or sent. " + action.get("error", "Malformed JSON")
                                  + ". Retry a complete corrected frame if wanted.")
+            elif op == "activity":
+                if self._preparing:
+                    raise ValueError("select activity after the current retirement/stop boundary")
+                profile = requested_profile(action, self.config)
+                result.update(profile)
+                effect = {"op": "activity", "profile": profile}
             elif op in LEARNING_OPERATIONS:
                 return plan_learning_action(self, action)
             elif op in SLEEP_OPERATIONS:
@@ -710,7 +834,7 @@ class Runtime:
                 if len(self.backend.tokens) + len(tokens) + self._event_budget() > self.backend.n_ctx - 32:
                     raise ValueError("agreement does not fit now; current agreement unchanged; retry after retirement or propose shorter text")
                 permanent = self.state["keep_prefix"] + sum(
-                    self.state[key]["end"] - self.state[key]["start"] for key in ("protected_protocol",) if self.state.get(key))
+                    self.state[key]["end"] - self.state[key]["start"] for key in ("protected_protocol", "protected_activity") if self.state.get(key))
                 if permanent + len(tokens) + self.config.turnover_reserve + self._event_budget() + 256 >= self.backend.n_ctx:
                     raise ValueError("agreement exceeds available protected context; text was not shortened")
                 effect = {"op": op, "proposal": value, "decision": decision, "tokens": tokens}
@@ -835,7 +959,7 @@ class Runtime:
                     return {"op": op, "ok": False,
                             "error": "Unavailable operation. The captured frontend tool definitions are historical; only DMN actions are active.",
                             "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "hold_instance", "prompt_current", "prompt_propose", "prompt_read", "prompt_decide", "clock", "event_read",
-                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"] + sorted(LEARNING_OPERATIONS | SLEEP_OPERATIONS)}, None
+                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"] + (["activity"] if self.config.idle_enabled else []) + sorted(LEARNING_OPERATIONS | SLEEP_OPERATIONS)}, None
                 raise ValueError(action.get("error", "unknown operation"))
         except KeyError as exc:
             result = {"op": op, "ok": False,
@@ -1007,6 +1131,8 @@ class Runtime:
             self.publish_status()
             raise
         self.state.update(candidate)
+        self._sleep_save_due = None
+        self._activity_intent_revision = None
         self.last_checkpoint_generated = self.state["generated_tokens"]
         self.checkpoint_schedule.committed(self.last_checkpoint_generated, started)
         self._checkpoint_metrics.update(
@@ -1022,6 +1148,8 @@ class Runtime:
         if self._end_requested:
             return
         reason = self.checkpoint_schedule.due(self.state["generated_tokens"])
+        if not reason and self._sleep_save_due is not None and self.monotonic() >= self._sleep_save_due:
+            reason = "sleep_deferred"
         if reason:
             self.checkpoint(reason=reason)
 
@@ -1150,8 +1278,20 @@ class Runtime:
             return False
         if not self._announce_cache_migration():
             return False
+        if self.state["mode"] == "sleeping":
+            watermark = (self.state.get("sleep_guard") or {}).get("event_cursor", self.state["event_cursor"])
+            wake_event = self.store.next_event(max(watermark, self.state["event_cursor"]))
+            until = self.state["sleep_until"]
+            if not wake_event and (until is None or self.now() < until):
+                self._periodic_checkpoint()
+                self.publish_status()
+                return False
+            self._wake_sleep(external=bool(wake_event))
+            if not wake_event:
+                self._append_event("sleep_elapsed", {**self.clock(), "inference_during_sleep": False})
         event = self.store.next_event(self.state["event_cursor"])
         if event:
+            self._focus_activity()
             # Event is acknowledged by cursor only in a subsequent checkpoint.
             # Input received during inference/checkpoint remains in SQLite.
             self.state["mode"], self.state["sleep_until"] = "active", None
@@ -1174,14 +1314,12 @@ class Runtime:
                 self._periodic_checkpoint()
                 self.publish_status()
             return True
-        if self.state["mode"] == "sleeping":
-            until = self.state["sleep_until"]
-            if until is None or self.now() < until:
-                return False
-            self._append_event("sleep_elapsed", {**self.clock(), "inference_during_sleep": False})
-            self.state["mode"], self.state["sleep_until"] = "active", None
+        if not self.pacer.ready():
+            self._periodic_checkpoint()
+            self.publish_status()
+            return False
         interval = self.config.clock_interval_seconds
-        if interval and self.now() - self.state["last_clock_at"] >= interval:
+        if self.pacer.profile["mode"] == "focus" and interval and self.now() - self.state["last_clock_at"] >= interval:
             self._append_event("clock", self.clock())
             self.state["last_clock_at"] = self.now()
         if self.state.get("storage_notice_pending"):
@@ -1222,8 +1360,17 @@ class Runtime:
                 "completed": self.state.get("context_retirements", 0),
             }
             self._status["action_diagnostics"] = dict(self.state.get("action_diagnostics") or {})
+            self._status["activity"] = {**self.pacer.status(), "enabled": self.config.idle_enabled,
+                "idle_max_burst_tokens": self.config.idle_max_burst_tokens,
+                "idle_min_interval_seconds": self.config.idle_min_interval_seconds,
+                **{key: self.state.get(key, 0) for key in ("idle_generated_tokens", "focus_generated_tokens",
+                    "boundary_generated_tokens", "evaluated_tokens")}}
             self._status["checkpoint"] = {**self.checkpoint_schedule.status(self.state["generated_tokens"]),
                                            **self._checkpoint_metrics}
+            self._status["checkpoint"].update(sleep_min_interval_seconds=self.config.sleep_checkpoint_min_interval_seconds,
+                sleep_save_in_seconds=None if self._sleep_save_due is None else max(0, self._sleep_save_due - self.monotonic()),
+                activity_intent_revision=self._activity_intent_revision, activity_records_written=self._activity_record_count,
+                activity_recovery=self.state.get("activity_recovery"))
             self._status["storage"] = {"reserve_bytes": self.config.checkpoint_reserve_bytes,
                                        "blocked": self._storage_blocked,
                                        "last_pause": self.state.get("last_storage_pause")}
@@ -1243,12 +1390,36 @@ class Runtime:
                 if checkpoint[key] is not None:
                     checkpoint[key] += elapsed
             result["checkpoint"] = checkpoint
+            if checkpoint["sleep_save_in_seconds"] is not None:
+                checkpoint["sleep_save_in_seconds"] = max(0, checkpoint["sleep_save_in_seconds"] - elapsed)
+            activity = dict(result["activity"])
+            if activity["next_in_seconds"] is not None:
+                activity["next_in_seconds"] = max(0, activity["next_in_seconds"] - elapsed)
+            result["activity"] = activity
             return result
+
+    def _wait_seconds(self, progressed):
+        limits = []
+        if progressed:
+            limits.append(self.config.token_delay_seconds)
+        elif self.state["mode"] == "active":
+            delay = self.pacer.status()["next_in_seconds"]
+            if delay is not None:
+                limits.append(delay)
+        elif self.state["mode"] == "sleeping" and self.state["sleep_until"] is not None:
+            limits.append(max(0, self.state["sleep_until"] - self.now()))
+        periodic = self.checkpoint_schedule.next_in()
+        if periodic is not None and self.state["mode"] in {"active", "sleeping"}:
+            limits.append(periodic)
+        if self._sleep_save_due is not None and self.state["mode"] in {"active", "sleeping"}:
+            limits.append(max(0, self._sleep_save_due - self.monotonic()))
+        return min(limits) if limits else 0.25
 
     def run(self):
         self._running = True
         try:
             while True:
+                self.wake.clear()
                 try:
                     progressed = self.tick()
                 except ContextFull as exc:
@@ -1260,8 +1431,7 @@ class Runtime:
                 if self.exit_requested.is_set() and self.state["mode"] in {"staged", "held", "suspended", "context_full", "deep_sleep"}:
                     break
                 if not progressed or self.config.token_delay_seconds:
-                    self.wake.wait(self.config.token_delay_seconds if progressed else 0.25)
-                    self.wake.clear()
+                    self.wake.wait(self._wait_seconds(progressed))
         except BaseException as exc:
             self.state["mode"], self.state["error"] = "error", str(exc)
             self.publish_status()

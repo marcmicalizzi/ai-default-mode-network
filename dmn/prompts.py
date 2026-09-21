@@ -46,7 +46,7 @@ def retirement_ranges(state, length, required, reserve, notice, minimum_suffix=1
     if type(minimum_suffix) is not int or not 1 <= minimum_suffix <= length:
         raise ValueError("invalid minimum retained suffix")
     eligible_end = length - minimum_suffix
-    spans = sorted((dict(state[key]) for key in ("protected_protocol", "protected_agreement")
+    spans = sorted((dict(state[key]) for key in ("protected_protocol", "protected_agreement", "protected_activity")
                     if state.get(key)), key=lambda span: span["start"])
     cursor, gaps = keep, []
     for span in spans:
@@ -75,7 +75,7 @@ def retirement_ranges(state, length, required, reserve, notice, minimum_suffix=1
 
 
 def shift_protected(state, start, count):
-    for key in ("protected_protocol", "protected_agreement"):
+    for key in ("protected_protocol", "protected_agreement", "protected_activity"):
         span = state.get(key)
         if span and start < span["end"] and start + count > span["start"]:
             raise ValueError("retirement would remove protected tokens")
