@@ -21,9 +21,13 @@ from scripts.probe_qlora_31b import inspect
 
 def validate(probe):
     result = json.loads((probe / 'result.json').read_text())
-    if result.get('completed') is not True or result.get('steps_completed') != 1:
-        raise ValueError('requires the completed one-step 31B experiment')
-    plan = inspect(Path(result['plan']['source']))
+    if (result.get('completed') is not True or type(result.get('steps_completed')) is not int
+            or result['steps_completed'] not in (1, 2, 3, 4)):
+        raise ValueError('requires a completed bounded 31B experiment')
+    workload = result['plan']['training']
+    if result['steps_completed'] != workload['steps']:
+        raise ValueError('completed step count differs from the experiment plan')
+    plan = inspect(Path(result['plan']['source']), sequence_tokens=workload.get('sequence_tokens'), steps=workload['steps'])
     if plan != result['plan'] or not plan['synthetic_text_only']:
         raise ValueError('source or declared experiment changed')
     adapter = probe / 'adapter/adapter_model.safetensors'

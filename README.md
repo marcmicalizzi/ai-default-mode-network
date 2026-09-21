@@ -127,9 +127,14 @@ The [separate NF4 GPU experiment](docs/qlora-gpu-probe.md) passed tiny-model tra
 PEFT reload, exact GGUF factor conversion and native checkpoint continuation on
 Windows/RTX 5090. It remains an explicit research tool with an inspection-only
 default, separate from the instance's learning service.
-The [pinned 31B NF4 probe](docs/qlora-31b-probe.md) also completed one rank-two
-update on 16 synthetic tokens on Windows/RTX 5090, peaking at 19.81 GiB of Torch
-allocations. Realistic training workloads and production adoption remain gated.
+The [pinned 31B NF4 probe](docs/qlora-31b-probe.md) completed two rank-two updates
+on 256 synthetic tokens on Windows/RTX 5090, peaking at 20.91 GiB of Torch
+allocations. Its fresh-process PEFT reload reproduced the reference logits
+exactly. A 512-token attempt hit the unchanged 22 GiB allocator limit. Production
+adoption remains gated; sampled base checks match, but full provenance is not
+established and the source/published chat templates differ. Full-size native
+adapter wake/restart and the matching projector's image restore/retirement
+checks also passed on disposable contexts.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

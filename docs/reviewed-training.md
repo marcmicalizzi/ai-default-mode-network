@@ -197,7 +197,11 @@ complete pinned quantization command or importance-matrix provenance. The
 [source configuration](https://huggingface.co/llmfan46/gemma-4-31B-it-uncensored-heretic/blob/main/config.json)
 also uses `Gemma4ForConditionalGeneration`; v2 now exercises this wrapper with a
 generated tiny text/vision fixture and frozen vision weights. Full-model training
-still needs validation without substituting Google's unmodified weights.
+now passes a bounded 256-token/two-step synthetic probe on the pinned modified
+source, including fresh PEFT reload; a 512-token workload hits its allocator
+limit. The read-only 31B audit matches source-backed F32 tensors, sampled
+quantized rows and the token vocabulary/settings, but finds differing chat
+templates. It is not a full reproduction receipt and does not relax this gate.
 
 The v1 harness regenerates the F32 proof on each run. The v2 path prepares a
 reusable, hash-bound provenance record and invalidates it when a bound input or

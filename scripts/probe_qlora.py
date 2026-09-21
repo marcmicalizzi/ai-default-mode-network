@@ -145,6 +145,11 @@ def execute(folder, output, torch_vram_mib, stream_source=False, vision_cpu=Fals
     torch.cuda.empty_cache()
     restored, _ = prepare(load(), large_tensor_bytes=1 if stream_source else 64 * 1024**2, gradient_checkpointing=False)
     restored = PeftModel.from_pretrained(restored, output / "adapter", local_files_only=True).eval()
+    if hasattr(restored, 'hf_device_map') or any(p.device.type == 'meta' for p in restored.parameters()):
+        raise ValueError('PEFT reload must preserve static placement without inference redispatch')
+    if vision_cpu and any(p.device.type != 'cpu' for n, p in restored.named_parameters()
+                          if '.vision_tower.' in n or '.embed_vision.' in n):
+        raise ValueError('PEFT reload moved frozen vision away from CPU')
     with torch.no_grad():
         reloaded = float(loss(restored))
     if not abs(reloaded - after) <= 1e-5:

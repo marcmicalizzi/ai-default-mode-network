@@ -190,7 +190,29 @@ For an isolated **CPU-only** native trial, set `DMN_TEST_VISION_MODEL` and
 `python -m unittest tests.test_vision -v`. It exercises native image evaluation,
 save/restore, logits and sampler preservation, and retirement/reconstruction.
 This is opt-in: routine tests do not load a second model alongside a live instance.
-Native model/projector compatibility must be validated before production use.
+### Real 31B native validation
+
+The 2026-09-21 Windows/RTX 5090 trial passed with the published Gemma 4 31B
+Q4_K_M base and its matching `gemma-4-31B-it-mmproj-BF16.gguf` (SHA-256
+`21487ff26d08f7ddd1d654d3bbfc1ae1020aab3119f5bf654742ce4697732e4e`).
+The projector ran on CPU with four threads; decoder layers ran on GPU, using
+Q8 KV and compact sliding-window storage in a disposable 4,096-position context.
+
+A synthetic 128×128 red/blue PNG produced 49 visual slots plus three formatting
+positions. Encoding and evaluation took about 66.9 seconds on the CPU-projector
+path; this is one measured input, not a general latency guarantee. After a text
+suffix, the 1,094-position checkpoint restored in a fresh process with zero
+replay. All eight continuation token IDs and logit arrays matched bit-for-bit.
+
+Text reconstruction refused while visual positions remained. After retirement,
+all 1,056 retained text tokens rebuilt successfully. No raw pixels or standalone
+image embeddings were archived; native checkpoints still retain visual KV and
+its influence as described above. The supervised workers exited with no
+remaining processes. No instance state or inference environment was changed.
+
+The repeatable GPU harness and resource limits are documented in the
+[31B validation report](qlora-31b-probe.md#full-size-native-wake-and-restart).
+Other model/projector combinations still require their own compatibility check.
 
 The adapter follows the upstream [MTMD C API](https://github.com/ggml-org/llama.cpp/blob/master/tools/mtmd/mtmd.h)
 and [evaluation helpers](https://github.com/ggml-org/llama.cpp/blob/master/tools/mtmd/mtmd-helper.h),

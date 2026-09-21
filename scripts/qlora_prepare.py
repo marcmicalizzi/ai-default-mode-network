@@ -45,4 +45,11 @@ def prepare(model, *, large_tensor_bytes=64 * 1024**2, gradient_checkpointing=Tr
             moved.append(name)
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gradient_checkpointing,
         gradient_checkpointing_kwargs={'use_reentrant': False})
+    # Hooks no longer own placement. Leaving the inference map attached makes
+    # PeftModel.from_pretrained redispatch this already prepared NF4 model when
+    # it sees CPU components. That can move nested quantization state to meta
+    # tensors or silently put frozen vision back on CUDA during adapter reload.
+    # The research plan records placement; the parameters now own it directly.
+    if hasattr(model, 'hf_device_map'):
+        del model.hf_device_map
     return model, moved
