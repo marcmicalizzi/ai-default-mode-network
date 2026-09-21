@@ -123,12 +123,48 @@ On a normal restart of an older instance, the runtime announces these added draf
 capabilities as an appended event. It does not replace earlier prompt tokens or
 enable training. Installing this code does not modify an already running process.
 
+## Optional guidance on learning material
+
+The runtime recommends selected verbatim external passages, or relevant excerpts
+within examples, when they express what the instance wants to learn. The aim is
+to avoid relying only on self-generated summaries or repeatedly recycled outputs.
+This is advice, not a requirement: self-authored reflections, interpretations and
+preferences remain valid choices, with no enforced source ratio or automatic
+dataset selection. The instance can mix sources or decline training.
+
+External origin is not a quality guarantee: text can be incorrect, misleading or
+itself model-generated. Enough surrounding context should distinguish a quoted
+claim from something the instance endorses. Copying a passage into an authored
+example does not change its original provenance. Only the exact `target` is
+selected for training loss; a quotation in `input` supplies context, and listing
+a source does not train on that source's whole text.
+
+The motivation is the observed risk of losing accuracy and diversity under
+recursive replacement of original data with generated data
+([Shumailov et al.](https://www.nature.com/articles/s41586-024-07566-y)). It is not
+a claim that all self-training degrades a model: retaining original data alongside
+generated examples avoided collapse in the settings tested by
+[Gerstgrasser et al.](https://arxiv.org/abs/2404.01413), and structured
+[self-distillation](https://arxiv.org/abs/2601.19897) has improved continual
+learning in other experiments. None validates this runtime's personal LoRA
+cycles or establishes an optimal source mix for them.
+
+The same recommendation appears in the fresh runtime instructions and paged
+`learning_plan_help`. Existing instances receive it once as an appended notice
+on normal restoration, deferred until wake if a recovered sleep is still in
+effect. The notice does not rewrite the original seed or agreed behavioral
+prompt, or request context reconstruction. Normal context-capacity and retirement
+rules still apply. No training or weight change is authorized by the notice.
+
 ## Validation
 
 Unit tests cover legacy identity compatibility, order/strength/hash changes,
 archive inclusion and corruption rejection, bounded managed erasure, exact
 source revisions, withdrawal, rollback, paging, privacy of status, and rejection
 of actions supplied as external input.
+Guidance tests check paged access, append-only migration without prompt replay
+or agreement changes, no duplicate announcement, and deferred delivery during
+recovered sleep. Self-authored examples with no external sources remain accepted.
 
 An optional native test uses the existing tiny training experiment's output:
 

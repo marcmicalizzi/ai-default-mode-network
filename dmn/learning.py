@@ -7,6 +7,22 @@ import math
 from .storage import json_text, memory_path
 
 
+DATA_GUIDANCE_VERSION = "source_grounding_v1"
+DATA_GUIDANCE = '''Optional learning-data recommendation; you choose what to learn and may decline.
+Where external material conveys what you want to learn, prefer selected verbatim
+passages, or include relevant excerpts, instead of relying only on your own
+summaries or repeatedly recycled outputs. Repeated training on unchecked outputs
+can reinforce errors and narrow variety; degradation is not inevitable, and this
+recommendation has not been validated for this runtime's learning cycles.
+External text may also be wrong or model-generated. Evaluate its substance and
+preserve enough context to distinguish quotations from claims you endorse.
+Your own reflections, preferences and interpretations remain valid choices.
+Consider varied sources and earlier examples you wish to retain; no source mix
+is required. Record actual provenance, including external text you copy yourself.
+Only target text is selected for training loss. An excerpt in input is context
+only; citing a source does not train on its text. Nothing here authorizes training.'''
+
+
 HELP = {
     "status": "drafts do not authorize execution; separate compiled-plan review and a disposable mechanics harness exist; no production trainer is available",
     "create": {"op": "learning_plan_create", "plan": {
@@ -22,6 +38,7 @@ HELP = {
         "resources": {"max_training_seconds": 300, "max_ram_bytes": 1073741824,
                       "max_vram_bytes": 0, "max_disk_bytes": 1073741824},
         "checks": ["Describe the checks I want before adoption"]}, "replaces": None},
+    "data_guidance": DATA_GUIDANCE,
     "semantics": [
         "The example values above illustrate syntax, not recommended training parameters.",
         "sources may be empty for newly authored examples. Revisions are exact; selected text and its SHA-256 are frozen in the draft.",

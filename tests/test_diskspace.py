@@ -18,7 +18,9 @@ class StorageCapacityTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "instance"
-        self.config = Config(backend="demo", n_ctx=12288, clock_interval_seconds=0,
+        # Demo tokens are codepoints. Leave room for the complete protocol and
+        # recovery notices; individual retirement tests fill to the boundary.
+        self.config = Config(backend="demo", n_ctx=16384, clock_interval_seconds=0,
                              checkpoint_policy="effects", suspend_preparation_seconds=0)
         self.free = 10**12
         self.probe = patch("dmn.diskspace.shutil.disk_usage", side_effect=lambda _p: SimpleNamespace(free=self.free))
@@ -99,10 +101,6 @@ class StorageCapacityTest(unittest.TestCase):
         self.assertEqual(self.create().store.latest().parent, saved.parent)
 
     def exercise_pending_effect(self, action, observe):
-        # The demo backend uses one token per character. Keep this storage
-        # recovery check clear of retirement: protocol growth otherwise puts
-        # the notice exactly at that boundary depending on timestamp length.
-        self.config = dataclasses.replace(self.config, n_ctx=16384)
         r = self.create(frames(action, {"op": "sleep"}))
         saved, timestamp = r.store.latest(), r.state["checkpoint_at"]
         self.free = 0

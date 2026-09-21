@@ -5,6 +5,7 @@ import json
 import re
 
 from .sleep_plans import BRIEF as SLEEP_CONTRACT
+from .learning import DATA_GUIDANCE
 
 
 ACTIVITY_CONTRACT = '''Optional activity(mode, burst_tokens, interval_seconds) selects focus or idle.
@@ -165,7 +166,7 @@ then rename it without overwriting another.
 memory_delete(path, expected_revision): read current memory first, then intentionally remove it.
 event_read(event_id, offset=0, limit=2000): inspect delivered input too large for one insertion.
 clock(): obtain factual UTC time and elapsed times.
-''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + LEARNING_CONTRACT + '\n' + SLEEP_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
+''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + LEARNING_CONTRACT + '\n' + DATA_GUIDANCE + '\n' + SLEEP_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
 Paths are your own logical organization, e.g. /self, /memories, /interests,
 /unfinished, /goals, /private, /relationships; none of these categories is mandatory.
 Runtime records and KV snapshots are distinct from your editable memories.

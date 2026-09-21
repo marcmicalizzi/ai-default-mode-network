@@ -18,7 +18,8 @@ from .config import Config
 from .diskspace import InsufficientStorage, check_space
 from .ending import Lifecycle, InstanceEnded
 from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, LEARNING_CONTRACT, ACTION_FORMAT_NOTICE, event_text
-from .learning import OPERATIONS as LEARNING_OPERATIONS, plan_action as plan_learning_action
+from .learning import (OPERATIONS as LEARNING_OPERATIONS, plan_action as plan_learning_action,
+                       DATA_GUIDANCE, DATA_GUIDANCE_VERSION)
 from .sleep_plans import OPERATIONS as SLEEP_OPERATIONS, BRIEF as SLEEP_CONTRACT, plan_action as plan_sleep_action
 from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
 from .compact_cache import validate_retirements
@@ -190,6 +191,7 @@ class Runtime(ImageInputMixin):
                     "prompt_protocol": "choice_v1", "hold_protocol": "choice_v1",
                     "action_format_protocol": "literal_whitespace_v1",
                     "learning_protocol": "drafts_v1",
+                    "learning_data_guidance": DATA_GUIDANCE_VERSION,
                     "sleep_plan_protocol": "fixture_review_v1",
                     "agreement": bootstrap(config.system_prompt, protocol, "host-supplied provisional bootstrap"),
                     "prompt_decisions": {},
@@ -259,6 +261,7 @@ class Runtime(ImageInputMixin):
                                        ("prompt_protocol", PROMPT_CONTRACT),
                                        ("hold_protocol", HOLD_CONTRACT),
                                        ("learning_protocol", LEARNING_CONTRACT),
+                                       ("learning_data_guidance", DATA_GUIDANCE),
                                        ("sleep_plan_protocol", SLEEP_CONTRACT),
                                        ("image_protocol", IMAGE_CONTRACT),
                                        ("action_format_protocol", ACTION_FORMAT_NOTICE)):
@@ -277,6 +280,7 @@ class Runtime(ImageInputMixin):
                 self.state[marker] = ({"action_format_protocol": "literal_whitespace_v1",
                                        "image_protocol": IMAGE_CONTRACT_VERSION,
                                        "learning_protocol": "drafts_v1",
+                                       "learning_data_guidance": DATA_GUIDANCE_VERSION,
                                        "sleep_plan_protocol": "fixture_review_v1"}.get(marker, "choice_v1"))
         if not self.state.get("agreement"):
             self.state["agreement"] = bootstrap(self.config.system_prompt, "See preserved original runtime seed.",

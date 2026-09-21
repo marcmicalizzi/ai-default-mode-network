@@ -175,6 +175,41 @@ $env:DMN_TEST_LORA_CONVERTER = 'D:\path\to\pinned-llama-source'
 
 ## Remaining production gates
 
+For a first live Windows/RTX 5090 deployment, the outstanding work is:
+
+1. **An integrated GPU recipe.** Connect the measured NF4 training path to
+   compiled-plan review, exact examples/masks, pinned dependencies, conversion,
+   candidate receipts and failure handling. The standalone GPU experiment is
+   not offered to instances as an executable recipe.
+2. **Complete base compatibility evidence.** Resolve the published GGUF's
+   quantization provenance and document the differing chat templates. Sampled
+   weight equality and matching vocabulary are useful but insufficient. The
+   exact-token training/wake path must not silently substitute a chat template.
+3. **An enforceable, measured resource envelope.** Validate the supported example
+   sizes and steps, conversion, and a roughly 60,000-token wake using disposable
+   data. The successful 256-token/two-step probe does not establish a general
+   training budget; 512 tokens exceeded the configured allocator ceiling. RAM
+   and worker duration are contained on Windows, but the allocator ceiling is
+   not a total-process VRAM quota, disk preflight is not a quota, and the full
+   wake phase still needs coverage.
+4. **Continuous supervision and adoption.** Connect inference shutdown, exclusive
+   GPU handoff, queued frontend input, training, wake and return to generation.
+   Complete candidate adoption after review-first. Preserve the approved
+   previous-state/stopped failure choice and recover without duplicate training,
+   message delivery or historical action execution.
+5. **An integrated disposable-instance rehearsal.** Exercise that production path
+   at supported limits, including worker/supervisor interruptions, strict restart
+   after adoption and a subsequent learning cycle. Candidate checks must report
+   what they measure; successful training loss is not proof of useful learning
+   or absence of forgetting.
+
+Linux containment is a separate gate for the later Linux deployment, not a
+prerequisite for a Windows-only release. Retained visual positions are a
+conditional blocker on either platform: the current deep-sleep wake can rebuild
+text token IDs only. It must keep refusing visual reconstruction until a supported
+path exists or those positions have retired through the normal context policy.
+These training gates do not prevent ordinary inference with unchanged weights.
+
 The v1 recipes require exact F32 base provenance. The first-adapter recipe refuses
 existing adapters; the continuation recipe requires verified PEFT/GGUF lineage.
 The [v2 recipe](base-provenance.md) adds cached conversion/quantization provenance

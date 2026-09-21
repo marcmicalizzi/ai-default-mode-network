@@ -93,6 +93,11 @@ own recipe and measurement. No paid compute or remote upload is assumed.
 
 ## Model-authored learning plan
 
+The [optional learning-data recommendation](adapters-and-learning-plans.md#optional-guidance-on-learning-material)
+encourages selected source excerpts where they express the desired learning,
+rather than reliance solely on self-generated summaries. It neither forbids
+self-authored examples nor treats external text as inherently reliable.
+
 The immutable plan should bind:
 
 - Selected memory/source revisions, their hashes and provenance, the intended
