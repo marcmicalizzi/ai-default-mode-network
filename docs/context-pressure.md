@@ -6,6 +6,41 @@ model before retirement, allows bounded memory actions, removes older KV
 positions and shifts the retained positions. Open WebUI does not create a
 replacement summary or rebuild the native sequence.
 
+## Trigger and visible headroom
+
+The soft threshold is **actual native context capacity minus `turnover_reserve`**.
+Native allocation can round up the configured `n_ctx`; use `/api/status`'s
+`context_capacity`, not the requested size, for this calculation. New launches
+expose `context_retirement` with the threshold, tokens remaining, preparation
+budget, maximum action grace and completed count. The panel shows the threshold
+and completed count without exposing private thought or memory contents.
+
+Retirement begins before the next token or incoming event would cross that
+threshold. An event can trigger it earlier because the complete event must fit.
+Only an already-started action can receive bounded extra room, at most 128 tokens
+and less when reserve is small. Preparation itself is limited by
+`preparation_tokens`, remaining space and the instance's choice to sleep or stop.
+
+For example, capacity 60,160 with a 1,536-token reserve gives a **58,624-token**
+threshold. At 55,930 tokens, 2,694 remain before that boundary. A preparation
+budget of 384 is an opportunity to preserve new information, not a guarantee of
+384 uninterrupted generation tokens; action results also use the reserve.
+
+DMN preserves the initialization prefix, protected imported instructions and
+active agreement, plus the recent native sliding window. Normally it removes
+half the oldest unprotected gap, or more if needed to accommodate the incoming
+event and reserve. An imported instruction block can split the old history into
+gaps, so the first retirement may remove much less than half the entire context.
+It shifts retained native positions and checkpoints after materializing/packing
+the shift. Durable memories remain unchanged. There is no automatic summary or
+semantic guarantee that every relevant detail was saved. Unsupported retirement
+or insufficient removable space saves and pauses with `context_full` before
+attempting normal generation past the native limit.
+
+This display is additive; updating files does not reload an already-running
+Python process. Existing instances acquire the status fields at their next
+agreed restart. The retirement algorithm itself is unchanged.
+
 Run a new experiment directory:
 
 ```powershell

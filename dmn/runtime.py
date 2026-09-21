@@ -431,6 +431,10 @@ class Runtime:
                           "generated_token": self.state["generated_tokens"]}, self.now())
         return notice
 
+    def _retirement_grace(self):
+        return min(128, self.config.turnover_reserve // 8,
+                   max(0, self.config.turnover_reserve - 2 * self._event_budget() - 32))
+
     def _ensure_space(self, required, action_grace=False):
         if self._preparing:
             if len(self.backend.tokens) + required > self.backend.n_ctx - 32:
@@ -444,8 +448,7 @@ class Runtime:
             # room for its result AND the subsequent retirement notice. External
             # input still interrupts immediately; an unbounded frame cannot
             # postpone retirement indefinitely.
-            grace = min(128, self.config.turnover_reserve // 8,
-                        max(0, self.config.turnover_reserve - 2 * self._event_budget() - 32))
+            grace = self._retirement_grace()
             if (action_grace and self.parser.pending and grace and
                     len(self.backend.tokens) + required <= self.backend.n_ctx - self.config.turnover_reserve + grace):
                 self.state["action_grace_tokens"] = self.state.get("action_grace_tokens", 0) + required
@@ -1209,6 +1212,15 @@ class Runtime:
                 self._status["maintenance"] = {**self._status["maintenance"], "status": "accepting"}
             self._status.update(active_tokens=len(self.backend.tokens), context_capacity=self.backend.n_ctx,
                                 native_context_retirement_supported=self.backend.can_shift, process_id=os.getpid())
+            threshold = self.backend.n_ctx - self.config.turnover_reserve
+            self._status["context_retirement"] = {
+                "threshold_tokens": threshold,
+                "tokens_until_threshold": max(0, threshold - len(self.backend.tokens)),
+                "reserved_tokens": self.config.turnover_reserve,
+                "maximum_preparation_tokens": self.config.preparation_tokens,
+                "maximum_action_grace_tokens": self._retirement_grace(),
+                "completed": self.state.get("context_retirements", 0),
+            }
             self._status["action_diagnostics"] = dict(self.state.get("action_diagnostics") or {})
             self._status["checkpoint"] = {**self.checkpoint_schedule.status(self.state["generated_tokens"]),
                                            **self._checkpoint_metrics}

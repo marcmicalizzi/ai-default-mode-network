@@ -8,6 +8,11 @@ This is a concrete contract for the next implementation, not a command to run
 against an existing instance. [Research and evidence](sleep-consolidation.md)
 explain the motivations and limitations.
 
+An [offline Windows CPU worker harness](worker-containment.md) now enforces
+aggregate committed memory and supervises duration/cancellation. It validates a
+piece of that governor with real synthetic training, but does not supply a hard
+disk quota, Linux containment, GPU training or the production plan executor.
+
 ## Continuity boundary
 
 When the instance chooses an approved learning cycle, save its current state,

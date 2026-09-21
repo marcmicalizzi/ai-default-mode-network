@@ -355,6 +355,23 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(r.state["context_retirements"], 1)
         self.assertEqual(len(r.store.messages()), 1)
 
+    def test_public_retirement_threshold_matches_native_capacity_and_trigger(self):
+        config = dataclasses.replace(self.config, turnover_reserve=1536)
+        r = self.create(config=config)
+        # llama.cpp can round the requested context size up to an allocation boundary.
+        r.backend.n_ctx += 160
+        threshold = r.backend.n_ctx - config.turnover_reserve
+        r._eval([ord("x")] * (threshold - 1 - len(r.backend.tokens)))
+        r.tick()
+        status = r.status()["context_retirement"]
+        self.assertEqual(status["threshold_tokens"], threshold)
+        self.assertEqual(status["tokens_until_threshold"], 0)
+        self.assertEqual(status["completed"], 0)
+        self.assertEqual(status["maximum_action_grace_tokens"], 128)
+        r.tick()
+        self.assertEqual(r.status()["context_retirement"]["completed"], 1)
+        self.assertGreater(r.status()["context_retirement"]["tokens_until_threshold"], 0)
+
     def test_long_action_cannot_postpone_retirement_forever(self):
         config = dataclasses.replace(self.config, turnover_reserve=1536)
         script = frames({"op": "send_message", "content": "x" * 1000})

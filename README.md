@@ -104,6 +104,11 @@ now test exact token/loss-mask review, separate approval, durable phases, interr
 candidate/wake recovery and atomic publication. This fixture uses a prebuilt
 adapter and performs no training; production resource enforcement and the
 continuous training service remain to be implemented.
+A [Windows CPU worker experiment](docs/worker-containment.md) now runs real tiny
+training, conversion and native wake/restart inside an OS-enforced committed-memory
+limit, with timeout/cancellation and process-tree cleanup. It is an offline
+research harness; Linux containment, disk quotas and integration with approved
+plans remain outstanding.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

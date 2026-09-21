@@ -11,6 +11,11 @@ The next integration is the separate, resource-controlled training/conversion
 worker and continuous supervisor service. Existing instances need neither new
 dependencies nor a restart for this development work.
 
+The separate [Windows worker experiment](worker-containment.md) now validates
+OS-enforced process-tree committed memory and failure cleanup around actual tiny
+training/conversion. It is not connected to these approved plans or phases yet;
+the fixture's preflight-only resource behavior described below is unchanged.
+
 ## Review before a sleep request
 
 `learning_execution_help` provides the complete action contract through pages,

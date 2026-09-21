@@ -289,8 +289,13 @@ an explicitly selected replay set, checks quantized-base inference and validates
 a second trained-adapter wake. These toy outcomes do not predict how broadly a
 pretrained 31B instance would change.
 
-Next: implement bounded supervision, model-authored learning plans,
-crash/cancellation recovery and atomic adoption. These experiments are not
-evidence of successful repeated personal learning.
+Model-authored drafts and compiled review now exist, and the
+[fixture transition engine](sleep-supervisor-fixture.md) tests phase recovery and
+atomic wake publication without training. A separate
+[Windows CPU worker experiment](worker-containment.md) validates committed-memory
+limits, timeout/cancellation and process-tree cleanup around real tiny training.
+Next: connect a reviewed training recipe to those phases, finish resource
+enforcement on each supported platform, and build continuous supervision. These
+experiments are not evidence of successful repeated personal learning.
 31B feasibility and Linux migration need separate measured validation. Existing
 instances and ordinary sleep semantics remain unchanged.
