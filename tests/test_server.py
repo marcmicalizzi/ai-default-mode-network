@@ -68,6 +68,23 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(code, 403)
         self.assertIsNone(self.runtime.store.next_event(0))
 
+    def test_image_permission_request_and_prequeue_gate(self):
+        from tests.test_attachments import FixtureVision
+        self.runtime.backend.vision = FixtureVision(self.runtime.backend)
+        headers = {"Content-Type": "application/json", "X-DMN-Request": "1"}
+        code, reply = self.request("POST", "/api/images", {"content": "caption", "images": []}, headers)
+        self.assertEqual(code, 403)
+        self.assertEqual(reply["code"], "image_permission_required")
+        self.assertIsNone(self.runtime.store.next_event(0))
+        code, _ = self.request("POST", "/api/image-permission-request", {}, headers)
+        self.assertEqual(code, 202)
+        self.assertEqual(self.runtime.store.next_event(0)["kind"], "image_permission_request")
+        self.assertFalse(self.runtime.image_permissions.status()["global_allowed"])
+        code, _ = self.request("POST", "/api/events", {"content": "caption", "images": []}, headers)
+        self.assertEqual(code, 400)
+        code, _ = self.request("POST", "/api/control", {"action": "image_permission", "decision": "allow"}, headers)
+        self.assertEqual(code, 400)
+
     def test_shutdown_preparation_override_is_validated_and_applied(self):
         headers = {"Content-Type": "application/json", "X-DMN-Request": "1"}
         for seconds in (-1, True, "0", float("inf")):

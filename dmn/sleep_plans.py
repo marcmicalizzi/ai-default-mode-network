@@ -202,6 +202,8 @@ def plan_action(runtime, action):
                   "generated_token": runtime.state["generated_tokens"], "instance_id": runtime.state["instance_id"],
                   "reviewed_characters": runtime._learning_reads.get(value["revision"], 0)}
     elif op == "deep_sleep":
+        if -1 in runtime.backend.tokens:
+            raise ValueError("deep sleep reconstruction cannot replay retained visual positions; native restoration remains available")
         if runtime._preparing:
             raise ValueError("finish the current retirement/suspension boundary before requesting deep sleep; approval is unchanged")
         if not runtime.sleep_test_mode:

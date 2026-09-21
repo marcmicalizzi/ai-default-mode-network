@@ -63,6 +63,7 @@ class LlamaBackend:
         if config.pack_checkpoints:
             self.native_layout_policy = "pack_after_retirement_and_before_checkpoint_v1"
         self.model = self.ctx = self.batch = None
+        self.vision = None
         self.tokens = []
         self.decoded_tokens = 0
         self.decode_calls = 0
@@ -141,6 +142,10 @@ class LlamaBackend:
             template = api.llama_model_chat_template(self.model, None)
             self.template = template.decode("utf-8") if template else None
             self.fingerprint["chat_template"] = self.template
+            if config.vision_projector_path:
+                from .vision import NativeVision
+                self.vision = NativeVision(self)
+                self.fingerprint["vision"] = self.vision.fingerprint
             if config.prompt_format == "jinja":
                 import jinja2
                 import llama_cpp.llama_chat_format as formatter
@@ -198,6 +203,8 @@ class LlamaBackend:
             size = -n
 
     def eval(self, tokens):
+        if any(type(token) is not int or not 0 <= token < self.n_vocab for token in tokens):
+            raise ValueError("eval accepts only vocabulary token IDs, never visual positions")
         if len(self.tokens) + len(tokens) > self.n_ctx:
             raise ValueError("append would overflow context")
         for start in range(0, len(tokens), self.config.n_batch):
@@ -272,6 +279,8 @@ class LlamaBackend:
             raise RuntimeError("invalid logits")
         if c.repeat_last_n:
             for token in set(self.tokens[-c.repeat_last_n:]):
+                if token < 0:
+                    continue
                 scores[token] = scores[token] / c.repeat_penalty if scores[token] > 0 else scores[token] * c.repeat_penalty
         if c.temperature == 0:
             return int(np.argmax(scores))
@@ -389,6 +398,9 @@ class LlamaBackend:
                 "future_continuation_bit_identical_guaranteed": False}
 
     def close(self):
+        if getattr(self, "vision", None):
+            self.vision.close()
+            self.vision = None
         if self.batch is not None:
             self.api.llama_batch_free(self.batch)
             self.batch = None
@@ -402,6 +414,8 @@ class LlamaBackend:
     def rebuild(self, directory: Path):
         engine = json.loads((directory / "engine.json").read_text())
         tokens = engine["tokens"]
+        if -1 in tokens:
+            raise ValueError("retained visual positions cannot be reconstructed from text token IDs; native restore is required")
         if not tokens or len(tokens) > self.n_ctx or any(type(t) is not int or not 0 <= t < self.n_vocab for t in tokens):
             raise ValueError("saved tokens cannot fit this model's vocabulary/context; no truncation performed")
         # Validate RNG before changing the context. A failed native loader may

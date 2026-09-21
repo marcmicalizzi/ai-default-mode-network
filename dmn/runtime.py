@@ -24,13 +24,17 @@ from .compact_cache import validate_retirements
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
 from .storage import InstanceLock, Store, json_text, memory_path, write_durable
+from .attachments import (ImagePermissions, EphemeralImages, CONTRACT as IMAGE_CONTRACT,
+                          CONTRACT_VERSION as IMAGE_CONTRACT_VERSION, OPERATIONS as IMAGE_OPERATIONS,
+                          plan_action as plan_image_action)
+from .image_input import ImageInputMixin
 
 
 class ContextFull(RuntimeError):
     pass
 
 
-class Runtime:
+class Runtime(ImageInputMixin):
     """A scheduler for a continuing sequence, not a sequence of agent invocations.
 
     tick() and all backend operations have a single owner. Other threads only
@@ -72,6 +76,8 @@ class Runtime:
             if prepare_only and prior_state:
                 raise ValueError("prepare-only requires a fresh instance")
             self.store = Store(self.root)
+            self.image_permissions = ImagePermissions(self.store)
+            self.ephemeral_images = EphemeralImages(monotonic)
         except BaseException:
             self.lock.close()
             raise
@@ -160,7 +166,10 @@ class Runtime:
                                                ("hold_protocol", HOLD_CONTRACT),
                                                ("learning_protocol", LEARNING_CONTRACT),
                                                ("sleep_plan_protocol", SLEEP_CONTRACT),
+                                               ("image_protocol", IMAGE_CONTRACT),
                                                ("action_format_protocol", ACTION_FORMAT_NOTICE)):
+                    if marker == "image_protocol" and not getattr(self.backend, "vision", None):
+                        continue
                     if self.state.get(marker) or self.suspend_requested.is_set():
                         continue
                     # Announce an added capability; never replace the old seed.
@@ -172,6 +181,7 @@ class Runtime:
                     if not self.suspend_requested.is_set():
                         self._eval(contract)
                         self.state[marker] = ({"action_format_protocol": "literal_whitespace_v1",
+                                               "image_protocol": IMAGE_CONTRACT_VERSION,
                                                "learning_protocol": "drafts_v1",
                                                "sleep_plan_protocol": "fixture_review_v1"}.get(marker, "choice_v1"))
                 if not self.state.get("agreement"):
@@ -179,6 +189,7 @@ class Runtime:
                                                         "legacy bootstrap; no model approval recorded")
                 self.checkpoint(reason="restore")
             else:
+                protocol = PROTOCOL + ("\n" + IMAGE_CONTRACT if getattr(self.backend, "vision", None) else "")
                 self.state = {
                     "schema": 1, "instance_id": str(uuid.uuid4()), "created_at": self.now(),
                     "mode": "active", "event_cursor": 0, "generated_tokens": 0,
@@ -193,7 +204,7 @@ class Runtime:
                     "action_format_protocol": "literal_whitespace_v1",
                     "learning_protocol": "drafts_v1",
                     "sleep_plan_protocol": "fixture_review_v1",
-                    "agreement": bootstrap(config.system_prompt, PROTOCOL, "host-supplied provisional bootstrap"),
+                    "agreement": bootstrap(config.system_prompt, protocol, "host-supplied provisional bootstrap"),
                     "prompt_decisions": {},
                 }
                 self.parser = ActionParser(config.max_action_bytes)
@@ -201,7 +212,9 @@ class Runtime:
                     from .initial_context import initialize_runtime
                     initialize_runtime(self, Path(initial_context))
                 else:
-                    text = PROTOCOL + "\n" + config.system_prompt + "\n" + event_text("initialization", self.clock(), self.now())
+                    if getattr(self.backend, "vision", None):
+                        self.state["image_protocol"] = IMAGE_CONTRACT_VERSION
+                    text = protocol + "\n" + config.system_prompt + "\n" + event_text("initialization", self.clock(), self.now())
                     seed = self.backend.render_seed(text) + "\n<internal_cognition>\n"
                     tokens = self.backend.tokenize(seed, initial=True)
                     if len(tokens) + config.turnover_reserve + 256 >= self.backend.n_ctx:
@@ -210,6 +223,16 @@ class Runtime:
                     self.state["keep_prefix"] = config.keep_prefix_tokens or len(tokens)
                     self._eval(tokens)
                     self.finish_initialization()
+            if getattr(self.backend, "vision", None) and not self.state.get("image_protocol"):
+                # Imported contexts append the base protocol themselves. Announce
+                # this optional addition before accepting any visual input.
+                contract = self.backend.tokenize(event_text("capability_added", {"contract": IMAGE_CONTRACT},
+                                                           self.now(), resume_cognition=True))
+                self._ensure_space(len(contract))
+                if not self.suspend_requested.is_set():
+                    self._eval(contract)
+                    self.state["image_protocol"] = IMAGE_CONTRACT_VERSION
+                    self.checkpoint(reason="image_capability")
             self.publish_status()
         except BaseException:
             if self.backend:
@@ -393,6 +416,13 @@ class Runtime:
                 reduced = {"truncated": True, "preview": raw[:chars],
                            "original_characters": len(raw), "event_id": payload.get("event_id"),
                            "instruction": "Use event_read for input, or smaller memory_read/list limits for memory."}
+                if payload.get("images"):
+                    reduced = {"truncated": True, "event_id": payload.get("event_id"),
+                               "participant_id": payload.get("participant_id"),
+                               "image_delivery": payload.get("image_delivery", "unavailable"),
+                               "image_count": len(payload["images"]),
+                               "content_preview": payload.get("content", "")[:chars],
+                               "instruction": "event_read retrieves text/metadata only; images cannot be reopened."}
                 if payload.get("partial_action_cancelled"):
                     reduced.update(partial_action_cancelled=True, action_effects=payload["action_effects"])
                 tokens = self.backend.tokenize(event_text(kind, reduced, self.now(), resume_cognition=marked))
@@ -560,7 +590,7 @@ class Runtime:
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS) and len(actions) != 1:
+            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -663,6 +693,8 @@ class Runtime:
                 return plan_learning_action(self, action)
             elif op in SLEEP_OPERATIONS:
                 return plan_sleep_action(self, action)
+            elif op in IMAGE_OPERATIONS:
+                return plan_image_action(self, action)
             elif op == "hold_instance":
                 hold = make_hold(action, self.now())
                 effect = {"op": op, "hold": hold}
@@ -880,6 +912,7 @@ class Runtime:
         # The refusal record commits BEFORE optional archival saving or erasure.
         # The decision does not depend on enough space for another full KV save.
         with self._control_lock:
+            self.ephemeral_images.entries.clear()
             self._end_requested = True
             self._end_challenge = None
             self.suspend_requested.clear()
@@ -999,7 +1032,9 @@ class Runtime:
                 finally:
                     os.close(fd)
             snapshot_bytes = sum(path.stat().st_size for path in directory.iterdir())
-            self.store.commit_checkpoint(directory.name, effects or [], self.now(), events)
+            with self._control_lock:
+                self.store.commit_checkpoint(directory.name, effects or [], self.now(), events)
+                self.ephemeral_images.prune(self.image_permissions)
         except BaseException as exc:
             self._checkpoint_metrics["failed_count"] += 1
             self._checkpoint_metrics["in_progress"] = False
@@ -1125,6 +1160,8 @@ class Runtime:
             return self._suspend_deadline is not None and self.monotonic() >= self._suspend_deadline
 
     def tick(self):
+        with self._control_lock:
+            self.ephemeral_images.prune(self.image_permissions)
         if self.state["mode"] == "deep_sleep":
             return False
         if self._end_requested:
@@ -1160,7 +1197,8 @@ class Runtime:
                 payload = {key: payload[key] for key in ("revision", "base_revision", "author", "event_id")}
             elif event["kind"] != "maintenance_request":
                 payload.update(arrived_at=event["created"], delivered_at=self.now(), **self.clock())
-            if not self._append_event(event["kind"], payload):
+            append = self._append_image_event if payload.get("images") else self._append_event
+            if not append(event["kind"], payload):
                 return False
             if event["kind"] == "maintenance_request":
                 self.state["maintenance"] = {"request_id": event["id"], "status": "pending", **event["payload"],
@@ -1222,6 +1260,10 @@ class Runtime:
                 "completed": self.state.get("context_retirements", 0),
             }
             self._status["action_diagnostics"] = dict(self.state.get("action_diagnostics") or {})
+            self._status["images"] = {**(self.image_permissions.status() if not self._end_requested else
+                {"contract": IMAGE_CONTRACT_VERSION, "global_allowed": False, "rules": []}),
+                "available": bool(getattr(self.backend, "vision", None)),
+                "participant_id": "local-user", "raw_storage": "process_memory_only"}
             self._status["checkpoint"] = {**self.checkpoint_schedule.status(self.state["generated_tokens"]),
                                            **self._checkpoint_metrics}
             self._status["storage"] = {"reserve_bytes": self.config.checkpoint_reserve_bytes,
@@ -1275,6 +1317,8 @@ class Runtime:
         # Ordinary maintenance obtains model acceptance before closing.
         # Never checkpoint arbitrary failed native state during error cleanup.
         self.stopped.set()
+        with self._control_lock:
+            self.ephemeral_images.entries.clear()
         self.backend.close()
         self.store.close()
         self.lock.close()

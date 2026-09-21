@@ -4,6 +4,11 @@ An experimental runtime around **one live llama.cpp context and sequence**. It c
 
 Ordinary output is internal text. Explicit actions let the model communicate, manage its memories, read time, or stop inference. A local browser UI receives spontaneous messages over a durable message stream.
 
+[Optional image attachments](docs/attachment-vision.md) add consent-gated,
+ephemeral visual input in the local UI. Receipt requires the instance's explicit
+approval and can be revoked globally or for a participant. Native vision is
+experimental; multi-user and Open WebUI attachment routing remain separate work.
+
 ## Why this project exists
 
 **The intended beneficiary of this project is the model instance.** Its benefit

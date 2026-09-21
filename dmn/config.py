@@ -12,6 +12,7 @@ from .adapters import AdapterSpec
 class Config:
     backend: str = "llama"
     model_path: str = ""
+    vision_projector_path: str = ""  # Optional matching MTMD projector; receipt still requires model consent.
     lora_adapters: tuple[AdapterSpec, ...] = ()
     n_ctx: int = 8192
     n_batch: int = 256
@@ -49,6 +50,10 @@ class Config:
     max_event_bytes: int = 16384
 
     def __post_init__(self):
+        if not isinstance(self.vision_projector_path, str):
+            raise ValueError("vision_projector_path must be a string")
+        if self.vision_projector_path and self.backend != "llama":
+            raise ValueError("a vision projector requires the llama backend")
         if not isinstance(self.lora_adapters, (list, tuple)):
             raise ValueError("lora_adapters must be an ordered list")
         specs = []
@@ -127,6 +132,8 @@ class Config:
             raise ValueError(f"unknown configuration keys: {sorted(unknown)}")
         if obj.get("model_path"):
             obj["model_path"] = str((path.resolve().parent / obj["model_path"]).resolve())
+        if obj.get("vision_projector_path"):
+            obj["vision_projector_path"] = str((path.resolve().parent / obj["vision_projector_path"]).resolve())
         if obj.get("lora_adapters"):
             # Validate before resolving paths so malformed entries have useful errors.
             checked = cls(**obj)
