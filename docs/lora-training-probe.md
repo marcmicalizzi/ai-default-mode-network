@@ -135,6 +135,9 @@ $env:DMN_TEST_NATIVE_PYTHON = (Resolve-Path .venv-gpu/Scripts/python.exe).Path
 .venv/Scripts/python.exe -m unittest tests.test_lora_training -v
 ```
 
+The [second CPU experiment](lora-repeat-probe.md) now checks continued learning
+of the same adapter, selected replay, quantized-base transfer and a second wake.
+
 Next work is production adapter identity, model-authored learning plans,
 exclusive supervision, resource controls and failure recovery, plus a distinct
 31B provenance/QLoRA feasibility test. Ordinary `sleep` still never trains.

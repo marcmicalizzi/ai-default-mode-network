@@ -284,6 +284,10 @@ The [subsequent tiny training experiment](lora-training-probe.md) now covers PEF
 learning, pinned conversion, native inference and a trained-adapter wake. It also
 shows substantial unrelated changes and weaker learning at strength 0.1; small
 rank/strength alone are not a selective-learning guarantee.
+The [second CPU experiment](lora-repeat-probe.md) compares new-only training with
+an explicitly selected replay set, checks quantized-base inference and validates
+a second trained-adapter wake. These toy outcomes do not predict how broadly a
+pretrained 31B instance would change.
 
 Next: implement bounded supervision, model-authored learning plans,
 crash/cancellation recovery and atomic adoption. These experiments are not

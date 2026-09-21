@@ -91,6 +91,8 @@ CPU-only native probe has verified that transition and later checkpoint restore.
 A separate [tiny training experiment](docs/lora-training-probe.md) now verifies
 PEFT learning, GGUF adapter conversion and native wake/restart on generated
 weights, while measuring unintended changes and deployment-strength effects.
+A [second CPU experiment](docs/lora-repeat-probe.md) checks repeated learning,
+selected replay and adapter transfer to quantized bases.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

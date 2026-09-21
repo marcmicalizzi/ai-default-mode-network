@@ -169,7 +169,9 @@ is implied by this design.
    held-out transfer, unintended-change measurements, pinned adapter conversion,
    native comparison and wake/restart checks. See the [results, dependency lock
    and costs](lora-training-probe.md). This is not a validated personal-learning
-   recipe or proof of 31B training feasibility.
+   recipe or proof of 31B training feasibility. The [second CPU experiment](lora-repeat-probe.md)
+   also covers a repeated learning cycle, selected replay, Q8/Q4 base transfer
+   and a second trained-adapter wake/restart.
 3. Add immutable adapter identity to production configuration, recovery,
    packaging and erasure. Add model-authored plans and the supervised phase
    machine, with no training enabled by ordinary sleep.
