@@ -68,7 +68,7 @@ class AdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "config.json"
             path.write_text(json.dumps(Config(lora_adapters=[self.spec]).to_dict()))
-            self.assertEqual(Config.read(path).lora_adapters[0].path, str(Path(folder) / "adapter.gguf"))
+            self.assertEqual(Config.read(path).lora_adapters[0].path, str((Path(folder) / "adapter.gguf").resolve()))
 
     def test_package_binds_active_external_adapter_and_erasure_only_removes_owned_copy(self):
         with tempfile.TemporaryDirectory() as folder:
