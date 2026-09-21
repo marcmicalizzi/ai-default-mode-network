@@ -160,6 +160,9 @@ an explicit strict restore path that verifies the reserialized native state byte
 for byte before resuming. It cannot change cache layout or fall back to replay.
 See [performance trials and placement verification](docs/performance.md) for the
 disposable benchmark/probe workflow, extra verification write, and validation limits.
+The measured 31B desktop case improved from about 1.10 to 2.24 tokens/s. Native
+transfer preserved saved bytes, but future generation differed across placements;
+restoration within the selected placement matched the tested continuation exactly.
 
 Explicit degraded recovery is available when a native snapshot is unavailable:
 

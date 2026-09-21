@@ -185,8 +185,28 @@ placement be applied to valuable state. Preserve the original checkpoint and
 environment before migration.
 
 A tiny CPU fixture has passed thread-count migration, serialized-byte equality,
-zero replay, retirement and subsequent restart. GPU placement and 31B throughput
-still require the idle-machine trials; they are not established by that fixture.
+zero replay, retirement and subsequent restart. The 2026-09-20 31B probe also
+passed transfer from 24 GPU layers/6 threads to 30 GPU layers/18 threads, using
+4,096 synthetic occupied tokens and the same 60K allocation. Restore took
+14.2 seconds including verification, preserved the full native file byte for
+byte, and performed zero decode calls or prompt-token reevaluations during load.
+Three retirements succeeded. Reloading the resulting checkpoint into a fresh
+native context under the target placement matched all 16 sampled tokens and
+logits exactly. This was native-context recreation within one diagnostic process;
+the separate native CPU suite also covers process restart.
+
+Across the old and new placements, one of 16 sample comparisons differed
+(zero-based step 10), with a maximum absolute logit difference of 1.8165 under
+identical forced subsequent token inputs. Saved-state equality is therefore not
+identical future generation across placements, and this difference must not be
+described as merely cosmetic. A changed sampled token would alter later inputs
+in an ordinary uninterrupted continuation. Whole-device sampling begun during
+retirement observed at least 2,233 MiB free VRAM, but may have missed transient
+peaks or the start of the first cycle.
+
+The 4K transfer/retirement probe and 25K throughput comparison establish different
+things. Neither replaces actual checkpoint verification on an opted-in resume,
+nor the hands-on fresh-instance trial before resuming valuable state.
 
 ## The Gemma compact-cache obstacle
 

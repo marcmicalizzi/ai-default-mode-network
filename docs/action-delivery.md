@@ -36,7 +36,8 @@ a complete retrospective delivery audit.
 
 On first resume after the parser update, an appended capability notice explains
 the formatting behavior and that old rejected actions are not automatically
-resent. The earlier system prompt and KV remain in place. Recovery or resend
+resent. It also explains that older versions could mislabel malformed JSON as an
+unavailable operation. The earlier system prompt and KV remain in place. Recovery or resend
 of an old message must be a new explicit choice, not an effect of upgrading the
 parser.
 
