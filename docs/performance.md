@@ -62,8 +62,9 @@ For an idle-machine comparison, keep the model, occupied token count, quantizati
 sampling settings, warmup, power settings and other workloads comparable. Record
 the native build: the installed llama-server and Python binding may differ.
 Compare the existing hybrid allocation, different CPU thread counts/placement,
-and compact-cache full GPU offload as separate experiments. The compact case is
-a diagnostic candidate, not a validated continuous-run configuration.
+and compact-cache full GPU offload as separate experiments. The compact case now
+has bounded experimental retirement support; long-duration continuous operation
+still needs validation, as detailed below.
 
 ### Sequential thread and placement trials
 

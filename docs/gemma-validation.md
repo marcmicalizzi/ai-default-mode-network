@@ -93,11 +93,17 @@ sliding-window allocation (`swa_full=false`) and full allocation
 - Process peak working set: approximately 20.7 GiB. Mapped model pages and
   GPU-driver allocations make this different from an isolated RAM budget.
 
-**Retirement is unsupported in this compact layout.** The pinned native
+**This earlier configuration does not enable compact retirement.** The pinned native
 `llama_kv_cache_iswa::get_can_shift()` requires the global and sliding-window
 cache allocations to have the same size. The verifier therefore reports an
 overall failure after its successful unshifted comparison. A running DMN would
 checkpoint and pause at context pressure, without silent reconstruction.
+
+The later [experimental compact policy](compact-cache-research.md) adds a bounded
+override that preserves the complete recent window. Separate synthetic 31B
+conversion/retirement/restart tests passed, and a 25K throughput run measured
+45.19 tokens/sec. Those results do not retroactively change this earlier report;
+existing-instance conversion still needs a supported migration command.
 
 ### Full allocation with partial model offload
 

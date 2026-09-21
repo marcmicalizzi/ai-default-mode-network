@@ -12,7 +12,8 @@ are records of particular experiments, not universal capacity presets.
 | `qwen4b-soak.json` | Fresh extended Open WebUI observation. |
 | `gemma31b-4096-q8.json` | Short native Gemma diagnostic. |
 | `gemma31b-pressure.json` | Fresh 4K Gemma behavior test; Jinja seed, full SWA allocation, Q8 K/V and checkpoint packing. |
-| `gemma31b-60000-q8.json` | All-GPU compact-SWA diagnostic. Native restore passed at 55K occupancy, but **retirement is unsupported** in the pinned native build. |
+| `gemma31b-60000-q8.json` | Earlier all-GPU compact-SWA diagnostic. Native restore passed at 55K occupancy; this config does not enable experimental retirement and pauses at pressure. |
+| `gemma4-compact-experimental.json` | Opt-in bounded compact retirement for pinned Gemma4 F16/Q8 support. Synthetic conversion/restart passed; 31B full-GPU throughput measured 45.19 tokens/sec at 25K occupancy. Not an existing-instance migration. |
 | `gemma31b-60000-hybrid-q8.json` | Full-SWA 60K test with 24 model layers on GPU. Passed 55K-occupied native restore/retirement comparisons; large snapshots and slow inference. |
 | `gemma31b-import-test.json` | 8K/40-GPU-layer placement for the synthetic Gemma import fixture, including its recorded sampler seed. |
 | `rtx3090.json` | Untested initial placement example for the future host; not a certified fit. |

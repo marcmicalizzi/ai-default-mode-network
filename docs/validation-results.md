@@ -34,10 +34,16 @@ test filled **55,000 tokens** with synthetic input, using Q8 K/V and Flash
 Attention. Fresh processes matched all 24 sampled tokens and logits exactly
 both before and after native retirement, with zero prompt replay.
 
-There is a material configuration tradeoff. The compact sliding-window layout
-fits with all model layers on GPU and restores correctly, but the pinned native
-build cannot retire it. The passing layout uses **full SWA allocation and 24
+In this earlier trial, the compact sliding-window layout fit with all model
+layers on GPU and restored correctly, but its native capability guard refused
+retirement. That trial's passing layout uses **full SWA allocation and 24
 model layers on GPU**, with the rest in RAM.
+
+Subsequent [compact-cache work](compact-cache-research.md) added an explicit,
+bounded experimental retirement policy and passed synthetic 31B native
+conversion/restart checks. A separate 25K-occupied run measured 45.19 tokens/sec.
+An existing-instance migration command and longer compact pressure soak remain
+outstanding; the full-cache measurements below remain historical baselines.
 
 At 55K occupancy its snapshot is **26.3 GB**. Packing plus backend writing took
 **165 seconds**, excluding integrity hashing and runtime durability work.
