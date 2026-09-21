@@ -16,6 +16,7 @@ SCHEDULING_SETTINGS = {"token_delay_seconds", "checkpoint_tokens", "checkpoint_i
                        "idle_enabled", "idle_max_burst_tokens", "idle_min_interval_seconds",
                        "sleep_checkpoint_min_interval_seconds"}
 NATIVE_PLACEMENT_SETTINGS = {"n_threads", "n_gpu_layers"}
+INPUT_SETTINGS = {"vision_projector_path"}
 
 
 def same_native_environment(saved, current):
@@ -24,9 +25,9 @@ def same_native_environment(saved, current):
     def normalized(value):
         config = Config(**value["config"])
         adapters = saved_adapter_identity(value, config)
-        return {**value, "lora_adapters": adapters,
+        return {**{key: item for key, item in value.items() if key != "vision"}, "lora_adapters": adapters,
                 "config": {**{key: item for key, item in config.to_dict().items()
-                               if key not in SCHEDULING_SETTINGS}, "lora_adapters": adapters}}
+                               if key not in SCHEDULING_SETTINGS | INPUT_SETTINGS}, "lora_adapters": adapters}}
     return normalized(saved) == normalized(current)
 
 
@@ -44,9 +45,9 @@ def reconstruction_compatible(saved: dict, current: dict):
     left = {**left_config.to_dict(), "lora_adapters": left_adapters}
     right = {**right_config.to_dict(), "lora_adapters": right_adapters}
     differences = {key for key in left.keys() | right.keys() if left.get(key) != right.get(key)}
-    if differences - PLACEMENT_SETTINGS - SCHEDULING_SETTINGS:
+    if differences - PLACEMENT_SETTINGS - SCHEDULING_SETTINGS - INPUT_SETTINGS:
         raise ValueError("context reconstruction cannot silently change protocol or sampler settings: "
-                         + ", ".join(sorted(differences - PLACEMENT_SETTINGS - SCHEDULING_SETTINGS)))
+                         + ", ".join(sorted(differences - PLACEMENT_SETTINGS - SCHEDULING_SETTINGS - INPUT_SETTINGS)))
 
 
 def native_placement_changes(saved, current):
@@ -114,6 +115,7 @@ def restore_checkpoint(backend, directory: Path, policy="strict", allow_placemen
                 for key in SCHEDULING_SETTINGS
                 if saved_config[key] != current_config[key]
             }
+            evidence["image_projector_changed"] = manifest["fingerprint"].get("vision") != backend.fingerprint.get("vision")
             return state, {**evidence, "method": "native_restore" if backend.kind == "native_llama_kv" else "demo_restore"}
         except (RuntimeError, ValueError, OSError) as exc:
             if policy == "strict":

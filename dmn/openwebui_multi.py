@@ -8,17 +8,29 @@ import os
 import time
 import weakref
 from pathlib import Path
+from urllib.error import HTTPError
 
 from .conversation_bridge import ConversationClient, conversation_id, participant_id
 from .conversations import identifier
 from .multi_bridge_ledger import MultiBridgeLedger
-from .openwebui import OpenWebUIBridge, validate_input
+from .openwebui import OpenWebUIBridge
+from .openwebui_images import REQUEST_COMMAND, validate_message, sources, load_images, input_digest
 from .storage import InstanceLock
 
 log = logging.getLogger(__name__)
 
 
 class MultiUserOpenWebUIBridge(OpenWebUIBridge):
+    validate_message = staticmethod(validate_message)
+
+    def same_attachments(self, left, right):
+        # Frontend file entries include transient upload status and display
+        # metadata; only immutable IDs/types determine history identity.
+        try:
+            return sources(left) == sources(right)
+        except (ValueError, TypeError):
+            return False
+
     def __init__(self, app):
         from open_webui.env import DATA_DIR, VERSION, DATABASE_URL, WEBUI_AUTH
         if VERSION != "0.11.0" or not DATABASE_URL.startswith("sqlite:") or not WEBUI_AUTH:
@@ -74,15 +86,20 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
         try:
             message = form.get("user_message") or form.get("parent_message") or {}
             new_chat = form.get("chat_id") is None and "parent_id" in form and form["parent_id"] is None
-            validate_input({**form, "chat_id": "new-chat-preflight" if new_chat else form.get("chat_id"),
+            self.validate_message({**form, "chat_id": "new-chat-preflight" if new_chat else form.get("chat_id"),
                             "message_id": form.get("id") or "preflight", "user_message": message})
             chat, person = await self.authenticate(form.get("chat_id"), form.get("session_id"), user.id, allow_new=True)
             if chat is None:
+                if sources(message) or message["content"].strip() == REQUEST_COMMAND:
+                    raise ValueError("start with a text message and wait for contact consent before requesting images")
                 policy = await asyncio.to_thread(self.client.participant, person.id)
                 if policy.get("blocked") or policy.get("contact_state") in {"pending", "deferred", "declined"}:
                     raise ValueError("DMN has not permitted a new conversation with this participant; no message was delivered")
             else:
-                await self.bind_chat(chat, person, message)
+                binding = await self.bind_chat(chat, person, message)
+                # Validate ownership before upstream can persist a placeholder.
+                # Re-read at submission; no byte cache survives the request.
+                await self.prepare_input(binding, message)
         except (ValueError, KeyError, TypeError) as exc:
             raise HTTPException(403, str(exc)) from exc
 
@@ -118,7 +135,8 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             history = (chat.chat.get("history") or {}) if chat else {}
             nodes = await Chats.get_messages_map_by_chat_id(chat.id) if chat else {}
             existing = nodes.get(message["id"])
-            if existing and (existing.get("role") != "user" or existing.get("content") != message["content"]):
+            if existing and (existing.get("role") != "user" or existing.get("content") != message["content"]
+                             or sources(existing) != sources(message)):
                 raise ValueError("new input cannot replace an existing message")
             placeholder = nodes.get(assistant_id)
             if placeholder and (placeholder.get("role") != "assistant" or placeholder.get("content") or placeholder.get("output")
@@ -134,16 +152,44 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             parent = existing.get("parentId") if existing else history.get("currentId")
             form["user_message"] = {"id": message["id"], "role": "user", "content": message["content"],
                                     "parentId": parent, "childrenIds": [], "timestamp": int(time.time()), "meta": {}}
+            if sources(message):
+                form["user_message"]["files"] = sources(message)
             form["parent_id"] = parent
             form.pop("parent_message", None)
         except (ValueError, KeyError, TypeError) as exc:
             raise HTTPException(409, str(exc)) from exc
 
-    async def enqueue_bound(self, binding, message_id, content):
-        return await asyncio.to_thread(self.client.enqueue, binding, message_id, content)
+    async def check_image_consent(self, binding, message):
+        images = sources(message)
+        if images or message["content"].strip() == REQUEST_COMMAND:
+            try:
+                status = await asyncio.to_thread(self.client.image_status, binding)
+            except HTTPError as exc:
+                exc.close()
+                raise ValueError("image input requires an open conversation, accepted contact and an enabled vision projector") from exc
+            if images and not status["allowed"]:
+                raise ValueError("DMN has not permitted your images. Send /dmn-images without attachments to request consent; no image was queued.")
+
+    async def prepare_input(self, binding, message):
+        await self.check_image_consent(binding, message)
+        uploads = await load_images(message, binding["user_id"]) if sources(message) else []
+        return uploads, input_digest(message, uploads)
+
+    async def enqueue_prepared(self, binding, message, uploads):
+        if uploads:
+            return await asyncio.to_thread(self.client.enqueue_images, binding, message["id"], message["content"], uploads)
+        if message["content"].strip() == REQUEST_COMMAND:
+            return await asyncio.to_thread(self.client.request_images, binding, message["id"])
+        return await asyncio.to_thread(self.client.enqueue, binding, message["id"], message["content"])
+
+    async def retry_bound(self, binding, message, prior):
+        uploads, digest = await self.prepare_input(binding, message)
+        if digest != prior["digest"]:
+            raise ValueError("Editing a delivered message or attachment cannot rewind DMN; send a new message")
+        return await self.enqueue_prepared(binding, message, uploads)
 
     async def submit(self, metadata, user=None):
-        message = validate_input(metadata)
+        message = self.validate_message(metadata)
         user_id = (user or {}).get("id")
         if user_id != metadata.get("user_id"):
             raise ValueError("authenticated Pipe identity and server metadata disagree")
@@ -154,9 +200,10 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
             binding = await self.bind_chat(chat, person, message)
             if not binding or binding["user_id"] != person.id:
                 raise ValueError("DMN chat requires authenticated completion preflight")
-            self.ledger.receipt(chat.id, message["id"], message["content"], metadata["message_id"])
+            uploads, digest = await self.prepare_input(binding, message)
+            self.ledger.receipt(chat.id, message["id"], message["content"], metadata["message_id"], digest=digest)
             # Even a known retry must obey a block or closure committed since acceptance.
-            reply = await self.enqueue_bound(binding, message["id"], message["content"])
+            reply = await self.enqueue_prepared(binding, message, uploads)
             self.ledger.accepted(message["id"], reply["event_id"], chat_id=chat.id)
             return reply
 

@@ -45,8 +45,8 @@ class MultiBridgeLedger:
             self.db.execute("INSERT OR IGNORE INTO bindings(chat_id,user_id,instance_id,conversation_id,participant_id) VALUES(?,?,?,?,?)", tuple(expected.values()))
         return self.binding(chat_id)
 
-    def receipt(self, chat_id, message_id, content, assistant_id):
-        digest = hashlib.sha256(content.encode()).hexdigest()
+    def receipt(self, chat_id, message_id, content, assistant_id, *, digest=None):
+        digest = digest or hashlib.sha256(content.encode()).hexdigest()
         with self.db:
             prior = self.get_receipt(message_id, chat_id)
             if prior and (prior["digest"] != digest or prior["assistant_id"] != assistant_id):

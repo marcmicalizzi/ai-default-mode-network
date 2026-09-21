@@ -1,6 +1,6 @@
 """
 title: DMN
-description: Deliver text events to one persistent DMN instance. Replies arrive independently.
+description: Deliver events to one persistent DMN instance. In multi-user mode, /dmn-images requests image consent.
 version: 0.1.0
 """
 
@@ -15,9 +15,11 @@ class Pipe:
         receipt = await bridge.submit(__metadata__ or {}, __user__)
         event_id = receipt["event_id"] if isinstance(receipt, dict) else receipt
         waiting = isinstance(receipt, dict) and receipt.get("admission") == "contact_request"
+        image_request = isinstance(receipt, dict) and receipt.get("admission") == "image_permission_request"
         if __event_emitter__:
             await __event_emitter__({"type": "status", "data": {
                 "description": ("Waiting for DMN's consent. Your first message is held outside its context." if waiting
+                                else "Image consent requested. No image was queued; wait for DMN's decision before attaching images." if image_request
                                 else "Queued for DMN. It may respond independently."), "done": True,
                 "dmn_event_id": event_id}})
         return ""  # Delivery status is transport UI, never fabricated model speech.

@@ -45,16 +45,19 @@ The verification covers:
 - Creating a new chat through the normal completion route before its first saved message.
 - Withholding first messages until explicit contact acceptance, including for the operator.
 - Submitting operator reasoning while everyone is blocked, with no automatic unblock.
+- Requesting image consent without an upload, then delivering an owned synthetic image once.
+- Rejecting foreign files and retries with changed image bytes before history writes.
+- Enforcing global/per-user image revocation and excluding raw bytes/file references from DMN storage.
 
 The default Python test suite separately checks credential/Origin/Host/instance
 validation, endpoint scope, immutable identity mapping, report coalescing,
 independent cursors, slow/failing destinations and notification/report failures.
 
-Verification on 2026-09-21: the authenticated fixture passed all listed scenarios.
-The full default suite ran 296 tests: 278 passed and 18 opt-in tests were skipped.
-One additional consent-compatibility regression test was then added and passed
-with the focused consent/recovery checks.
-Native-model and training-test opt-ins were disabled for this run.
+Verification on 2026-09-21 after image integration: the authenticated fixture
+passed all listed scenarios, including real WebUI uploads and attachment history
+guards. The full suite ran 350 tests: 328 passed and 22 opt-in tests were skipped.
+Native-model and training-test opt-ins were disabled; image evaluation used a
+scripted fixture rather than a native model/projector.
 
 `--browser-hold` keeps the disposable fixture available for browser checks and
 adds a third dummy account. Local fixture files can direct scripted consent and
@@ -92,7 +95,7 @@ reads, operator control, or unblock-request endpoints.
 
 All bridge operations require the credential and exact `X-DMN-Instance` header.
 Requests with browser `Origin` headers or foreign Host headers are rejected.
-The endpoint accepts only binding, scoped contact state, scoped input, scoped
+The endpoint accepts only binding, scoped contact/image permission state, scoped input, scoped
 output and delivery reports, plus a minimal identity/protocol check. There is no implicit recipient,
 global outbox feed, broadcast or control operation. Tokens should be generated
 randomly; the server requires at least 32 non-whitespace ASCII characters.
@@ -179,6 +182,16 @@ relay updates that status without fabricating a model response. New Chat uses
 the authenticated account/socket before WebUI creates the saved chat; the Pipe
 rechecks its resulting owner before the first message is held. Accepted contact
 does not promise an answer or prevent a later block.
+
+## Optional image consent
+
+For optional images, configure a matching vision projector and use `/dmn-images`
+in a saved, contact-accepted chat. This requests consent without an attachment.
+After model approval, the normal file picker accepts owner-uploaded local PNG,
+JPEG and WebP files. Image permission is independently revocable globally and
+per participant. WebUI retains its own uploads; DMN receives transient bytes and
+stores only text/metadata. See [image attachments](attachment-vision.md) for the
+contract, exact limits, transport endpoints and native validation requirements.
 
 ## Separate operator reconsideration interface
 

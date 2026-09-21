@@ -144,13 +144,21 @@ class Conversations:
             raise ValueError("participant contact has not been accepted by the model")
         return value
 
-    def enqueue(self, conversation_id, content, now, idempotency_key=None):
+    def enqueue(self, conversation_id, content, now, idempotency_key=None, *,
+                image_metadata=None, image_ticket=None, image_request=False):
         if idempotency_key is not None and (not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256):
             raise ValueError("idempotency_key must be a string of 1 to 256 characters")
         with self.store.transaction() as db:
-            value = self.require_open(conversation_id, allow_pending=True)
+            visual = image_metadata is not None or image_request
+            value = self.require_open(conversation_id, allow_pending=not visual)
             payload = {key: value[key] for key in ("conversation_id", "participant_id", "is_operator")}
             payload.update(display_name=value["display_name"], content=content)
+            kind = "image_permission_request" if image_request else "user_message"
+            if image_request:
+                from .attachments import CONTRACT_VERSION
+                payload["contract"] = CONTRACT_VERSION
+            if image_metadata is not None:
+                payload.update(images=image_metadata, permission_ticket=image_ticket)
             if self.require_consent and value["contact_state"] != "accepted":
                 return contacts.hold(self, db, value, payload, now, idempotency_key)
             discarded = db.execute("SELECT disposition FROM held_contact_inputs WHERE idempotency_key=?", (idempotency_key,)).fetchone()
@@ -164,8 +172,8 @@ class Conversations:
                                    (idempotency_key,)).fetchone()
             if prior:
                 previous = json.loads(prior["payload"])
-                if (prior["kind"] != "user_message" or any(previous.get(k) != payload[k]
-                        for k in ("conversation_id", "participant_id", "is_operator", "content"))):
+                if (prior["kind"] != kind or any(previous.get(k) != payload.get(k)
+                        for k in ("conversation_id", "participant_id", "is_operator", "content", "images", "permission_ticket"))):
                     raise ValueError("idempotency key already used with different content or identity")
                 return prior["id"]
             pending = db.execute('''SELECT i.participant_id FROM conversation_inputs i
@@ -175,7 +183,7 @@ class Conversations:
             held = db.execute("SELECT COUNT(*) FROM held_contact_inputs WHERE disposition='held'").fetchone()[0]
             if len(pending) + held >= self.max_pending or sum(r[0] == value["participant_id"] for r in pending) >= self.max_per_participant:
                 raise ValueError("conversation inbox is full; message was not admitted")
-            event_id = self.store._enqueue(db, "user_message", payload, now, idempotency_key)
+            event_id = self.store._enqueue(db, kind, payload, now, idempotency_key)
             db.execute("INSERT INTO conversation_inputs VALUES(?,?,?)",
                        (event_id, conversation_id, value["participant_id"]))
             return event_id

@@ -36,6 +36,11 @@ def validate_input(metadata):
 
 
 class OpenWebUIBridge:
+    validate_message = staticmethod(validate_input)
+
+    def same_attachments(self, left, right):
+        return (left.get("files") or []) == (right.get("files") or [])
+
     def __init__(self, app):
         from open_webui.env import DATA_DIR, VERSION, DATABASE_URL
         if VERSION != "0.11.0" or not DATABASE_URL.startswith("sqlite:"):
@@ -68,6 +73,12 @@ class OpenWebUIBridge:
 
     async def enqueue_bound(self, binding, message_id, content):
         return await asyncio.to_thread(self.client.enqueue, binding["chat_id"], message_id, content)
+
+    async def retry_bound(self, binding, message, prior):
+        content = message.get("content")
+        if not isinstance(content, str) or hashlib.sha256(content.encode()).hexdigest() != prior["digest"]:
+            raise ValueError("Editing a delivered message cannot rewind DMN; send a new message")
+        return await self.enqueue_bound(binding, message["id"], content)
 
     async def submit(self, metadata, user=None):
         from open_webui.models.chats import Chats
@@ -175,7 +186,7 @@ class OpenWebUIBridge:
         async def payload(request, form_data, user, metadata, model):
             if form_data.get("model") != MODEL_ID:
                 return await self.original_payload(request, form_data, user, metadata, model)
-            message = validate_input(metadata)
+            message = self.validate_message(metadata)
             if form_data.get("regeneration_prompt"):
                 raise ValueError("Regeneration cannot rewind DMN; send a new message")
             clean = {"model": MODEL_ID, "stream": form_data.get("stream", True),
@@ -213,14 +224,14 @@ class OpenWebUIBridge:
             if prior:
                 if not bound or kwargs["user"].id != binding["user_id"]:
                     raise HTTPException(403, "DMN conversation owner required")
-                content = message.get("content")
-                if not isinstance(content, str) or hashlib.sha256(content.encode()).hexdigest() != prior["digest"]:
-                    raise HTTPException(409, "Editing a delivered message cannot rewind DMN; send a new message")
                 if assistant_id != prior["assistant_id"]:
                     raise HTTPException(409, "Regeneration cannot rewind DMN; send a new message")
                 # Retry before any upstream placeholder mutation. Handles a crash
                 # after runtime acceptance but before the local receipt commit too.
-                reply = await self.enqueue_bound(binding, message["id"], content)
+                try:
+                    reply = await self.retry_bound(binding, message, prior)
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
                 self.ledger.accepted(message["id"], reply["event_id"], chat_id=chat_id)
                 await self.notify(binding, prior["assistant_id"])
                 return {"status": True, "chat_id": chat_id, "task_ids": []}
@@ -238,7 +249,8 @@ class OpenWebUIBridge:
                     nodes = (current.chat.get("history") or {}).get("messages", {})
                     for key, node in (incoming.get("history") or {}).get("messages", {}).items():
                         prior = nodes.get(key)
-                        if prior and any(field in node and node[field] != prior.get(field) for field in ("role", "content", "parentId")):
+                        if prior and (any(field in node and node[field] != prior.get(field) for field in ("role", "content", "parentId"))
+                                      or ("files" in node and not self.same_attachments(node, prior))):
                             raise HTTPException(409, "DMN history cannot be edited; send a new event")
                     # Frontend saves may contain a stale history snapshot. Keep
                     # the authoritative nodes and branch; permit title/parameter UI metadata.

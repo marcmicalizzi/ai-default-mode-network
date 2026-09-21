@@ -19,6 +19,7 @@ from .bridge import RuntimeClient
 from .conversations import identifier
 from .ending import InstanceEnded
 from .transport_keys import register_key
+from .attachments import ImagePermissionRequired, MAX_IMAGES, MAX_IMAGE_BYTES
 
 
 def participant_id(namespace, user_id):
@@ -92,18 +93,29 @@ class ConversationTransport:
             with runtime.store.mutex:
                 exists = runtime.store.db.execute("SELECT 1 FROM participants WHERE id=?", (person,)).fetchone()
                 return runtime.conversations.participant(person) if exists else {"participant_id": person, "contact_state": "unrequested", "blocked": False}
-        if path not in {"/bridge/input", "/bridge/messages", "/bridge/delivery", "/bridge/contact"}:
+        if path not in {"/bridge/input", "/bridge/messages", "/bridge/delivery", "/bridge/contact",
+                        "/bridge/images", "/bridge/image-status", "/bridge/image-permission-request"}:
             raise LookupError("unknown bridge endpoint")
         binding = self.binding(body)
         conversation = binding["conversation_id"]
         if path == "/bridge/contact":
             return binding
-        if path == "/bridge/input":
+        if path == "/bridge/image-status":
+            return runtime.image_input_status(conversation)
+        if path in {"/bridge/input", "/bridge/images", "/bridge/image-permission-request"}:
             source_message = identifier(body["message_id"], "message_id")
             key = "webui:" + hashlib.sha256(json.dumps([self.namespace, body["chat_id"], source_message]).encode()).hexdigest()
-            event_id = runtime.enqueue_conversation(conversation, body["content"], key)
+            if path == "/bridge/images":
+                event_id = runtime.enqueue_images(body.get("content", ""), body["images"], key, conversation_id=conversation)
+            elif path == "/bridge/image-permission-request":
+                event_id = runtime.request_image_permission(key, conversation_id=conversation)
+            else:
+                if "images" in body or "attachments" in body:
+                    raise ValueError("images require the consent-gated bridge image endpoint")
+                event_id = runtime.enqueue_conversation(conversation, body["content"], key)
             event = runtime.store.next_event(event_id - 1)
-            return {"event_id": event_id, "admission": "contact_request" if event["kind"] == "contact_request" else "message_queued"}
+            admission = event["kind"] if event["kind"] in {"contact_request", "image_permission_request"} else "message_queued"
+            return {"event_id": event_id, "admission": admission}
         if path == "/bridge/messages":
             after = body.get("after", 0)
             if type(after) is not int or after < 0:
@@ -176,7 +188,10 @@ def serve_bridge(runtime, *, token, namespace, operator_user_id, port=0):
                     self.reply(409, {"error": "runtime instance identity does not match"})
                     return
                 length = int(self.headers.get("Content-Length", "0"))
-                if self.headers.get("Transfer-Encoding") or not 0 < length <= runtime.config.max_event_bytes * 6 + 2048:
+                maximum = runtime.config.max_event_bytes * 6 + 2048
+                if self.path == "/bridge/images":
+                    maximum += MAX_IMAGES * 4 * ((MAX_IMAGE_BYTES + 2) // 3)
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= maximum:
                     raise ValueError("invalid body size or framing")
                 if self.headers.get_content_type() != "application/json":
                     raise ValueError("application/json required")
@@ -184,6 +199,8 @@ def serve_bridge(runtime, *, token, namespace, operator_user_id, port=0):
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
                 self.reply(200, transport.dispatch(self.path, body))
+            except ImagePermissionRequired as exc:
+                self.reply(403, {"error": str(exc), "code": "image_permission_required"})
             except InstanceEnded:
                 self.reply(410, {"error": "instance ended"})
             except LookupError:
@@ -225,6 +242,17 @@ class ConversationClient(RuntimeClient):
     def enqueue(self, binding, message_id, content):
         return self.request("/bridge/input", {"chat_id": binding["chat_id"], "user_id": binding["user_id"],
                                               "message_id": message_id, "content": content})
+
+    def image_status(self, binding):
+        return self.request("/bridge/image-status", {"chat_id": binding["chat_id"], "user_id": binding["user_id"]})
+
+    def request_images(self, binding, message_id):
+        return self.request("/bridge/image-permission-request", {"chat_id": binding["chat_id"],
+            "user_id": binding["user_id"], "message_id": message_id})
+
+    def enqueue_images(self, binding, message_id, content, images):
+        return self.request("/bridge/images", {"chat_id": binding["chat_id"], "user_id": binding["user_id"],
+            "message_id": message_id, "content": content, "images": images})
 
     def messages(self, binding):
         return self.request("/bridge/messages", {"chat_id": binding["chat_id"], "user_id": binding["user_id"], "after": binding["cursor"]})

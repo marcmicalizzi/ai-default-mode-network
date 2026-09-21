@@ -7,6 +7,7 @@ its own child. No installed WebUI source or existing instance is changed.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import secrets
@@ -103,7 +104,10 @@ def run(folder, browser_hold=False):
             config = Config(backend="demo", n_ctx=32768, multi_user=True,
                             operator_participant_id=participant_id("fixture", operator["id"]), clock_interval_seconds=0,
                             inbox_generation_tokens=4, checkpoint_policy="effects")
-            runtime = Runtime(folder / "instance", config, DemoBackend(config, b"private scripted fixture. "))
+            from tests.test_attachments import FixtureVision, upload
+            backend = DemoBackend(config, b"private scripted fixture. ")
+            backend.vision = FixtureVision(backend)
+            runtime = Runtime(folder / "instance", config, backend)
             def publish(**action):
                 result, effect = runtime._plan_action(action, [])
                 assert result["ok"], result
@@ -257,6 +261,82 @@ def run(folder, browser_hold=False):
             wait_until(lambda: delivered(0, "Other destination still works"))
             wait_until(lambda: any(e["state"] == "failed" for e in delivery_events()))
             report["missing_chat_does_not_block_other_destinations"] = True
+            # Normal pinned WebUI upload shape, through its authenticated file
+            # route and the completion/Pipe hooks, with no vision model loaded.
+            import requests
+            def image_file(person, data):
+                with requests.Session() as session:
+                    session.trust_env = False
+                    response = session.post(url + "/api/v1/files/?process=false", files={"file": ("fixture.png", data, "image/png")},
+                        headers={"Authorization": "Bearer " + person["token"]}, timeout=30)
+                    response.raise_for_status()
+                    saved = response.json()
+                return {"type": "file", "id": saved["id"], "url": saved["id"], "content_type": "image/png"}
+
+            raw = base64.b64decode(upload()["data_base64"])
+            own_file, guest_file = image_file(operator, raw), image_file(guest, raw)
+            image_form = completion(0, "Synthetic image fixture", "image-one")
+            image_form["user_message"]["files"] = [own_file]
+            before_images = len(user_events())
+            rejected("/api/chat/completions", image_form, operator["token"])
+            assert len(user_events()) == before_images
+            ask = completion(0, "/dmn-images", "ask-images")
+            request("/api/chat/completions", ask, operator["token"])
+            def image_requests():
+                with runtime.store.mutex:
+                    return runtime.store.db.execute("SELECT COUNT(*) FROM events WHERE kind='image_permission_request'").fetchone()[0]
+            wait_until(lambda: image_requests() == 1)
+            assert not runtime.image_permissions.status()["global_allowed"]
+            report["image_request_queues_only_text_and_denied_upload_never_queues"] = True
+            admit_events()
+            publish(op="image_permission", scope="global", decision="allow", accept_ephemeral=True)
+            foreign = completion(0, "Not my file", "foreign-image")
+            foreign["user_message"]["files"] = [guest_file]
+            rejected("/api/chat/completions", foreign, operator["token"])
+            history = request(f"/api/v1/chats/{chats[0]}", token=operator["token"])["chat"]["history"]["messages"]
+            assert "foreign-image" not in history
+            request("/api/chat/completions", image_form, operator["token"])
+            wait_until(lambda: len(user_events()) == before_images + 1)
+            request("/api/chat/completions", image_form, operator["token"])
+            assert len(user_events()) == before_images + 1
+            image_chat = request(f"/api/v1/chats/{chats[0]}", token=operator["token"])["chat"]
+            image_chat["history"]["messages"]["image-one"]["files"][0].update(name="fixture.png", status="uploaded")
+            request(f"/api/v1/chats/{chats[0]}", {"chat": image_chat}, operator["token"])
+            image_chat["history"]["messages"]["image-one"]["files"] = [guest_file]
+            rejected(f"/api/v1/chats/{chats[0]}", {"chat": image_chat}, operator["token"])
+            # A different valid PNG with the same caption and message IDs must
+            # fail the digest guard before replacing WebUI or runtime history.
+            import io
+            from PIL import Image
+            changed = io.BytesIO()
+            Image.new("RGB", (2, 3), (99, 21, 4)).save(changed, "PNG")
+            mutated = json.loads(json.dumps(image_form))
+            mutated["user_message"]["files"] = [image_file(operator, changed.getvalue())]
+            rejected("/api/chat/completions", mutated, operator["token"])
+            admit_events()
+            assert backend.vision.delivered == 1
+            report["owned_image_delivered_once_and_changed_or_foreign_upload_rejected"] = True
+            publish(op="image_permission", scope="participant", participant_id=participant_id("fixture", operator["id"]),
+                    decision="deny")
+            rejected("/api/chat/completions", image_form, operator["token"])
+            publish(op="image_permission", scope="participant", participant_id=participant_id("fixture", operator["id"]),
+                    decision="allow", accept_ephemeral=True)
+            pending = completion(0, "Revoke before delivery", "image-pending")
+            pending["user_message"]["files"] = [own_file]
+            request("/api/chat/completions", pending, operator["token"])
+            wait_until(lambda: len(user_events()) == before_images + 2)
+            assert runtime.ephemeral_images.entries
+            publish(op="image_permission", scope="global", decision="deny")
+            assert not runtime.ephemeral_images.entries
+            rejected("/api/chat/completions", pending, operator["token"])
+            admit_events()
+            assert backend.vision.delivered == 1
+            report["global_and_per_user_image_revocation_enforced"] = True
+            with runtime.store.mutex:
+                stored = "\n".join(row[0] for row in runtime.store.db.execute("SELECT payload FROM events"))
+            assert own_file["id"] not in stored and base64.b64encode(raw).decode() not in stored
+            assert "data_base64" not in stored
+            report["runtime_stores_no_image_bytes_or_webui_file_reference"] = True
             report["passed"] = True
             if browser_hold:
                 browser_fixture = {"webui_url": url, "operator_url": f"http://127.0.0.1:{operator_server.server_port}",

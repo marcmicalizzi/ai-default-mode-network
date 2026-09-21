@@ -189,6 +189,9 @@ class Store:
                 elif op in {"learning_plan_create", "learning_plan_withdraw"}:
                     from .learning import commit_effect
                     commit_effect(db, effect, now)
+                elif op == "image_permission":
+                    from .attachments import commit_effect
+                    commit_effect(db, effect, now)
                 elif op in {"learning_compile", "learning_execution_decide", "deep_sleep"}:
                     from .sleep_plans import commit_effect
                     commit_effect(db, effect, now, directory)

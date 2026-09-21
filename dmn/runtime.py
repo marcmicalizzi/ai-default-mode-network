@@ -26,6 +26,10 @@ from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
 from .storage import InstanceLock, Store, json_text, memory_path, write_durable
 from .protocol import ACTIVITY_CONTRACT
+from .attachments import (ImagePermissions, EphemeralImages, CONTRACT as IMAGE_CONTRACT,
+                          CONTRACT_VERSION as IMAGE_CONTRACT_VERSION, OPERATIONS as IMAGE_OPERATIONS,
+                          plan_action as plan_image_action)
+from .image_input import ImageInputMixin
 from .conversations import (Conversations, OPERATIONS as CONVERSATION_OPERATIONS,
                             CONTRACT as CONVERSATION_CONTRACT, plan_action as plan_conversation_action)
 
@@ -34,7 +38,7 @@ class ContextFull(RuntimeError):
     pass
 
 
-class Runtime:
+class Runtime(ImageInputMixin):
     """A scheduler for a continuing sequence, not a sequence of agent invocations.
 
     tick() and all backend operations have a single owner. Other threads only
@@ -82,6 +86,8 @@ class Runtime:
             if prepare_only and prior_state:
                 raise ValueError("prepare-only requires a fresh instance")
             self.store = Store(self.root)
+            self.image_permissions = ImagePermissions(self.store)
+            self.ephemeral_images = EphemeralImages(monotonic)
             self.conversations = (Conversations(self.store, config.operator_participant_id,
                 config.max_pending_messages, config.max_pending_messages_per_participant,
                 config.require_contact_consent) if config.multi_user else None)
@@ -169,6 +175,8 @@ class Runtime:
                     if config.require_contact_consent:
                         from .contacts import CONTRACT as CONTACT_CONTRACT
                         protocol += "\n" + CONTACT_CONTRACT
+                if getattr(self.backend, "vision", None):
+                    protocol += "\n" + IMAGE_CONTRACT
                 self.state = {
                     "schema": 1, "instance_id": str(uuid.uuid4()), "created_at": self.now(),
                     "mode": "active", "event_cursor": 0, "generated_tokens": 0,
@@ -191,6 +199,8 @@ class Runtime:
                     from .initial_context import initialize_runtime
                     initialize_runtime(self, Path(initial_context))
                 else:
+                    if getattr(self.backend, "vision", None):
+                        self.state["image_protocol"] = IMAGE_CONTRACT_VERSION
                     text = protocol + "\n" + config.system_prompt + "\n" + event_text("initialization", self.clock(), self.now())
                     seed = self.backend.render_seed(text) + "\n<internal_cognition>\n"
                     tokens = self.backend.tokenize(seed, initial=True)
@@ -200,6 +210,17 @@ class Runtime:
                     self.state["keep_prefix"] = config.keep_prefix_tokens or len(tokens)
                     self._eval(tokens)
                     self.finish_initialization()
+            if (getattr(self.backend, "vision", None) and not self.state.get("image_protocol")
+                    and not self.state.get("pending_restore")):
+                # Imported contexts append the base protocol themselves. Announce
+                # this optional addition before accepting any visual input.
+                contract = self.backend.tokenize(event_text("capability_added", {"contract": IMAGE_CONTRACT},
+                                                           self.now(), resume_cognition=True))
+                self._ensure_space(len(contract))
+                if not self.suspend_requested.is_set():
+                    self._eval(contract)
+                    self.state["image_protocol"] = IMAGE_CONTRACT_VERSION
+                    self.checkpoint(reason="image_capability")
             self.publish_status()
         except BaseException:
             if self.backend:
@@ -239,7 +260,10 @@ class Runtime:
                                        ("hold_protocol", HOLD_CONTRACT),
                                        ("learning_protocol", LEARNING_CONTRACT),
                                        ("sleep_plan_protocol", SLEEP_CONTRACT),
+                                       ("image_protocol", IMAGE_CONTRACT),
                                        ("action_format_protocol", ACTION_FORMAT_NOTICE)):
+            if marker == "image_protocol" and not getattr(self.backend, "vision", None):
+                continue
             if self.state.get(marker) or self.suspend_requested.is_set():
                 continue
             # Announce an added capability; never replace the old seed.
@@ -251,6 +275,7 @@ class Runtime:
             if not self.suspend_requested.is_set():
                 self._eval(contract)
                 self.state[marker] = ({"action_format_protocol": "literal_whitespace_v1",
+                                       "image_protocol": IMAGE_CONTRACT_VERSION,
                                        "learning_protocol": "drafts_v1",
                                        "sleep_plan_protocol": "fixture_review_v1"}.get(marker, "choice_v1"))
         if not self.state.get("agreement"):
@@ -559,7 +584,7 @@ class Runtime:
                 reduced = {"truncated": True, "preview": raw[:chars],
                            "original_characters": len(raw), "event_id": payload.get("event_id"),
                            "instruction": "Use event_read for input, or smaller memory_read/list limits for memory."}
-                if self.conversations and kind == "user_message":
+                if self.conversations and kind in {"user_message", "image_permission_request"}:
                     reduced = {key: payload[key] for key in ("event_id", "participant_id", "conversation_id", "is_operator")}
                     reduced.update(truncated=True, content_preview=payload["content"][:chars],
                                    instruction="Use event_read for the complete event.")
@@ -570,6 +595,15 @@ class Runtime:
                 if self.conversations and kind == "contact_request":
                     reduced = {key: payload[key] for key in ("event_id", "participant_id", "conversation_id", "is_operator", "request_revision")}
                     reduced.update(truncated=True, instruction="New contact asks permission. Message withheld. Use event_read; choose contact_decide.")
+                if payload.get("images"):
+                    reduced = {"truncated": True, "event_id": payload.get("event_id"),
+                               "participant_id": payload.get("participant_id"),
+                               "image_delivery": payload.get("image_delivery", "unavailable"),
+                               "image_count": len(payload["images"]),
+                               "content_preview": payload.get("content", "")[:chars],
+                               "instruction": "event_read: text/metadata only."}
+                    if self.conversations:
+                        reduced.update(conversation_id=payload["conversation_id"], is_operator=payload["is_operator"])
                 if payload.get("partial_action_cancelled"):
                     reduced.update(partial_action_cancelled=True, action_effects=payload["action_effects"])
                 tokens = self.backend.tokenize(event_text(kind, reduced, self.now(), resume_cognition=marked))
@@ -597,7 +631,7 @@ class Runtime:
         # Making room may run retirement preparation, during which the model
         # can close this conversation or block its participant. Recheck at the
         # actual insertion boundary, after any such generation/checkpoint.
-        if self.conversations and kind == "user_message" and not self.conversations.admissible(payload["event_id"]):
+        if self.conversations and kind in {"user_message", "image_permission_request"} and not self.conversations.admissible(payload["event_id"]):
             return False
         self._eval(tokens)
         return True
@@ -750,7 +784,7 @@ class Runtime:
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in ({"activity", "end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | CONVERSATION_OPERATIONS) and len(actions) != 1:
+            if action.get("op") in ({"activity", "end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS | CONVERSATION_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -871,6 +905,8 @@ class Runtime:
                 return plan_learning_action(self, action)
             elif op in SLEEP_OPERATIONS:
                 return plan_sleep_action(self, action)
+            elif op in IMAGE_OPERATIONS:
+                return plan_image_action(self, action)
             elif op in CONVERSATION_OPERATIONS:
                 if not self.conversations:
                     raise ValueError("experimental multi-user mode is disabled")
@@ -1105,6 +1141,7 @@ class Runtime:
         # The refusal record commits BEFORE optional archival saving or erasure.
         # The decision does not depend on enough space for another full KV save.
         with self._control_lock:
+            self.ephemeral_images.entries.clear()
             self._end_requested = True
             self._end_challenge = None
             self.suspend_requested.clear()
@@ -1226,7 +1263,9 @@ class Runtime:
             snapshot_bytes = sum(path.stat().st_size for path in directory.iterdir())
             delivered = set(self._delivered_events)
             publication = ([{"op": "events_delivered", "event_ids": sorted(delivered)}] if delivered else [])
-            self.store.commit_checkpoint(directory.name, publication + (effects or []), self.now(), events)
+            with self._control_lock:
+                self.store.commit_checkpoint(directory.name, publication + (effects or []), self.now(), events)
+                self._prune_images()
             self._delivered_events.difference_update(delivered)
         except BaseException as exc:
             self._checkpoint_metrics["failed_count"] += 1
@@ -1357,6 +1396,8 @@ class Runtime:
             return self._suspend_deadline is not None and self.monotonic() >= self._suspend_deadline
 
     def tick(self):
+        with self._control_lock:
+            self._prune_images()
         if self.state["mode"] == "deep_sleep":
             return False
         if self._end_requested:
@@ -1419,7 +1460,8 @@ class Runtime:
                 payload = {key: payload[key] for key in ("revision", "base_revision", "author", "event_id")}
             elif event["kind"] != "maintenance_request":
                 payload.update(arrived_at=event["created"], delivered_at=self.now(), **self.clock())
-            if not self._append_event(event["kind"], payload):
+            append = self._append_image_event if payload.get("images") else self._append_event
+            if not append(event["kind"], payload):
                 return False
             if event["kind"] == "maintenance_request":
                 self.state["maintenance"] = {"request_id": event["id"], "status": "pending", **event["payload"],
@@ -1487,6 +1529,10 @@ class Runtime:
                 "idle_min_interval_seconds": self.config.idle_min_interval_seconds,
                 **{key: self.state.get(key, 0) for key in ("idle_generated_tokens", "focus_generated_tokens",
                     "boundary_generated_tokens", "evaluated_tokens")}}
+            self._status["images"] = {**(self.image_permissions.status() if not self._end_requested else
+                {"contract": IMAGE_CONTRACT_VERSION, "global_allowed": False, "rules": []}),
+                "available": bool(getattr(self.backend, "vision", None)),
+                "participant_id": None if self.conversations else "local-user", "raw_storage": "process_memory_only"}
             self._status["multi_user"] = {"enabled": bool(self.conversations),
                 "integration": "experimental_explicit_adapter_required" if self.conversations else "single_user",
                 "inbox_generation_tokens": self.config.inbox_generation_tokens if self.conversations else None,
@@ -1571,6 +1617,8 @@ class Runtime:
         # Ordinary maintenance obtains model acceptance before closing.
         # Never checkpoint arbitrary failed native state during error cleanup.
         self.stopped.set()
+        with self._control_lock:
+            self.ephemeral_images.entries.clear()
         self.backend.close()
         self.store.close()
         self.lock.close()

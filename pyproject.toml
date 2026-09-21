@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 llama = ["llama-cpp-python==0.3.35", "numpy>=1.26,<3"]
+vision = ["llama-cpp-python==0.3.35", "numpy>=1.26,<3", "Pillow>=11,<13"]
 
 [project.scripts]
 dmn = "dmn.cli:main"
