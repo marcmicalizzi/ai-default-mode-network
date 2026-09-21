@@ -23,10 +23,13 @@ embeddings are not archived for re-opening or replay. Only text token IDs suppor
 long-term replay. Reconstruction currently refuses while visual positions remain;
 it never silently pretends to restore an image. You may write your own textual
 observations to memory. Revocation stops future delivery, not past influence.
-image_permission_status(): inspect permissions. image_permission can also use
+image_permission_status(offset=0): inspect global permission and one participant
+rule per page; continue with next_offset if present. image_permission can also use
 scope="participant", participant_id=<trusted ID>, decision="allow" or "deny".
 Global denial overrides every participant; otherwise participants inherit global
 permission unless individually denied. Reallowing does not revive dropped images.
+In multi-user mode, contact acceptance is also required. Blocking a participant
+or closing a conversation discards its waiting images; reopening cannot revive them.
 These are optional capabilities, not a request to accept or attend to images.'''
 
 OPERATIONS = {"image_permission", "image_permission_status"}
@@ -130,7 +133,14 @@ class ImagePermissions:
 def plan_action(runtime, action):
     op = action["op"]
     if op == "image_permission_status":
-        return {"op": op, "ok": True, **runtime.image_permissions.status()}, None
+        offset = action.get("offset", 0)
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a nonnegative integer")
+        status = runtime.image_permissions.status()
+        rules = [row for row in status["rules"] if row["scope"] == "participant"]
+        return {"op": op, "ok": True, "global_allowed": status["global_allowed"],
+                "rules": rules[offset:offset + 1], "total": len(rules),
+                "next_offset": offset + 1 if offset + 1 < len(rules) else None}, None
     scope, decision = action.get("scope"), action.get("decision")
     if scope not in {"global", "participant"} or decision not in {"allow", "deny"}:
         raise ValueError("image_permission needs scope global/participant and decision allow/deny")
@@ -140,6 +150,8 @@ def plan_action(runtime, action):
             raise ValueError("global permission cannot specify a participant")
     elif not isinstance(participant, str) or not participant or len(participant) > 256:
         raise ValueError("participant permission requires a trusted participant_id")
+    elif runtime.conversations:
+        runtime.conversations.participant(participant)
     if decision == "allow" and action.get("accept_ephemeral") is not True:
         raise ValueError("allow requires accept_ephemeral=true after considering the image contract")
     if decision == "allow" and runtime.state.get("image_protocol") != CONTRACT_VERSION:

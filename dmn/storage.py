@@ -77,6 +77,9 @@ class Store:
                 id INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY, action_id TEXT UNIQUE NOT NULL, content TEXT NOT NULL, created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS message_destinations (
+                message_id INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL,
+                participant_id TEXT NOT NULL, in_reply_to INTEGER);
             CREATE TABLE IF NOT EXISTS memories (
                 path TEXT PRIMARY KEY, content TEXT NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS memory_versions (
@@ -108,22 +111,26 @@ class Store:
                 yield self.db
 
     def enqueue(self, kind, payload, now=None, idempotency_key=None):
-        encoded = json_text(payload)
         with self.transaction() as db:
-            if idempotency_key is not None:
-                if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
-                    raise ValueError("idempotency_key must be a string of 1 to 256 characters")
-                prior = db.execute("SELECT e.* FROM events e JOIN event_keys k ON e.id=k.event_id WHERE k.key=?",
-                                   (idempotency_key,)).fetchone()
-                if prior:
-                    if prior["kind"] != kind or prior["payload"] != encoded:
-                        raise ValueError("idempotency key already used with different content")
-                    return prior["id"]
-            event_id = db.execute("INSERT INTO events(kind,payload,created) VALUES(?,?,?)",
-                                  (kind, encoded, time.time() if now is None else now)).lastrowid
-            if idempotency_key is not None:
-                db.execute("INSERT INTO event_keys VALUES(?,?)", (idempotency_key, event_id))
-            return event_id
+            return self._enqueue(db, kind, payload, now, idempotency_key)
+
+    def _enqueue(self, db, kind, payload, now=None, idempotency_key=None):
+        """Insert inside the caller's transaction, without an inner commit."""
+        encoded = json_text(payload)
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+                raise ValueError("idempotency_key must be a string of 1 to 256 characters")
+            prior = db.execute("SELECT e.* FROM events e JOIN event_keys k ON e.id=k.event_id WHERE k.key=?",
+                               (idempotency_key,)).fetchone()
+            if prior:
+                if prior["kind"] != kind or prior["payload"] != encoded:
+                    raise ValueError("idempotency key already used with different content")
+                return prior["id"]
+        event_id = db.execute("INSERT INTO events(kind,payload,created) VALUES(?,?,?)",
+                              (kind, encoded, time.time() if now is None else now)).lastrowid
+        if idempotency_key is not None:
+            db.execute("INSERT INTO event_keys VALUES(?,?)", (idempotency_key, event_id))
+        return event_id
 
     def next_event(self, cursor):
         with self.mutex:
@@ -152,8 +159,15 @@ class Store:
                     if self.memory_revision(effect["path"]) != effect["expected_revision"]:
                         raise ValueError("memory revision changed before commit")
                 if op == "send_message":
-                    db.execute("INSERT INTO messages(action_id,content,created) VALUES(?,?,?)",
-                               (effect["action_id"], effect["content"], now))
+                    message_id = db.execute("INSERT INTO messages(action_id,content,created) VALUES(?,?,?)",
+                                           (effect["action_id"], effect["content"], now)).lastrowid
+                    if "conversation_id" in effect:
+                        db.execute("INSERT INTO message_destinations VALUES(?,?,?,?)",
+                                   (message_id, effect["conversation_id"], effect["participant_id"], effect.get("in_reply_to")))
+                elif op in {"events_delivered", "close_conversation", "reopen_conversation",
+                            "block_participant", "unblock_participant", "contact_decide"}:
+                    from .conversations import commit_effect
+                    commit_effect(db, effect, now)
                 elif op == "memory_write":
                     db.execute("INSERT INTO memories VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET content=excluded.content, updated=excluded.updated",
                                (effect["path"], effect["content"], now))
@@ -218,9 +232,15 @@ class Store:
                 "SELECT path FROM memories WHERE substr(path,1,?)=? ORDER BY path LIMIT ? OFFSET ?",
                 (len(prefix), prefix, limit, offset))]
 
-    def messages(self, after=0, limit=200):
+    def messages(self, after=0, limit=200, conversation_id=None):
         with self.mutex:
-            return [dict(r) for r in self.db.execute("SELECT * FROM messages WHERE id>? ORDER BY id LIMIT ?", (after, limit))]
+            rows = self.db.execute('''SELECT m.*, d.conversation_id, d.participant_id, d.in_reply_to
+                FROM messages m LEFT JOIN message_destinations d ON d.message_id=m.id
+                WHERE m.id>? AND (? IS NULL OR d.conversation_id=?) ORDER BY m.id LIMIT ?''',
+                (after, conversation_id, conversation_id, limit)).fetchall()
+            return [{k: v for k, v in dict(r).items()
+                     if r["conversation_id"] is not None or k not in {"conversation_id", "participant_id", "in_reply_to"}}
+                    for r in rows]
 
     def close(self):
         with self.mutex:

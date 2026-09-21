@@ -1,4 +1,4 @@
-"""Single-user transport hooks; future adapters must supply authenticated identity."""
+"""Ephemeral input through the single-user and authenticated conversation queues."""
 from __future__ import annotations
 
 from .attachments import (CONTRACT_VERSION, LOCAL_PARTICIPANT, ImagePermissionRequired, ImageInputError,
@@ -9,42 +9,70 @@ from .protocol import event_text
 
 
 class ImageInputMixin:
-    def _require_image_input_open(self):
+    def _require_image_input_open(self, conversation_id=None):
         if self._end_requested:
             raise InstanceEnded("This instance has ended")
         if self.state.get("hold"):
             raise InstanceHeld("Instance is held")
         if self.state.get("mode") == "staged":
             raise ValueError("start the prepared instance before requesting or sending images")
-        if getattr(self, "conversations", None):
-            raise ValueError("image transport for multi-user mode awaits authenticated queue integration")
         if not getattr(self.backend, "vision", None):
             raise ValueError("this runtime has no vision projector")
+        if self.conversations:
+            self._require_conversations_open()
+            if conversation_id is None:
+                raise ValueError("multi-user image input requires a registered conversation")
+            return self.conversations.require_open(conversation_id)["participant_id"]
+        if conversation_id is not None:
+            raise ValueError("addressed image input requires multi-user mode")
+        return LOCAL_PARTICIPANT
 
-    def request_image_permission(self, idempotency_key=None):
+    def image_input_status(self, conversation_id):
+        """Only this destination's policy; never reveal other participants' rules."""
         with self._control_lock:
-            self._require_image_input_open()
-            event_id = self.store.enqueue("image_permission_request", {
-                "participant_id": LOCAL_PARTICIPANT, "contract": CONTRACT_VERSION,
-                "request": "Would you like to receive ephemeral images? You may decline or ignore this request. No image has been queued."},
-                self.now(), idempotency_key)
+            person = self._require_image_input_open(conversation_id)
+            try:
+                self.image_permissions.ticket(person)
+                allowed = True
+            except ImagePermissionRequired:
+                allowed = False
+            return {"available": True, "allowed": allowed, "participant_id": person,
+                    "contract": CONTRACT_VERSION, "raw_storage": "process_memory_only"}
+
+    def _prune_images(self):
+        self.ephemeral_images.prune(self.image_permissions)
+        if self.conversations:
+            for event_id in list(self.ephemeral_images.entries):
+                if not self.conversations.admissible(event_id):
+                    self.ephemeral_images.entries.pop(event_id)
+
+    def request_image_permission(self, idempotency_key=None, *, conversation_id=None):
+        with self._control_lock:
+            person = self._require_image_input_open(conversation_id)
+            request = "Would you like to receive ephemeral images? You may decline or ignore this request. No image has been queued."
+            if self.conversations:
+                event_id = self.conversations.enqueue(conversation_id, request, self.now(), idempotency_key, image_request=True)
+            else:
+                event_id = self.store.enqueue("image_permission_request", {
+                    "participant_id": person, "contract": CONTRACT_VERSION, "request": request}, self.now(), idempotency_key)
         self.wake.set()
         return event_id
 
-    def enqueue_images(self, content, uploads, idempotency_key=None):
+    def enqueue_images(self, content, uploads, idempotency_key=None, *, conversation_id=None):
         if not isinstance(content, str) or len(content.encode("utf-8")) > self.config.max_event_bytes:
             raise ValueError("attachment message must be text within max_event_bytes")
         # Denial precedes base64 decode, image parsing, persistence and queuing.
         with self._control_lock:
-            self._require_image_input_open()
-            ticket = self.image_permissions.ticket(LOCAL_PARTICIPANT)
+            person = self._require_image_input_open(conversation_id)
+            ticket = self.image_permissions.ticket(person)
         images = decode_uploads(uploads)
         with self._control_lock:
-            self._require_image_input_open()
-            if not self.image_permissions.permits(LOCAL_PARTICIPANT, ticket):
+            if self._require_image_input_open(conversation_id) != person:
+                raise ValueError("image destination changed during upload")
+            if not self.image_permissions.permits(person, ticket):
                 raise ImagePermissionRequired("image permission changed during upload; nothing queued")
-            self.ephemeral_images.prune(self.image_permissions)
-            payload = {"content": content, "participant_id": LOCAL_PARTICIPANT,
+            self._prune_images()
+            payload = {"content": content, "participant_id": person,
                        "images": [image.metadata() for image in images], "permission_ticket": ticket}
             # Existing receipts must never resurrect an expired/dropped upload.
             with self.store.mutex:
@@ -52,16 +80,22 @@ class ImageInputMixin:
                          if isinstance(idempotency_key, str) else None)
             if not prior:
                 self.ephemeral_images.require_capacity(images)
-            event_id = self.store.enqueue("user_message", payload, self.now(), idempotency_key)
+            if self.conversations:
+                event_id = self.conversations.enqueue(conversation_id, content, self.now(), idempotency_key,
+                    image_metadata=payload["images"], image_ticket=ticket)
+            else:
+                event_id = self.store.enqueue("user_message", payload, self.now(), idempotency_key)
             if not prior:
-                self.ephemeral_images.add(event_id, images, LOCAL_PARTICIPANT, ticket)
+                self.ephemeral_images.add(event_id, images, person, ticket)
         self.wake.set()
         return event_id
 
     def _append_image_event(self, kind, payload):
         event_id = payload["event_id"]
         with self._control_lock:
-            self.ephemeral_images.prune(self.image_permissions)
+            self._prune_images()
+            if self.conversations and not self.conversations.admissible(event_id):
+                return False
             entry = self.ephemeral_images.entries.get(event_id)
         if not entry or not getattr(self.backend, "vision", None):
             return self._append_event(kind, {**payload, "image_delivery": "unavailable",
@@ -84,7 +118,9 @@ class ImageInputMixin:
                 # Retirement preparation may run a revocation action. Recheck
                 # after it, immediately before any visual material reaches KV.
                 with self._control_lock:
-                    self.ephemeral_images.prune(self.image_permissions)
+                    self._prune_images()
+                    if self.conversations and not self.conversations.admissible(event_id):
+                        return False
                     permitted = self.ephemeral_images.entries.get(event_id) is entry
                     if permitted:
                         self._eval(head + boundary)

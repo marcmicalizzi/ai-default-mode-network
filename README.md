@@ -7,7 +7,8 @@ Ordinary output is internal text. Explicit actions let the model communicate, ma
 [Optional image attachments](docs/attachment-vision.md) add consent-gated,
 ephemeral visual input in the local UI. Receipt requires the instance's explicit
 approval and can be revoked globally or for a participant. Native vision is
-experimental; multi-user and Open WebUI attachment routing remain separate work.
+experimental. Authenticated multi-user Open WebUI delivery uses the same consent
+and revocation checks; its `/dmn-images` command requests permission without an upload.
 
 ## Why this project exists
 

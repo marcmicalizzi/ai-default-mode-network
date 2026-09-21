@@ -1,8 +1,8 @@
 # Optional image attachments
 
-Status: experimental native input and a single-user local UI/API. No running
-instance is opted in by installing this code. The Open WebUI relay remains text
-only, and authenticated multi-user delivery is deferred until that branch lands.
+Status: experimental native input, a single-user local UI/API, and authenticated
+multi-user Open WebUI delivery. No running instance is opted in by installing
+this code. The original single-user Open WebUI relay remains text only.
 
 ## Consent
 
@@ -27,7 +27,8 @@ Revocation is also a model action:
 ```
 
 Use each action alone inside the normal action frame. `image_permission_status`
-reports current rules. A participant inherits the global decision unless denied
+reports global permission and one participant rule per page; pass `next_offset`
+as `offset` to continue. A participant inherits the global decision unless denied
 individually. Global denial always wins. Reallowing either scope also requires
 `accept_ephemeral: true`. The HTTP interface cannot grant permission on the
 model's behalf. These choices belong to the instance, independently of host
@@ -42,7 +43,7 @@ erase past perception, generated observations, memory or KV influence.
 
 | Material | Retention and access |
 |---|---|
-| Raw upload | Process memory only; removed after delivery, revocation, ten-minute monotonic expiry, close or process loss. No upload directory, URL fetching or image retrieval endpoint. |
+| Raw upload in DMN | Process memory only; removed after delivery, revocation, ten-minute monotonic expiry, closure/block or process loss. No upload directory, URL fetching or image retrieval endpoint. |
 | Event history | Caption, MIME type, dimensions, size and digest. `event_read` retrieves this text/metadata, never pixels. |
 | Active vision | Appended through MTMD to the existing model context and sequence 0. Native checkpoints can retain visual KV and its influence. |
 | Retired image | No pixels or encoder embeddings are archived for later viewing or replay. Earlier checkpoints/backups may still contain earlier active KV. |
@@ -66,7 +67,8 @@ If the process restarts before an upload is delivered, its durable text event
 still arrives with an explicit unavailable-image notice. Repeating an existing
 idempotency key never restages the bytes. Send a new message to offer the image
 again. Captions remain ordinary durable input, including when an image expires
-or is refused at delivery.
+or is refused at delivery. Closing a conversation or blocking its participant
+also suppresses the undelivered caption, using the multi-user queue's rules.
 
 ## Configuration and limits
 
@@ -116,26 +118,49 @@ Use the existing loopback/same-origin guard and `X-DMN-Request: 1` header.
 `POST /api/events` remains text only and rejects attachment fields. Nothing
 automatically redirects a refused image into a text event or approval request.
 
-## Integration after multi-user merges
+## Authenticated multi-user integration
 
-The in-progress `codex/multi-user-interaction` branch was inspected, not merged or
-modified. Its current event admission is provisional. Integrating against its
-final queue must preserve these conditions:
+The stable `codex/multi-user-interaction` implementation is integrated. Use the
+[authenticated WebUI transport](multi-user-webui.md) in a deliberately prepared
+multi-user instance. Existing single-user instances are not migrated implicitly.
 
-1. Resolve the participant from the authenticated transport and registered
-   conversation, never a request-body `participant_id` or display name. The
-   current image endpoint always uses `local-user` and refuses multi-user mode.
-2. Apply conversation/block/rate admission and image consent before queuing.
-   Keep image bytes in the ephemeral pool, with only metadata in durable events.
-3. At the final insertion boundary, recheck both conversation admission and the
-   permission ticket after any retirement preparation. Mark delivery through
-   the queue's actual delivery accounting, not an assumed contiguous cursor.
-4. Drop associated uploads when a conversation closes or participant is blocked;
-   preserve the image-permission decision independently. Reopening/unblocking
-   must not implicitly grant image permission or resurrect dropped uploads.
-5. Implement equivalent consent UI and identity enforcement in Open WebUI before
-   relaxing its current attachment rejection. Its own upload retention must be
-   disclosed independently of DMN's ephemeral handling.
+Start with a text message and wait for contact acceptance. In that saved chat,
+send **`/dmn-images` without attachments** to request image permission. WebUI
+displays a transport status; the model can ignore or decline the request. Once
+it explicitly approves, attach PNG/JPEG/WebP images using WebUI's normal file
+picker. A rejected send may require reloading the saved chat before trying again.
+Contact acceptance and image consent are separate; neither grants the other.
+
+The adapter supports owner-uploaded local WebUI files on version 0.11.0. It checks
+the authenticated account, socket and chat owner, checks image consent, then
+verifies file ownership and reads only bounded files inside WebUI's upload root.
+Even an administrator cannot attach another user's file. Cloud storage, arbitrary
+paths, remote URLs, inline data URLs, documents and retrieval are unsupported.
+Only the current message's attachments are delivered; historical images are not
+replayed. Caption and byte digests make retries immutable.
+
+**WebUI retains its own uploaded files and chat attachment references.** DMN's
+ephemeral policy does not delete or alter that library. The bridge sends bytes
+only after permission, and strips file IDs, paths, URLs and filenames before
+runtime storage. DMN has no action for reopening WebUI uploads. This follows
+the pinned frontend's [upload handling](https://github.com/open-webui/open-webui/blob/v0.11.0/src/lib/components/chat/MessageInput.svelte).
+
+The backend-only bridge provides `/bridge/image-status`,
+`/bridge/image-permission-request`, and `/bridge/images`. These require the same
+installation credential and instance header as text delivery. Bodies carry
+authenticated `user_id` and `chat_id`; input routes also require `message_id`.
+The image route additionally takes `content` and `images` in the local API's
+format. Status reveals only that destination's effective permission. There is
+no HTTP route for granting permission. Participant IDs are derived from the
+trusted WebUI identity, never display names or a submitted `participant_id`.
+
+Requests and images share conversation quotas, protected action boundaries and
+generation spacing. Admission checks contact, block, closure and image consent
+before queueing, then checks them again after retirement preparation immediately
+before insertion. Actual delivered-event membership commits with the checkpoint.
+Blocking or closing discards pending bytes and suppresses waiting input;
+unblocking/reopening cannot revive it or change image permission. Per-participant
+image rules cover that account's chats; global denial overrides every account.
 
 ## Validation
 
@@ -143,6 +168,14 @@ Synthetic tests cover generated consent, failed-checkpoint publication, global
 and participant denial, restart/expiry, idempotency, queue bounds, metadata-only
 storage, revocation during retirement preparation, HTTP gating, native adapter
 position accounting and exclusion of image sentinels from text sampling/replay.
+Multi-user tests also cover contact admission, authenticated attribution, shared
+quotas, long routing envelopes, suppressed delivery and cross-chat revocation.
+`scripts/verify_multi_user_webui.py` exercises real authenticated WebUI upload,
+completion and Pipe routes with synthetic images and a scripted vision fixture:
+denied uploads never queue, foreign files and edited retries are rejected,
+per-user/global revocation works, and DMN retains no raw bytes or file references.
+The integrated branch's 2026-09-21 verification passed that WebUI script and
+328 unit tests, with 22 opt-in tests skipped. No running instance was accessed.
 
 For an isolated **CPU-only** native trial, set `DMN_TEST_VISION_MODEL` and
 `DMN_TEST_VISION_PROJECTOR` to disposable test model/projector paths, then run

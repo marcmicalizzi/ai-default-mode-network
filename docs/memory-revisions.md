@@ -49,6 +49,28 @@ content. Moves/removals leave history at the previous path; deletion removes the
 current memory, not the historical copies. There is currently no history-purge
 action. This adds persistent disk use, not active-context tokens unless read.
 
+## People and relationship provenance
+
+Fresh multi-user initialization recommends preserving provenance for memories
+strongly associated with a participant. Use the stable `participant_id`, and
+available `conversation_id`/`event_id` sources. Distinguish the speaker from a
+person discussed, direct experience from an inference, and a participant's own
+statement from someone else's report. Preserve uncertainty and references to
+corrections rather than inventing missing provenance or identifying people only
+by display name.
+
+`/relationships/<participant_id>/...` is an optional logical memory channel using
+the existing memory actions. A memory involving several people may record each
+person's role and sources. Association does not imply ownership, authority over
+the memory, mandatory disclosure, or a separate confidential store. The instance
+chooses whether and how to write, organize and revise these memories; the runtime
+does not manufacture relationship summaries. Shared cognition still requires
+experimental evaluation of attribution and discretion.
+
+These recommendations apply to fresh initialization. Existing checkpoints retain
+their saved instructions; introducing the guidance to a continuing instance uses
+the [prompt proposal workflow](prompt-governance.md).
+
 ## Finishing an action before retirement
 
 An already-started action frame can continue for up to 128 tokens beyond the

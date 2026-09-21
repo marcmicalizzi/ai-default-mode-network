@@ -153,7 +153,7 @@ event_read(event_id, offset=0, limit=2000): inspect delivered input too large fo
 clock(): obtain factual UTC time and elapsed times.
 ''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + LEARNING_CONTRACT + '\n' + SLEEP_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
 Paths are your own logical organization, e.g. /self, /memories, /interests,
-/unfinished, /goals, /private; none of these categories is mandatory.
+/unfinished, /goals, /private, /relationships; none of these categories is mandatory.
 Runtime records and KV snapshots are distinct from your editable memories.
 Stored memories survive retirement unchanged; you do not need to rewrite them
 to preserve them. Before changing one, read it and distinguish genuinely new

@@ -19,7 +19,7 @@ vision = ["llama-cpp-python==0.3.35", "numpy>=1.26,<3", "Pillow>=11,<13"]
 dmn = "dmn.cli:main"
 
 [tool.setuptools.package-data]
-dmn = ["web/*.html"]
+dmn = ["web/*.html", "web/*.js"]
 
 [tool.setuptools.packages.find]
 include = ["dmn*"]

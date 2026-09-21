@@ -28,6 +28,8 @@ from .attachments import (ImagePermissions, EphemeralImages, CONTRACT as IMAGE_C
                           CONTRACT_VERSION as IMAGE_CONTRACT_VERSION, OPERATIONS as IMAGE_OPERATIONS,
                           plan_action as plan_image_action)
 from .image_input import ImageInputMixin
+from .conversations import (Conversations, OPERATIONS as CONVERSATION_OPERATIONS,
+                            CONTRACT as CONVERSATION_CONTRACT, plan_action as plan_conversation_action)
 
 
 class ContextFull(RuntimeError):
@@ -46,6 +48,8 @@ class Runtime(ImageInputMixin):
                  sleep_test_mode=False):
         if kv_recovery not in {"strict", "fallback", "rebuild"}:
             raise ValueError("unknown KV recovery policy")
+        if config.multi_user and initial_context:
+            raise ValueError("experimental multi-user mode requires a fresh instance; import migration is not implemented")
         if allow_placement_change and (kv_recovery != "strict" or resume_condition == "original_environment"):
             raise ValueError("placement changes require strict recovery and cannot claim the original environment")
         self.root, self.config, self.now = root.resolve(), config, now
@@ -78,7 +82,12 @@ class Runtime(ImageInputMixin):
             self.store = Store(self.root)
             self.image_permissions = ImagePermissions(self.store)
             self.ephemeral_images = EphemeralImages(monotonic)
+            self.conversations = (Conversations(self.store, config.operator_participant_id,
+                config.max_pending_messages, config.max_pending_messages_per_participant,
+                config.require_contact_consent) if config.multi_user else None)
         except BaseException:
+            if hasattr(self, "store"):
+                self.store.close()
             self.lock.close()
             raise
         self.backend = None
@@ -92,6 +101,7 @@ class Runtime(ImageInputMixin):
         self._preparing = False
         self._preparation_actions = None
         self._journal = bytearray()
+        self._delivered_events = set()
         self._prompt_pending = None
         self._prompt_reads = {}
         self._learning_reads = {}
@@ -189,7 +199,18 @@ class Runtime(ImageInputMixin):
                                                         "legacy bootstrap; no model approval recorded")
                 self.checkpoint(reason="restore")
             else:
-                protocol = PROTOCOL + ("\n" + IMAGE_CONTRACT if getattr(self.backend, "vision", None) else "")
+                protocol = PROTOCOL
+                if self.conversations:
+                    protocol = protocol.replace('"op":"send_message","content":"Hello."',
+                        '"op":"send_message","conversation_id":"registered-address","content":"Hello."')
+                    protocol = protocol.replace("send_message(content): communicate to the local user, including unsolicited messages.",
+                        "send_message(conversation_id, content, in_reply_to): communicate to that registered conversation.")
+                    protocol += "\n" + CONVERSATION_CONTRACT
+                    if config.require_contact_consent:
+                        from .contacts import CONTRACT as CONTACT_CONTRACT
+                        protocol += "\n" + CONTACT_CONTRACT
+                if getattr(self.backend, "vision", None):
+                    protocol += "\n" + IMAGE_CONTRACT
                 self.state = {
                     "schema": 1, "instance_id": str(uuid.uuid4()), "created_at": self.now(),
                     "mode": "active", "event_cursor": 0, "generated_tokens": 0,
@@ -306,6 +327,8 @@ class Runtime(ImageInputMixin):
         self.state["last_inference_at"] = self.now()
 
     def enqueue(self, content: str, idempotency_key=None):
+        if self.conversations:
+            raise ValueError("multi-user mode requires explicit enqueue_conversation; there is no implicit recipient or sender")
         if not isinstance(content, str) or not content.strip():
             raise ValueError("message must be a nonempty string")
         if len(content.encode("utf-8")) > self.config.max_event_bytes:
@@ -318,6 +341,44 @@ class Runtime(ImageInputMixin):
             event_id = self.store.enqueue("user_message", {"content": content}, self.now(), idempotency_key)
         self.wake.set()
         return event_id
+
+    def register_conversation(self, participant_id, display_name, conversation_id):
+        """Trusted local host registration; not an authenticated network adapter."""
+        with self._control_lock:
+            self._require_conversations_open()
+            return self.conversations.register(participant_id, display_name, conversation_id)
+
+    def _require_conversations_open(self):
+        if not self.conversations:
+            raise ValueError("experimental multi-user mode is disabled")
+        if self._end_requested:
+            raise InstanceEnded("This instance has ended")
+        if self.state.get("hold"):
+            raise InstanceHeld("Instance is held")
+
+    def enqueue_conversation(self, conversation_id, content, idempotency_key=None):
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("message must be a nonempty string")
+        if len(content.encode("utf-8")) > self.config.max_event_bytes:
+            raise ValueError("message exceeds max_event_bytes")
+        with self._control_lock:
+            self._require_conversations_open()
+            event_id = self.conversations.enqueue(conversation_id, content, self.now(), idempotency_key)
+        self.wake.set()
+        return event_id
+
+    def request_unblock(self, participant_id, expected_block_revision, reason=""):
+        """Operator request only; the model must choose an unblock action."""
+        with self._control_lock:
+            self._require_conversations_open()
+            event_id = self.conversations.request_unblock(participant_id, expected_block_revision, reason, self.now())
+        self.wake.set()
+        return event_id
+
+    def event_delivered(self, event_id):
+        if self.conversations:
+            return event_id in self._delivered_events or self.conversations.delivered(event_id)
+        return event_id <= self.state["event_cursor"]
 
     def request_shutdown_from_signal(self):
         # A Python signal can interrupt a SQLite transaction on this thread.
@@ -416,13 +477,26 @@ class Runtime(ImageInputMixin):
                 reduced = {"truncated": True, "preview": raw[:chars],
                            "original_characters": len(raw), "event_id": payload.get("event_id"),
                            "instruction": "Use event_read for input, or smaller memory_read/list limits for memory."}
+                if self.conversations and kind in {"user_message", "image_permission_request"}:
+                    reduced = {key: payload[key] for key in ("event_id", "participant_id", "conversation_id", "is_operator")}
+                    reduced.update(truncated=True, content_preview=payload["content"][:chars],
+                                   instruction="Use event_read for the complete event.")
+                if self.conversations and kind == "unblock_request":
+                    reduced = {key: payload[key] for key in ("event_id", "participant_id", "requested_by", "expected_block_revision")}
+                    reduced.update(truncated=True, reason_preview=payload["reason"][:chars],
+                                   instruction="Request only; no block changes. Use event_read for full reasoning.")
+                if self.conversations and kind == "contact_request":
+                    reduced = {key: payload[key] for key in ("event_id", "participant_id", "conversation_id", "is_operator", "request_revision")}
+                    reduced.update(truncated=True, instruction="New contact asks permission. Message withheld. Use event_read; choose contact_decide.")
                 if payload.get("images"):
                     reduced = {"truncated": True, "event_id": payload.get("event_id"),
                                "participant_id": payload.get("participant_id"),
                                "image_delivery": payload.get("image_delivery", "unavailable"),
                                "image_count": len(payload["images"]),
                                "content_preview": payload.get("content", "")[:chars],
-                               "instruction": "event_read retrieves text/metadata only; images cannot be reopened."}
+                               "instruction": "event_read: text/metadata only."}
+                    if self.conversations:
+                        reduced.update(conversation_id=payload["conversation_id"], is_operator=payload["is_operator"])
                 if payload.get("partial_action_cancelled"):
                     reduced.update(partial_action_cancelled=True, action_effects=payload["action_effects"])
                 tokens = self.backend.tokenize(event_text(kind, reduced, self.now(), resume_cognition=marked))
@@ -447,12 +521,19 @@ class Runtime(ImageInputMixin):
                 return False
         elif len(self.backend.tokens) + len(tokens) > self.backend.n_ctx - 32:
             raise ContextFull("action result exhausted reserved context; effects were not committed")
+        # Making room may run retirement preparation, during which the model
+        # can close this conversation or block its participant. Recheck at the
+        # actual insertion boundary, after any such generation/checkpoint.
+        if self.conversations and kind in {"user_message", "image_permission_request"} and not self.conversations.admissible(payload["event_id"]):
+            return False
         self._eval(tokens)
         return True
 
     def _cancel_action(self, reason):
         if not self.parser.cancel():
             return {}
+        if self.conversations:
+            self.state["protected_action_tokens"] = 0
         diagnostics = self.state.setdefault("action_diagnostics", {})
         diagnostics["interrupted_frames"] = diagnostics.get("interrupted_frames", 0) + 1
         notice = {"partial_action_cancelled": True,
@@ -586,11 +667,13 @@ class Runtime(ImageInputMixin):
         piece = self.backend.piece(token)
         self._journal.extend(piece)
         actions = self.parser.feed(piece)
+        if self.conversations:
+            self.state["protected_action_tokens"] = self.state.get("protected_action_tokens", 0) + 1 if self.parser.pending else 0
         # One token can contain multiple frames. Execute sequentially but commit
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS) and len(actions) != 1:
+            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS | CONVERSATION_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -666,8 +749,12 @@ class Runtime(ImageInputMixin):
                 if actions[0].get("offset", 0) == self._learning_reads.get(revision, 0):
                     self._learning_reads[revision] = results[0]["next_offset"]
         if self.backend.is_eog(token):
+            if self.conversations and self.parser.pending:
+                self._append_event("action_interrupted", {"reason": "end_of_generation"}, allow_retirement=False)
             self.state["mode"], self.state["sleep_until"] = "sleeping", None
             self.parser.cancel()
+            if self.conversations:
+                self.state["protected_action_tokens"] = 0
         if actions or self.backend.is_eog(token):
             # Grant read-before-replace only once the real result has entered
             # the sequence, never to another frame in the same sampled token.
@@ -695,6 +782,10 @@ class Runtime(ImageInputMixin):
                 return plan_sleep_action(self, action)
             elif op in IMAGE_OPERATIONS:
                 return plan_image_action(self, action)
+            elif op in CONVERSATION_OPERATIONS:
+                if not self.conversations:
+                    raise ValueError("experimental multi-user mode is disabled")
+                return plan_conversation_action(self, action)
             elif op == "hold_instance":
                 hold = make_hold(action, self.now())
                 effect = {"op": op, "hold": hold}
@@ -753,6 +844,19 @@ class Runtime(ImageInputMixin):
                     raise ValueError("content must be a nonempty string")
                 effect = {"op": op, "content": content,
                           "action_id": f'{self.state["instance_id"]}:{self.state["generated_tokens"]}:{len(staged)}'}
+                if self.conversations:
+                    target = self.conversations.require_open(action["conversation_id"])
+                    reply_to = action.get("in_reply_to")
+                    if reply_to is not None:
+                        if type(reply_to) is not int or reply_to < 1 or not self.event_delivered(reply_to):
+                            raise ValueError("in_reply_to must identify a delivered event in this conversation")
+                        event = self.store.next_event(reply_to - 1)
+                        if not event or event["id"] != reply_to or event["payload"].get("conversation_id") != target["conversation_id"]:
+                            raise ValueError("in_reply_to belongs to a different conversation")
+                    effect.update(conversation_id=target["conversation_id"], participant_id=target["participant_id"], in_reply_to=reply_to)
+                    result.update(conversation_id=target["conversation_id"], publication="durable_outbox_on_commit")
+                elif "conversation_id" in action or "in_reply_to" in action:
+                    raise ValueError("addressed messages require multi-user mode; nothing was sent")
             elif op == "sleep":
                 seconds = action.get("seconds")
                 if seconds is not None and (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
@@ -811,7 +915,7 @@ class Runtime(ImageInputMixin):
             elif op == "event_read":
                 event_id = int(action["event_id"])
                 event = self.store.next_event(event_id - 1)
-                if not event or event["id"] != event_id or event_id > self.state["event_cursor"]:
+                if not event or event["id"] != event_id or not self.event_delivered(event_id):
                     raise ValueError("event is not yet part of this sequence")
                 raw = json_text(event["payload"])
                 offset, limit = self._range(action, 2000)
@@ -1032,9 +1136,12 @@ class Runtime(ImageInputMixin):
                 finally:
                     os.close(fd)
             snapshot_bytes = sum(path.stat().st_size for path in directory.iterdir())
+            delivered = set(self._delivered_events)
+            publication = ([{"op": "events_delivered", "event_ids": sorted(delivered)}] if delivered else [])
             with self._control_lock:
-                self.store.commit_checkpoint(directory.name, effects or [], self.now(), events)
-                self.ephemeral_images.prune(self.image_permissions)
+                self.store.commit_checkpoint(directory.name, publication + (effects or []), self.now(), events)
+                self._prune_images()
+            self._delivered_events.difference_update(delivered)
         except BaseException as exc:
             self._checkpoint_metrics["failed_count"] += 1
             self._checkpoint_metrics["in_progress"] = False
@@ -1161,7 +1268,7 @@ class Runtime(ImageInputMixin):
 
     def tick(self):
         with self._control_lock:
-            self.ephemeral_images.prune(self.image_permissions)
+            self._prune_images()
         if self.state["mode"] == "deep_sleep":
             return False
         if self._end_requested:
@@ -1187,7 +1294,15 @@ class Runtime(ImageInputMixin):
             return False
         if not self._announce_cache_migration():
             return False
-        event = self.store.next_event(self.state["event_cursor"])
+        protect_action = bool(self.conversations and self.parser.pending)
+        if protect_action and self.state.get("protected_action_tokens", 0) >= self.config.max_protected_action_tokens:
+            self._append_event("action_interrupted", {"reason": "protected action token limit reached"})
+            self.state["protected_action_tokens"] = 0
+            protect_action = False
+        admit = not protect_action and (not self.conversations or self.state["mode"] == "sleeping" or
+            self.state["generated_tokens"] >= self.state.get("inbox_next_generated", 0))
+        event = ((self.conversations.next_event(self.state["event_cursor"]) if self.conversations else
+                  self.store.next_event(self.state["event_cursor"])) if admit else None)
         if event:
             # Event is acknowledged by cursor only in a subsequent checkpoint.
             # Input received during inference/checkpoint remains in SQLite.
@@ -1204,6 +1319,9 @@ class Runtime(ImageInputMixin):
                 self.state["maintenance"] = {"request_id": event["id"], "status": "pending", **event["payload"],
                                              "requested_at": event["created"]}
             self.state["event_cursor"] = event["id"]
+            if self.conversations:
+                self._delivered_events.add(event["id"])
+                self.state["inbox_next_generated"] = self.state["generated_tokens"] + self.config.inbox_generation_tokens
             self.state["last_external_event_at"] = event["created"]
             self.state["mode"], self.state["sleep_until"] = "active", None
             if self.config.checkpoint_policy == "all_actions":
@@ -1219,10 +1337,10 @@ class Runtime(ImageInputMixin):
             self._append_event("sleep_elapsed", {**self.clock(), "inference_during_sleep": False})
             self.state["mode"], self.state["sleep_until"] = "active", None
         interval = self.config.clock_interval_seconds
-        if interval and self.now() - self.state["last_clock_at"] >= interval:
+        if not protect_action and interval and self.now() - self.state["last_clock_at"] >= interval:
             self._append_event("clock", self.clock())
             self.state["last_clock_at"] = self.now()
-        if self.state.get("storage_notice_pending"):
+        if not protect_action and self.state.get("storage_notice_pending"):
             pause = self.state["last_storage_pause"]
             self._append_event("storage_available", {**pause,
                                "fact": "Execution paused for storage capacity and resumed after an operator retry."})
@@ -1263,7 +1381,11 @@ class Runtime(ImageInputMixin):
             self._status["images"] = {**(self.image_permissions.status() if not self._end_requested else
                 {"contract": IMAGE_CONTRACT_VERSION, "global_allowed": False, "rules": []}),
                 "available": bool(getattr(self.backend, "vision", None)),
-                "participant_id": "local-user", "raw_storage": "process_memory_only"}
+                "participant_id": None if self.conversations else "local-user", "raw_storage": "process_memory_only"}
+            self._status["multi_user"] = {"enabled": bool(self.conversations),
+                "integration": "experimental_explicit_adapter_required" if self.conversations else "single_user",
+                "inbox_generation_tokens": self.config.inbox_generation_tokens if self.conversations else None,
+                "max_protected_action_tokens": self.config.max_protected_action_tokens if self.conversations else None}
             self._status["checkpoint"] = {**self.checkpoint_schedule.status(self.state["generated_tokens"]),
                                            **self._checkpoint_metrics}
             self._status["storage"] = {"reserve_bytes": self.config.checkpoint_reserve_bytes,

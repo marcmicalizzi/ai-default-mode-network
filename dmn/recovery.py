@@ -66,6 +66,10 @@ def restore_checkpoint(backend, directory: Path, policy="strict", allow_placemen
     if allow_placement_change and policy != "strict":
         raise ValueError("placement changes require strict recovery; reconstruction is not permitted")
     manifest = json.loads((directory / "manifest.json").read_text())
+    saved_config = manifest["fingerprint"]["config"]
+    if saved_config.get("multi_user") and "require_contact_consent" not in saved_config:
+        raise ValueError("this earlier multi-user prototype has no saved consent contract; "
+                         "use a fresh instance until deliberate migration is implemented")
     files = manifest["files"]
     if not {"runtime.json", "engine.json"} <= files.keys():
         raise ValueError("checkpoint integrity metadata is incomplete")
