@@ -16,7 +16,8 @@ from .checkpointing import CheckpointSchedule
 from .config import Config
 from .diskspace import InsufficientStorage, check_space
 from .ending import Lifecycle, InstanceEnded
-from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, ACTION_FORMAT_NOTICE, event_text
+from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, LEARNING_CONTRACT, ACTION_FORMAT_NOTICE, event_text
+from .learning import OPERATIONS as LEARNING_OPERATIONS, plan_action as plan_learning_action
 from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
 from .compact_cache import validate_retirements
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
@@ -144,6 +145,7 @@ class Runtime:
                                                ("maintenance_protocol", MAINTENANCE_CONTRACT),
                                                ("prompt_protocol", PROMPT_CONTRACT),
                                                ("hold_protocol", HOLD_CONTRACT),
+                                               ("learning_protocol", LEARNING_CONTRACT),
                                                ("action_format_protocol", ACTION_FORMAT_NOTICE)):
                     if self.state.get(marker) or self.suspend_requested.is_set():
                         continue
@@ -155,7 +157,8 @@ class Runtime:
                     self._ensure_space(len(contract))
                     if not self.suspend_requested.is_set():
                         self._eval(contract)
-                        self.state[marker] = "literal_whitespace_v1" if marker == "action_format_protocol" else "choice_v1"
+                        self.state[marker] = ({"action_format_protocol": "literal_whitespace_v1",
+                                               "learning_protocol": "drafts_v1"}.get(marker, "choice_v1"))
                 if not self.state.get("agreement"):
                     self.state["agreement"] = bootstrap(config.system_prompt, "See preserved original runtime seed.",
                                                         "legacy bootstrap; no model approval recorded")
@@ -173,6 +176,7 @@ class Runtime:
                     "maintenance_protocol": "choice_v1", "maintenance": None,
                     "prompt_protocol": "choice_v1", "hold_protocol": "choice_v1",
                     "action_format_protocol": "literal_whitespace_v1",
+                    "learning_protocol": "drafts_v1",
                     "agreement": bootstrap(config.system_prompt, PROTOCOL, "host-supplied provisional bootstrap"),
                     "prompt_decisions": {},
                 }
@@ -522,7 +526,7 @@ class Runtime:
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in {"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} and len(actions) != 1:
+            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -610,6 +614,8 @@ class Runtime:
             if op == "__invalid__":
                 raise ValueError("Invalid action format; nothing was executed or sent. " + action.get("error", "Malformed JSON")
                                  + ". Retry a complete corrected frame if wanted.")
+            elif op in LEARNING_OPERATIONS:
+                return plan_learning_action(self, action)
             elif op == "hold_instance":
                 hold = make_hold(action, self.now())
                 effect = {"op": op, "hold": hold}
@@ -782,7 +788,7 @@ class Runtime:
                     return {"op": op, "ok": False,
                             "error": "Unavailable operation. The captured frontend tool definitions are historical; only DMN actions are active.",
                             "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "hold_instance", "prompt_current", "prompt_propose", "prompt_read", "prompt_decide", "clock", "event_read",
-                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"]}, None
+                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"] + sorted(LEARNING_OPERATIONS)}, None
                 raise ValueError(action.get("error", "unknown operation"))
         except KeyError as exc:
             result = {"op": op, "ok": False,

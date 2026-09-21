@@ -98,6 +98,18 @@ portability is unverified; failed strict restoration leaves the hold intact.
 This saves and stops immediately; finish any desired thoughts/messages first.
 These are optional choices. You need not accept packaging or reconstruction.'''
 
+LEARNING_CONTRACT = '''Learning plans are optional private drafts, not permission to train or change weights.
+learning_plan_help(offset=0, limit=200): read the exact draft schema and semantics.
+learning_plan_create(plan, replaces): save your selected examples, source revisions,
+intent, uncertainties, exclusions, replay choices, parameters, resource ceilings,
+checks and adoption/failure preferences. Optional replaces supersedes an active draft.
+learning_plan_read(revision, offset=0, limit=200): inspect an immutable draft.
+learning_plan_list(offset=0, limit=20): list revision IDs and their current status.
+learning_plan_withdraw(revision): withdraw an active draft; history remains.
+Use each learning action alone and await its result. No training, deep-sleep action
+or adapter adoption is available yet. Ordinary sleep never trains. Drafts are
+included in instance archives and managed erasure. External weight copies remain.'''
+
 PROTOCOL = '''This is a persistent inference sequence. Ordinary generated text is internal
 cognition. It is not sent to the user. You may reflect, follow associations,
 change interests, abandon thoughts, or remain inactive. No task or productivity
@@ -136,7 +148,7 @@ then rename it without overwriting another.
 memory_delete(path, expected_revision): read current memory first, then intentionally remove it.
 event_read(event_id, offset=0, limit=2000): inspect delivered input too large for one insertion.
 clock(): obtain factual UTC time and elapsed times.
-''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
+''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + LEARNING_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
 Paths are your own logical organization, e.g. /self, /memories, /interests,
 /unfinished, /goals, /private; none of these categories is mandatory.
 Runtime records and KV snapshots are distinct from your editable memories.

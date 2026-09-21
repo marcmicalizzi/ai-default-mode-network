@@ -13,6 +13,7 @@ import time
 import uuid
 
 from .backend import LlamaBackend, sha256_file
+from .adapters import saved_adapter_identity
 from .config import Config
 from .diskspace import check_space
 from .ending import Lifecycle, InstanceEnded, _owned, _sync_directory
@@ -79,7 +80,8 @@ def _copy_file(source, destination):
 
 def _extra_files(root):
     files = []
-    for folder, label in ((root / "import", "import"), (Path(__file__).parent, "runtime-source/dmn")):
+    for folder, label in ((root / "import", "import"), (root / "adapters", "adapters"),
+                          (Path(__file__).parent, "runtime-source/dmn")):
         if not folder.exists():
             continue
         if not stat.S_ISDIR(_owned(folder, folder.parent).st_mode):
@@ -180,6 +182,23 @@ def migrate_cache(root, config, backup, *, gpu_layers=None, threads=None, backen
         migration_changes(manifest["fingerprint"], {**manifest["fingerprint"], "config": config.to_dict()})
         estimate = sum(p.stat().st_size for folder, _ in checkpoints for p in folder.iterdir() if p.is_file())
         extras = _extra_files(root)
+        # Every preserved checkpoint needs its weight dependencies, including
+        # adapters configured outside the instance. Keep content-addressed copies.
+        adapter_copies = {}
+        for _, saved_manifest in checkpoints:
+            saved_fingerprint = saved_manifest["fingerprint"]
+            saved_config = Config(**saved_fingerprint["config"])
+            saved_adapter_identity(saved_fingerprint, saved_config)
+            for spec in saved_config.lora_adapters:
+                path = Path(spec.path).resolve()
+                if (spec.base_model_sha256 != saved_fingerprint.get("model_sha256") or
+                        sha256_file(path) != spec.sha256):
+                    raise ValueError("saved adapter dependency differs; migration refused")
+                if not path.is_relative_to(root):
+                    adapter_copies[spec.sha256] = (path, "adapter-dependencies/" + spec.sha256 + ".gguf")
+                elif path not in {p.resolve() for p, _ in extras}:
+                    extras.append((path, path.relative_to(root).as_posix()))
+        extras.extend(adapter_copies.values())
         estimate += sum(p.stat().st_size for p, _ in extras)
         estimate += sum((root / name).stat().st_size for name in ("runtime.sqlite3", "runtime.sqlite3-wal") if (root / name).exists()) + 64 * 1024 * 1024
         check_space(backup.parent, estimate, config.checkpoint_reserve_bytes, "pre-migration recovery copy")

@@ -105,10 +105,11 @@ $env:DMN_TEST_LORA_PARENT = (Resolve-Path data/tiny-trained-01).Path
 The following can be developed and exercised with these CPU fixtures or disposable
 instances before allocating the full GPU:
 
-1. Immutable adapter identity in production configuration, snapshots, packaging
-   and erasure, including rejection of missing or changed artifacts.
-2. Model-authored learning plans binding selected data, replay/replacement goals,
-   training limits, candidate checks, adoption choice and failure preference.
+1. **Implemented:** [adapter identity](adapters-and-learning-plans.md) in production
+   configuration, snapshots, packaging and erasure, rejecting changed artifacts.
+2. **Drafts implemented:** model-authored plans preserve selected data,
+   replay/replacement goals, requested limits, checks and adoption/failure
+   preferences. Compiled recipes, token masks and execution consent remain.
 3. Exclusive save/unload/train/rebuild supervision, with a durable phase record,
    queued incoming messages and atomic adoption of the finished checkpoint.
 4. Fault tests for cancellation, partial writes, process crashes, failed candidate

@@ -116,6 +116,8 @@ def prepare_initial_context(request_path: Path, output: Path, config: Config, se
         raise ValueError("initial-context bundle requires a new output directory")
     if config.backend != "llama" or not config.model_path:
         raise ValueError("initial-context import requires a real model config")
+    if config.lora_adapters:
+        raise ValueError("initial-context import does not yet capture adapter provenance")
     original_request = json.loads(request_path.read_text(encoding="utf-8"))
     is_responses = isinstance(original_request, dict) and "input" in original_request
     request = responses_to_chat(original_request) if is_responses else original_request
@@ -210,6 +212,8 @@ def validate_bundle(bundle, backend):
     if backend.template != template:
         raise ValueError("initial-context template differs from runtime model")
     captured = Config(**json.loads((bundle / "config.json").read_text()))
+    if captured.lora_adapters or backend.config.lora_adapters:
+        raise ValueError("initial-context import does not yet capture adapter provenance")
     for key in (*SAMPLER_KEYS, "seed", "sampler_order"):
         if getattr(captured, key) != getattr(backend.config, key):
             raise ValueError(f"initial-context sampler differs: {key}")

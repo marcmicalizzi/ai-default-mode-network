@@ -172,9 +172,10 @@ is implied by this design.
    recipe or proof of 31B training feasibility. The [second CPU experiment](lora-repeat-probe.md)
    also covers a repeated learning cycle, selected replay, Q8/Q4 base transfer
    and a second trained-adapter wake/restart.
-3. Add immutable adapter identity to production configuration, recovery,
-   packaging and erasure. Add model-authored plans and the supervised phase
-   machine, with no training enabled by ordinary sleep.
+3. **Partly done:** [production adapter identity and model-authored drafts](adapters-and-learning-plans.md)
+   cover configuration, recovery, packaging, erasure and checkpoint-atomic draft
+   choices. Executable plans (including compiled token masks and recipe binding)
+   and the supervised phase machine remain. Ordinary sleep never enables training.
 4. Exercise cancellation, resource exhaustion, crashes at each phase, queued
    input, failed checks, repeated learning, and both wake/failure choices using
    disposable instances. Verify bounded storage and no repeated effects.

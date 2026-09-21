@@ -93,6 +93,12 @@ PEFT learning, GGUF adapter conversion and native wake/restart on generated
 weights, while measuring unintended changes and deployment-strength effects.
 A [second CPU experiment](docs/lora-repeat-probe.md) checks repeated learning,
 selected replay and adapter transfer to quantized bases.
+[Adapter identity and model-authored learning drafts](docs/adapters-and-learning-plans.md)
+are implemented: checkpoints bind declared adapter hashes/order/strength, archives
+include active adapters, and the instance can create, revise or withdraw private
+learning drafts. Drafts do not authorize training. Ordinary recovery requires
+unchanged weights; the planned deep-sleep wake explicitly adopts new weights and
+rebuilds KV from the retained tokens.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

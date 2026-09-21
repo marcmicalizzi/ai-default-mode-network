@@ -14,6 +14,8 @@ import zipfile
 from pathlib import Path
 
 from .backend import sha256_file
+from .adapters import saved_adapter_identity
+from .config import Config
 from .preservation import saved_state
 from .storage import InstanceLock, json_text
 
@@ -44,6 +46,22 @@ def package_instance(root, output, include_environment=False):
         for name, digest in manifest["files"].items():
             if Path(name).name != name or sha256_file(checkpoint / name) != digest:
                 raise ValueError("committed checkpoint integrity failed")
+        adapter_files = []
+        config = Config(**manifest["fingerprint"]["config"])
+        saved_adapter_identity(manifest["fingerprint"], config)
+        for spec in config.lora_adapters:
+            path = Path(spec.path).resolve()
+            if (spec.base_model_sha256 != manifest["fingerprint"].get("model_sha256") or
+                    sha256_file(path) != spec.sha256):
+                raise ValueError("adapter does not match saved identity")
+            # Include active adapters even when full Python/base-model packaging
+            # is not requested. Outside copies remain outside erasure ownership.
+            managed = path.is_relative_to(root)
+            name = ("instance/" + path.relative_to(root).as_posix() if managed else
+                    "adapter-dependencies/" + spec.sha256 + ".gguf")
+            files[name] = path
+            adapter_files.append({**spec.identity(), "original_path": spec.path,
+                                  "archive_path": name, "inside_instance": managed})
         # Preserve the source implementation and environment inventory. Large
         # model/runtime installations remain separate, explicitly listed items.
         source = Path(__file__).resolve().parent
@@ -83,6 +101,7 @@ def package_instance(root, output, include_environment=False):
             "python": sys.version, "python_executable": sys.executable, "platform": platform.platform(),
             "packages": sorted((d.metadata["Name"], d.version) for d in importlib.metadata.distributions() if d.metadata["Name"]),
             "environment_files_included": include_environment,
+            "adapter_files": adapter_files,
             "external_dependencies_not_in_archive": {
                 "model": manifest["fingerprint"]["config"].get("model_path"),
                 "python_environment": sys.prefix, "base_python": sys.base_prefix,

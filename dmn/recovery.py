@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .backend import sha256_file
 from .config import Config
+from .adapters import saved_adapter_identity
 
 
 PLACEMENT_SETTINGS = {"model_path", "n_ctx", "n_batch", "n_gpu_layers", "n_threads",
@@ -19,8 +20,11 @@ def same_native_environment(saved, current):
     # Pacing/checkpoint cadence never define model or KV compatibility. All
     # native binary, model, sampler and cache-layout checks remain strict.
     def normalized(value):
-        return {**value, "config": {key: item for key, item in Config(**value["config"]).to_dict().items()
-                                   if key not in SCHEDULING_SETTINGS}}
+        config = Config(**value["config"])
+        adapters = saved_adapter_identity(value, config)
+        return {**value, "lora_adapters": adapters,
+                "config": {**{key: item for key, item in config.to_dict().items()
+                               if key not in SCHEDULING_SETTINGS}, "lora_adapters": adapters}}
     return normalized(saved) == normalized(current)
 
 
@@ -30,7 +34,13 @@ def reconstruction_compatible(saved: dict, current: dict):
     identity = "model_sha256" if current["kind"] == "native_llama_kv" else "script_sha256"
     if not saved.get(identity) or saved[identity] != current.get(identity):
         raise ValueError("context reconstruction requires the same model/tokenizer identity")
-    left, right = Config(**saved["config"]).to_dict(), Config(**current["config"]).to_dict()
+    left_config, right_config = Config(**saved["config"]), Config(**current["config"])
+    left_adapters = saved_adapter_identity(saved, left_config)
+    right_adapters = saved_adapter_identity(current, right_config)
+    if left_adapters != right_adapters or saved.get("research_lora") != current.get("research_lora"):
+        raise ValueError("context reconstruction cannot change adapter identity; an explicit weight transition is required")
+    left = {**left_config.to_dict(), "lora_adapters": left_adapters}
+    right = {**right_config.to_dict(), "lora_adapters": right_adapters}
     differences = {key for key in left.keys() | right.keys() if left.get(key) != right.get(key)}
     if differences - PLACEMENT_SETTINGS - SCHEDULING_SETTINGS:
         raise ValueError("context reconstruction cannot silently change protocol or sampler settings: "

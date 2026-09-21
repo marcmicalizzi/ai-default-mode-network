@@ -173,6 +173,22 @@ def erase_managed_state(root):
     except (OSError, ValueError):
         failures.append("checkpoints")
     remove_directory(root / "import", root, IMPORT_FILES)
+    # Managed adapter artifacts are flat, content-addressed GGUF files. Refuse
+    # unknown entries and linked directories; external weights are never deleted.
+    adapters = root / "adapters"
+    try:
+        if not stat.S_ISDIR(_owned(adapters, root).st_mode):
+            raise ValueError("not a directory")
+        for entry in adapters.iterdir():
+            if re.fullmatch(r"[0-9a-f]{64}\.gguf(?:\.partial)?", entry.name):
+                remove_file(entry, adapters)
+            else:
+                failures.append(str(entry.relative_to(root)))
+        adapters.rmdir()
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        failures.append("adapters")
     for name in ("runtime.sqlite3", "runtime.sqlite3-wal", "runtime.sqlite3-shm", "runtime.sqlite3-journal"):
         remove_file(root / name, root)
     for entry in root.glob(".dmn-pack-*"):

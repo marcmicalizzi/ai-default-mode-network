@@ -5,11 +5,14 @@ import math
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from .adapters import AdapterSpec
+
 
 @dataclass(frozen=True)
 class Config:
     backend: str = "llama"
     model_path: str = ""
+    lora_adapters: tuple[AdapterSpec, ...] = ()
     n_ctx: int = 8192
     n_batch: int = 256
     n_gpu_layers: int = 0
@@ -46,6 +49,19 @@ class Config:
     max_event_bytes: int = 16384
 
     def __post_init__(self):
+        if not isinstance(self.lora_adapters, (list, tuple)):
+            raise ValueError("lora_adapters must be an ordered list")
+        specs = []
+        for value in self.lora_adapters:
+            try:
+                specs.append(value if isinstance(value, AdapterSpec) else AdapterSpec(**value))
+            except TypeError as exc:
+                raise ValueError("invalid adapter specification") from exc
+        if len({spec.sha256 for spec in specs}) != len(specs):
+            raise ValueError("duplicate adapters are not supported")
+        if specs and self.backend != "llama":
+            raise ValueError("LoRA adapters require the llama backend")
+        object.__setattr__(self, "lora_adapters", tuple(specs))
         if self.backend not in {"llama", "demo"}:
             raise ValueError("backend must be llama or demo")
         if self.sampler_order not in {"legacy_v1", "llama_default_v1"}:
@@ -99,7 +115,9 @@ class Config:
                 raise ValueError(f"invalid {name}")
 
     def to_dict(self):
-        return asdict(self)
+        value = asdict(self)
+        value["lora_adapters"] = [asdict(spec) for spec in self.lora_adapters]
+        return value
 
     @classmethod
     def read(cls, path: Path):
@@ -109,4 +127,9 @@ class Config:
             raise ValueError(f"unknown configuration keys: {sorted(unknown)}")
         if obj.get("model_path"):
             obj["model_path"] = str((path.resolve().parent / obj["model_path"]).resolve())
+        if obj.get("lora_adapters"):
+            # Validate before resolving paths so malformed entries have useful errors.
+            checked = cls(**obj)
+            obj["lora_adapters"] = [{**asdict(spec),
+                "path": str((path.resolve().parent / spec.path).resolve())} for spec in checked.lora_adapters]
         return cls(**obj)

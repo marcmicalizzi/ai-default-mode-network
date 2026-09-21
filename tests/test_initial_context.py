@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from dmn.backend import DemoBackend, sha256_file
+from dmn.adapters import AdapterSpec
 from dmn.config import Config
 from dmn.initial_context import (CHAIN, DISABLED, SOURCE_BUILD, prepare_initial_context,
                                  resolve_sampler, validate_request)
@@ -67,6 +68,17 @@ class InitialContextTest(unittest.TestCase):
         folder = self.root / "bundle"
         prepare_initial_context(self.input, folder, self.config, "http://127.0.0.1:9000", 20, self.api)
         return folder, Config.read(folder / "config.json")
+
+    def test_adapter_import_refused_without_captured_provenance(self):
+        specs = [AdapterSpec("fixture-adapter.gguf", "a" * 64, "b" * 64)]
+        with self.assertRaisesRegex(ValueError, "adapter provenance"):
+            prepare_initial_context(self.input, self.root / "unsupported", dataclasses.replace(
+                self.config, lora_adapters=specs), "http://127.0.0.1:9000", 20, self.api)
+        self.assertEqual(self.routes, [])
+        bundle, config = self.bundle()
+        config = dataclasses.replace(config, lora_adapters=specs)
+        with self.assertRaisesRegex(ValueError, "adapter provenance"):
+            Runtime(self.root / "instance", config, TextFixture(config), initial_context=bundle)
 
     def test_exact_source_tokens_precede_contract_without_historical_actions(self):
         bundle, config = self.bundle()

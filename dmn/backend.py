@@ -114,6 +114,8 @@ class LlamaBackend:
             self.ctx = api.llama_init_from_model(self.model, cp)
             if not self.ctx:
                 raise RuntimeError("llama.cpp could not create the context")
+            from .adapters import attach_adapters
+            attach_adapters(self)
             self.n_ctx = int(api.llama_n_ctx(self.ctx))
             self.n_vocab = int(api.llama_vocab_n_tokens(self.vocab))
             self.batch = api.llama_batch_init(config.n_batch, 0, 1)

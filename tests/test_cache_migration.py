@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from dmn.backend import sha256_file
+from dmn.adapters import AdapterSpec
 from dmn.cache_migration import migrate_cache, migration_changes
 from dmn.config import Config
 from dmn.ending import Lifecycle, InstanceEnded
@@ -105,6 +106,37 @@ class CacheMigrationTest(unittest.TestCase):
 
     def migrate(self, **kwargs):
         return migrate_cache(self.root, None, self.backup, backend_factory=FakeNative, **kwargs)
+
+    def test_adapter_dependencies_verified_and_copied_before_conversion(self):
+        external = self.base / "outside.gguf"
+        external.write_bytes(b"external adapter fixture")
+        digest = sha256_file(external)
+        self.config = dataclasses.replace(self.config, lora_adapters=[
+            AdapterSpec(str(external), digest, "b" * 64)])
+
+        def factory(config):
+            backend = FakeNative(config)
+            backend.fingerprint.update(model_sha256="b" * 64,
+                                       lora_adapters=[s.identity() for s in config.lora_adapters])
+            return backend
+
+        self.update_state()
+        manifest_path = self.source / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["fingerprint"] = factory(self.config).fingerprint
+        write_durable(manifest_path, manifest)
+        external.write_bytes(b"wrong adapter")
+        refused = Mock(side_effect=AssertionError("must refuse before loading"))
+        with self.assertRaisesRegex(ValueError, "adapter dependency"):
+            migrate_cache(self.root, None, self.backup, backend_factory=refused)
+        refused.assert_not_called()
+        self.assertFalse(self.backup.exists())
+        external.write_bytes(b"external adapter fixture")
+        migrate_cache(self.root, None, self.backup, backend_factory=factory)
+        path = self.backup / "adapter-dependencies" / (digest + ".gguf")
+        self.assertEqual(path.read_bytes(), external.read_bytes())
+        inventory = json.loads((self.backup / "preservation.json").read_text())
+        self.assertEqual(inventory["files"]["adapter-dependencies/" + digest + ".gguf"]["sha256"], digest)
 
     def test_atomic_success_keeps_source_sidecars_database_and_nonrunnable_backup(self):
         original = {p.name: p.read_bytes() for p in self.source.iterdir()}
