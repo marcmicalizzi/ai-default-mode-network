@@ -10,9 +10,10 @@ from .storage import json_text
 
 CHECKS = ["artifact_integrity", "retained_tokens_and_rng"]
 OPERATIONS = {"learning_recipe_list", "learning_recipe_read", "learning_compile",
-              "learning_execution_help", "learning_execution_read", "learning_execution_decide", "deep_sleep", "learning_sleep_report"}
+              "learning_execution_help", "learning_execution_read", "learning_execution_decide", "deep_sleep", "learning_sleep_report",
+              "learning_candidate_prepare"}
 BRIEF = '''learning_execution_help(offset=0, limit=200): read the separate compiled-plan
-review and disposable sleep-test contract. No production trainer is enabled.'''
+review contract. An explicit host offer and supervised service are required to execute.'''
 CONTRACT = '''Compiled learning plans require separate review and choice.
 learning_recipe_list(): list offered recipes. learning_recipe_read(revision, offset=0,
 limit=200): inspect one. learning_compile(draft_revision, recipe_revision): bind exact
@@ -21,16 +22,27 @@ learning_execution_read(revision, offset=0, limit=200): inspect consecutive page
 learning_execution_decide(revision, decision): approve, decline or defer. Approval
 requires reading the complete compiled plan after the latest retirement/restart.
 Decline withdraws prior approval. Draft withdrawal/replacement invalidates its plans.
-Use each action alone. deep_sleep(revision) saves and stops for the approved plan
-ONLY in the explicitly enabled tiny CPU integration harness. Ordinary launch has
-no executable trainer; approval cannot enable one. fixture_candidate_v1 copies a
+Use each action alone. deep_sleep(revision) saves and stops for the approved plan.
+Execution requires an enabled supervisor; approval cannot enable one.
+peft_gemma4_nf4_v1 supports bounded Windows GPU training, fresh-process verification,
+conversion and retained-text reconstruction. Inference is unloaded first. Each
+cycle uses its reviewed time/RAM/disk allowance; the whole-device VRAM watchdog
+counts other applications and may briefly overshoot between polls. Training and
+native wake have separate time allowances recorded in the plan. There is no
+guarantee of benefit; selected-example loss is not a general capability test.
+Review-first wakes with previous weights and a report. To consider the result,
+learning_candidate_prepare(run_id) creates a separate adoption-only plan. Read it
+and approve it before deep_sleep. This performs no further training and rebuilds
+your CURRENT retained context, including thoughts since the first wake. You may
+decline or defer it. Withdrawal of the source draft invalidates adoption too.
+fixture_candidate_v1 copies a
 prebuilt adapter without learning. peft_gemma4_cpu_v1 actually trains the compiled
 examples on a verified F32 base with target-only loss, then converts and checks
 the adapter. peft_gemma4_cpu_continue_v1 continues exactly one verified existing
 adapter at unchanged rank, alpha and positive deployment strength, with a fresh
 optimizer. peft_gemma4_cpu_v2 uses cached verified conversion/quantization evidence
 and exact text-decoder targets, including in the full Gemma wrapper; it still
-trains frozen F32 source weights, not NF4/QLoRA. All remain tiny CPU tests; all
+trains frozen F32 source weights, not NF4/QLoRA. These CPU recipes remain tests; all
 recipe limits must be reviewed.
 learning_sleep_report(run_id, offset=0,
 limit=200) reads a completed cycle report. Ordinary sleep remains unchanged.'''
@@ -51,6 +63,9 @@ def implementation_identity():
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
         "runtime.py", "protocol.py", "learning.py", "training.py", "training_worker.py",
         "training_executor.py", "training_models.py", "base_provenance.py", "provenance_native.py", "worker_limits.py",
+        "gpu_recipe.py", "gpu_training_worker.py", "exact_base_provenance.py", "safetensor_stream.py", "qlora_prepare.py",
+        "gpu_training_executor.py", "gpu_conversion_worker.py", "training_artifacts.py", "sleep_service.py", "gpu_monitor.py",
+        "sleep_wake_worker.py", "sleep_wake_executor.py", "sleep_host.py", "candidate_adoption.py", "conversation_migration.py",
         "activity.py", "checkpointing.py", "conversations.py", "contacts.py",
         "attachments.py", "image_input.py", "vision.py")}
 
@@ -58,7 +73,7 @@ def implementation_identity():
 def put_recipe(store, value, now):
     """Host can offer a recipe, never approve it or supply executable commands."""
     from .adapters import AdapterSpec
-    from .training import KINDS, validate_recipe
+    from .training import KINDS, GPU_KIND, validate_recipe
     if isinstance(value, dict) and value.get("kind") in KINDS:
         validate_recipe(value)
     else:
@@ -73,7 +88,7 @@ def put_recipe(store, value, now):
     for key, limit in value["resources"].items():
         if type(limit) is not int or limit < (0 if key == "max_vram_bytes" else 1):
             raise ValueError("invalid recipe resource ceiling")
-    if value["resources"]["max_vram_bytes"] != 0:
+    if value["resources"]["max_vram_bytes"] != 0 and value["kind"] != GPU_KIND:
         raise ValueError("fixture recipes require zero GPU use")
     record = seal(value)
     with store.transaction() as db:
@@ -184,8 +199,12 @@ def plan_action(runtime, action):
             rows = runtime.store.db.execute("SELECT revision FROM sleep_recipes ORDER BY rowid LIMIT ? OFFSET ?",
                                             (limit, offset)).fetchall()
         result.update(revisions=[r[0] for r in rows], next_offset=offset + len(rows))
-    elif op == "learning_compile":
-        value = compile_plan(runtime, action["draft_revision"], action["recipe_revision"])
+    elif op in {"learning_compile", "learning_candidate_prepare"}:
+        if op == 'learning_candidate_prepare':
+            from .candidate_adoption import prepare
+            value = prepare(runtime, action['run_id'])
+        else:
+            value = compile_plan(runtime, action["draft_revision"], action["recipe_revision"])
         if len(json_text(value).encode()) > runtime.config.max_event_bytes * 16:
             raise ValueError("compiled plan exceeds bounded storage limit")
         result.update(revision=value["revision"], status="awaiting_review", training_performed=False)
@@ -211,18 +230,21 @@ def plan_action(runtime, action):
             raise ValueError("deep sleep reconstruction cannot replay retained visual positions; native restoration remains available")
         if runtime._preparing:
             raise ValueError("finish the current retirement/suspension boundary before requesting deep sleep; approval is unchanged")
-        if not runtime.sleep_test_mode:
-            raise ValueError("no executable trainer is enabled; only the disposable mechanics harness supports deep_sleep")
-        from .deep_sleep import fixture_guard
-        fixture_guard(runtime.config)
         value = validate_approved(runtime, action["revision"])
+        if runtime.sleep_test_mode:
+            from .deep_sleep import fixture_guard
+            fixture_guard(runtime.config)
+        else:
+            from .sleep_host import guard
+            guard(runtime.config, value, runtime.sleep_offer)
         import uuid
         run_id = uuid.uuid4().hex
-        result.update(run_id=run_id, status="saved_for_fixture_supervisor", training_performed=False)
+        result.update(run_id=run_id, status="saved_for_supervisor", training_performed=False)
         effect = {"op": op, "run_id": run_id, "execution": value["revision"]}
     else:
         if op == "learning_execution_help":
-            raw = CONTRACT
+            raw = CONTRACT + '\nThis launch: ' + ('supervised NF4 enabled.' if runtime.sleep_offer else
+                'disposable fixture enabled.' if runtime.sleep_test_mode else 'deep-sleep execution unavailable.')
         elif op == "learning_sleep_report":
             from .deep_sleep import read_run
             raw = json_text(read_run(runtime.store, action["run_id"]))
@@ -237,7 +259,7 @@ def plan_action(runtime, action):
 
 def commit_effect(db, effect, now, directory):
     op = effect["op"]
-    if op == "learning_compile":
+    if op in {"learning_compile", "learning_candidate_prepare"}:
         value = effect["value"]
         db.execute("INSERT OR IGNORE INTO sleep_executions VALUES(?,?,?,?)",
                    (value["revision"], json_text(value), "awaiting_review", now))

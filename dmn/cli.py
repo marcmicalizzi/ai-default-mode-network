@@ -12,6 +12,7 @@ from .ending import InstanceEnded, refuse_ended_before_config
 from .migration import import_transcript, prepare_bundle
 from .runtime import Runtime
 from .server import serve
+from .frontends import read_frontend, start_frontends, close_frontends
 from .storage import json_text
 
 
@@ -21,7 +22,13 @@ def main(argv=None):
     run = commands.add_parser("run", help="run/resume a persistent instance and its local UI")
     run.add_argument("--instance", type=Path, default=Path("data/instance"))
     run.add_argument("--config", type=Path)
+    run.add_argument("--multi-user-frontend", type=Path,
+                     help="explicit authenticated WebUI bridge/operator configuration; no automatic legacy migration")
+    run.add_argument('--deep-sleep-recipe', type=Path,
+                     help='enable supervised Windows NF4 sleep with this explicit resource offer; never approves learning')
     run.add_argument("--model", type=Path)
+    run.add_argument('--vision-projector', type=Path,
+                     help='matching image projector; image receipt still requires instance consent')
     run.add_argument("--demo", action="store_true", help="scripted transport fixture; NOT a model")
     run.add_argument("--port", type=int, default=8765)
     run.add_argument("--native-log-level", choices=["debug", "info", "warning", "error"],
@@ -61,6 +68,12 @@ def main(argv=None):
     compact.add_argument("--config", type=Path, help="optional target config; otherwise preserve saved settings and enable compact cache")
     compact.add_argument("--gpu-layers", type=int, help="optional target offload count; -1 requests full GPU offload")
     compact.add_argument("--threads", type=int, help="optional target CPU thread count")
+    multi = commands.add_parser('migrate-conversations', help='offline checkpoint-preserving handoff of an existing WebUI chat')
+    for field in ('instance', 'database', 'backup'):
+        multi.add_argument('--' + field, type=Path, required=True)
+    multi.add_argument('--namespace', required=True)
+    multi.add_argument('--operator-user-id', required=True)
+    multi.add_argument('--dry-run', action='store_true', help='read-only observation; commit rechecks with runtime and relay stopped')
     adopt = commands.add_parser("adopt-openwebui", help="explicitly bind a staged import to its unchanged source chat")
     adopt.add_argument("--instance", type=Path, required=True)
     adopt.add_argument("--database", type=Path, required=True)
@@ -102,6 +115,11 @@ def main(argv=None):
         result = migrate_cache(args.instance, Config.read(args.config) if args.config else None, args.backup,
                                gpu_layers=args.gpu_layers, threads=args.threads)
         print(json_text(result))
+        return 0
+    if args.command == 'migrate-conversations':
+        from .conversation_migration import migrate
+        print(json_text(migrate(args.instance, args.database, args.namespace, args.operator_user_id,
+                                args.backup, dry_run=args.dry_run)))
         return 0
     if args.command == "adopt-openwebui":
         from .adoption import adopt_openwebui
@@ -195,15 +213,42 @@ def main(argv=None):
             config = dataclasses.replace(config, **overrides)
         except ValueError as exc:
             parser.error(str(exc))
-    if config.multi_user:
-        parser.error("Experimental multi-user mode requires an explicit authenticated adapter; "
-                     "use scripts/verify_multi_user.py or scripts/verify_multi_user_webui.py for disposable checks. No model was loaded.")
+    try:
+        frontend = read_frontend(args.multi_user_frontend, config)
+        if args.vision_projector:
+            config = dataclasses.replace(config, vision_projector_path=str(args.vision_projector.resolve()))
+        from .sleep_host import read_offer, guard
+        sleep_offer = read_offer(args.deep_sleep_recipe)
+        if sleep_offer:
+            from .gpu_recipe import SCOPE
+            guard(config, {'execution_scope': SCOPE, 'recipe': sleep_offer, 'resources': sleep_offer['resources']}, sleep_offer)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        parser.error(str(exc) + ' No model was loaded.')
+    if sleep_offer and not args.prepare_only:
+        from .storage import Store
+        from .deep_sleep import pending_run, run_fixture_sleep
+        store = Store(args.instance)
+        try:
+            pending = pending_run(store)
+        finally:
+            store.close()
+        if pending:
+            result = run_fixture_sleep(args.instance, pending['id'], _live_offer=sleep_offer)
+            if result['phase'] != 'WakeCommitted':
+                print('Deep sleep remains stopped according to its recorded failure policy.', flush=True)
+                return 1
+            store = Store(args.instance)
+            try:
+                selected = json.loads((store.latest() / 'manifest.json').read_text())
+            finally:
+                store.close()
+            config = dataclasses.replace(config, lora_adapters=selected['fingerprint']['config']['lora_adapters'])
     runtime = Runtime(args.instance, config, kv_recovery=args.kv_recovery, initial_context=args.initial_context,
                       prepare_only=args.prepare_only, start_staged=args.start_staged,
                       release_hold=args.release_hold, resume_condition=args.resume_condition,
                       first_message=args.first_message.read_text(encoding="utf-8") if args.first_message else None,
-                      allow_placement_change=args.allow_placement_change)
-    server = None
+                      allow_placement_change=args.allow_placement_change, sleep_offer=sleep_offer)
+    servers = []
     try:
         if args.prepare_only:
             print(json_text({"instance_id": runtime.state["instance_id"], "mode": runtime.state["mode"],
@@ -211,11 +256,20 @@ def main(argv=None):
             return 0
         if args.import_bundle:
             import_transcript(runtime, args.import_bundle)
-        server = serve(runtime, args.port)
-        print(f"DMN: http://127.0.0.1:{server.server_port} | instance {runtime.state['instance_id']}", flush=True)
+        if sleep_offer:
+            from .sleep_service import SleepService
+            runtime = SleepService(runtime)
+            runtime.offer_recipe()
+        servers = start_frontends(runtime, args.port, frontend) if frontend else [serve(runtime, args.port)]
+        print(f"DMN{' operator contacts' if frontend else ''}: http://127.0.0.1:{servers[0].server_port} | instance {runtime.state['instance_id']}", flush=True)
+        if frontend:
+            print(f"Authenticated WebUI bridge: http://127.0.0.1:{servers[1].server_port}", flush=True)
+        if runtime.state.get('first_contact_gate'):
+            print('Restored and waiting for your first contact request in Open WebUI; no generation has started.', flush=True)
         if args.demo:
             print("DEMO FIXTURE: no model inference or native KV state.", flush=True)
-        print("Ctrl+C asks the instance to shut down; it may accept, defer or refuse. See /api/status for its reply.", flush=True)
+        print("Ctrl+C asks the instance to shut down; it may accept, defer or refuse." +
+              ("" if frontend else " See /api/status for its reply."), flush=True)
         def request_shutdown(*_):
             runtime.request_shutdown_from_signal()
 
@@ -229,8 +283,6 @@ def main(argv=None):
             if ending.get("error") or ending.get("archive_error") or ending.get("erasure") == "incomplete":
                 return 1
     finally:
-        if server:
-            server.shutdown()
-            server.server_close()
+        close_frontends(servers)
         runtime.close()
     return 0

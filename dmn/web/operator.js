@@ -29,6 +29,11 @@
   async function refresh() {
     const previous = get("participant").value, draft = get("reason").value;
     snapshot = await api("/api/operator/contacts");
+    const runtime = await api('/api/operator/status');
+    get('runtime-status').textContent = `${runtime.mode} · ${runtime.active_tokens.toLocaleString()} / ${runtime.context_capacity.toLocaleString()} tokens` +
+      (runtime.sleep_service ? ` · ${runtime.sleep_service.phase}` : '') +
+      (runtime.mode === 'awaiting_first_contact' ? ' · Waiting for your first contact request in Open WebUI. No generation has started.' : '');
+    get('maintenance-status').textContent = runtime.maintenance ? `Maintenance: ${runtime.maintenance.status}` : '';
     get("instance").textContent = "Instance " + snapshot.instance_id;
     get("contacts").replaceChildren(); get("participant").replaceChildren();
     for (const person of snapshot.participants) {
@@ -66,6 +71,13 @@
   get("refresh").addEventListener("click", async () => { try { await refresh(); notice("Contact state refreshed."); } catch (error) { notice(error.message, true); } });
   get("disconnect").addEventListener("click", () => { key = ""; snapshot = null; get("workspace").hidden = true; get("login").hidden = false; get("contacts").replaceChildren(); get("reason").value = ""; notice("Disconnected."); });
   get("participant").addEventListener("change", targetChanged);
+  get('maintenance').addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+      await api('/api/operator/maintenance', {instance_id: snapshot.instance_id, action: 'shutdown', reason: get('maintenance-reason').value});
+      notice('Shutdown request submitted. During an active run, the instance decides when and whether to accept.');
+    } catch (error) { notice(error.message, true); }
+  });
   get("request").addEventListener("submit", async event => {
     event.preventDefault(); if (busy) return;
     const person = snapshot.participants.find(p => p.participant_id === get("participant").value);

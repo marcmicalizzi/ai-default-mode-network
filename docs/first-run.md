@@ -4,6 +4,11 @@ An initial import reconstructs the captured text because the former KV is absent
 Subsequent runs use strict native restore by default. Preparation never claims
 that reconstruction recovered the former KV or RNG.
 
+For an existing DMN instance moving from the single-user relay to authenticated
+contacts, use the [offline transport migration](integrated-launch.md). It preserves
+the native checkpoint and waits for the operator's first contact request. The
+import/staging flow below is for a new instance.
+
 Before adopting a valuable conversation, try a disposable instance interactively
 at the intended model size and occupied context. Verify input, response and
 shutdown/save latency as well as native restoration. The

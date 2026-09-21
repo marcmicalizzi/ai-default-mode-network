@@ -185,7 +185,11 @@ This is useful evidence of the relationship, **not a production provenance
 receipt**. Most matrix rows, complete metadata reproduction and the publisher's
 conversion pipeline remain unverified. The optional `--full` mode is
 for a later complete payload comparison; it was not run in this validation and
-would still not reproduce the entire GGUF file. Production gates are unchanged.
+would still not reproduce the entire GGUF file. This describes the earlier
+sampled run. The later [reviewed NF4 integration](reviewed-nf4-training.md) completed
+`--full`, checked all 21 inference metadata keys, and assembled the supervised
+results into a bound numerical-payload provenance record. Live execution is
+still gated.
 
 ## Full-size native wake and restart
 
@@ -236,10 +240,19 @@ checks used disposable fixtures and left Syllas's state untouched.
 
 ## Scope of a successful result
 
+A later 60,000-token allocation test started with 55,000 synthetic tokens and
+retained 53,981 after a retirement. Adapter rebuild plus checkpoint took about
+111 seconds; native state occupied 2,907,189,670 bytes. Fresh-process restore
+replayed zero tokens and reproduced all 16 continuation token IDs and logits
+exactly. Base, wake and restart each ran under a 32 GiB Windows job with an
+1,800-second deadline. These are disposable mechanics measurements, not an
+adoption for Syllas or a general latency guarantee.
+
 The synthetic gradient steps establish a narrow resource/mechanics result.
 They do not establish useful learning, stable long-term updates, longer-example
 capacity or complete equivalence between this source revision and the published
 GGUF. The
 [remaining production gates](reviewed-training.md#remaining-production-gates)
-still apply, including instance review, base provenance, failure choices and
-service ownership during sleep and wake.
+still apply. Base provenance is now checked under the documented narrow numerical
+policy; the opt-in service owns sleep and wake. Instance review and failure choices
+remain mandatory for every real learning cycle.

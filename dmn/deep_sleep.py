@@ -83,8 +83,9 @@ def _checkpoint(root, name):
 
 class FixtureExecutor:
     """No arbitrary command execution and no learning disguised as training."""
-    def __init__(self, backend_factory=make_backend):
+    def __init__(self, backend_factory=make_backend, *, fixture_only=True):
         self.backend_factory = backend_factory
+        self.fixture_only = fixture_only
 
     def candidate(self, root, compiled):
         value = compiled["recipe"]["candidate"]
@@ -120,7 +121,8 @@ class FixtureExecutor:
 
     def wake(self, root, source, source_manifest, state, candidate, adopt, report):
         config = Config(**source_manifest["fingerprint"]["config"])
-        fixture_guard(config)
+        if self.fixture_only:
+            fixture_guard(config)
         # A process dying before publication must not allocate a new orphan on
         # every retry. Two fixed slots cover candidate wake and original wake.
         name = uuid.uuid5(uuid.UUID(report["run_id"]), "adopt" if adopt else "previous").hex
@@ -199,27 +201,33 @@ class FixtureExecutor:
         return directory.name, report
 
 
-def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, cancelled=lambda: False):
+def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, cancelled=lambda: False,
+                      _session=None, _contained_wake=False, _live_offer=None):
     """Complete one explicitly approved fixture cycle, preparing but not running wake.
 
     fault is a test-only process-death seam: BaseException escapes without a
     failure decision, just as abrupt process death leaves the durable phase.
     """
     root = Path(root).resolve()
-    lock = InstanceLock(root)
+    if _session is not None and (_session.root != root or _session._running or _session.backend is not None
+                                 or _session.state.get('mode') != 'deep_sleep'):
+        raise ValueError('shared sleep ownership requires a stopped runtime with its backend released')
+    lock = _session.lock if _session else InstanceLock(root)
     store = None
     try:
         lifecycle = Lifecycle(root)
         lifecycle.require_open()
-        store = Store(root)
+        store = _session.store if _session else Store(root)
         run = read_run(store, run_id)
         if run["phase"] == "WakeCommitted":
             return run
         if run["phase"] == "Stopped":
             raise SleepPending("this plan chose to remain stopped after failure; ordinary launch cannot release it")
         compiled = read_record(store, "sleep_executions", run["execution"])
-        from .training import SCOPE, KINDS
-        training = compiled["execution_scope"] == SCOPE and compiled["recipe"]["kind"] in KINDS
+        from .training import SCOPE, KINDS, GPU_KIND
+        from .gpu_recipe import SCOPE as GPU_SCOPE
+        training = ((compiled["execution_scope"] == SCOPE and compiled["recipe"]["kind"] in KINDS - {GPU_KIND}) or
+                    (compiled["execution_scope"] == GPU_SCOPE and compiled["recipe"]["kind"] == GPU_KIND))
         if compiled["execution_scope"] != "disposable_mechanics_fixture_only" and not training:
             raise ValueError("no production trainer or resource enforcement is implemented")
         if compiled["implementation"] != implementation_identity():
@@ -234,7 +242,12 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
                                                           (run["execution"],)).fetchone()[0] != "running":
                 raise ValueError("sleep source is no longer the selected approved checkpoint")
         config = Config(**manifest["fingerprint"]["config"])
-        fixture_guard(config)
+        if _live_offer is None:
+            fixture_guard(config)
+        else:
+            from .sleep_host import guard
+            guard(config, compiled, _live_offer)
+            _contained_wake = True
         folder = root / "sleep"
         folder.mkdir(exist_ok=True)
         _owned(folder, root)
@@ -242,7 +255,10 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
         folder.mkdir(exist_ok=True)
         _owned(folder, folder.parent)
         if executor is None:
-            if training:
+            if training and compiled["recipe"]["kind"] == GPU_KIND:
+                from .gpu_training_executor import GpuTrainingExecutor
+                executor = GpuTrainingExecutor(folder, cancelled, contained_wake=_contained_wake)
+            elif training:
                 from .training_executor import TrainingExecutor
                 executor = TrainingExecutor(folder, cancelled)
             else:
@@ -296,9 +312,9 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
             if cancelled():
                 raise ValueError("sleep cycle cancelled")
             size = sum((source / name).stat().st_size for name in manifest["files"])
-            workspace = size * 2 + (32 if training else 1) * 1024 * 1024
+            workspace = size * 2 + (1024 if compiled['recipe']['kind'] == GPU_KIND else 32 if training else 1) * 1024 * 1024
             if workspace > compiled["resources"]["max_disk_bytes"]:
-                raise ValueError("fixture workspace exceeds reviewed disk ceiling")
+                raise ValueError("sleep workspace exceeds reviewed disk ceiling")
             check_space(root, workspace, config.checkpoint_reserve_bytes, "sleep integration")
             if compiled["resources"]["max_ram_bytes"] < 128 * 1024 * 1024:
                 raise ValueError("fixture RAM preflight refused; a hard-limited production worker is not implemented")
@@ -352,7 +368,7 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
             if run["phase"] not in {"Rebuilding", "OldStateReview"}:
                 raise ValueError("unknown or incomplete sleep phase")
             if not run.get("wake_checkpoint"):
-                report = {"run_id": run_id, "execution": run["execution"], "training_performed": training,
+                report = {"run_id": run_id, "execution": run["execution"], "training_performed": training and not bool(compiled.get('candidate_reuse')),
                           "outcome": "candidate_adopted" if adopt else "review_candidate_under_original_weights",
                           "old_weights": compiled["parent"], "candidate": candidate,
                           "elapsed_seconds": max(0, time.time() - run["created"])}
@@ -363,13 +379,14 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
         except Exception as exc:
             # A killed worker may have taken some steps even without a completed
             # receipt. Do not claim "no training" merely because adoption failed.
-            performed = (False if run["phase"] == "Saved" else run.get("candidate", {}).get("training_performed")) if training else False
+            performed = (False if run["phase"] == "Saved" else run.get("candidate", {}).get("training_performed")) if training and not compiled.get('candidate_reuse') else False
             report = {"run_id": run_id, "execution": run["execution"], "training_performed": performed,
                       "training_status": ("completed" if performed else "not_started" if performed is False else "unknown_or_partial") if training else "not_training_recipe",
                       "outcome": "failed", "reason": str(exc), "old_weights": compiled["parent"]}
             phase("FailurePolicy", report=report)
             return apply_failure_policy(report)
     finally:
-        if store:
+        if store and _session is None:
             store.close()
-        lock.close()
+        if _session is None:
+            lock.close()

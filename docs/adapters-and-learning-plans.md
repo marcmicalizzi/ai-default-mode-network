@@ -3,8 +3,8 @@
 The runtime can now load declared whole-context GGUF LoRA adapters and preserve
 their identity through checkpoints. Model-authored learning plans are available
 as private, immutable **drafts**. [Compiled review and a fixture sleep transition](sleep-supervisor-fixture.md)
-now exercise approval and wake mechanics. Production training and continuous
-supervision remain unimplemented. Ordinary `sleep()` never starts training.
+exercise approval and wake mechanics. The opt-in [Windows NF4 service](reviewed-nf4-training.md)
+adds actual training and continuous supervision. Ordinary `sleep()` never starts training.
 
 ## Two different recovery paths
 
@@ -14,12 +14,12 @@ when native restoration is unavailable, but still require the same base model
 and adapters. Removing an adapter, changing its bytes, changing its effective
 strength, or changing the order is not ordinary crash recovery.
 
-The planned **deep-sleep wake** intentionally changes weights after an approved
-training/adoption transition. That separate workflow will rebuild KV by evaluating
-the exact retained token IDs under the adopted adapter. Historical actions will
+The **deep-sleep wake** intentionally changes weights after an approved
+training/adoption transition. That separate workflow rebuilds KV by evaluating
+the exact retained token IDs under the adopted adapter. Historical actions do
 not execute again. The prior checkpoint and weights remain recovery material
-until the wake transition commits. This is still the selected design; ordinary
-recovery's stricter checks do not prevent it. See the
+until the wake transition commits. Ordinary recovery's stricter checks do not
+prevent this explicit transition. See the
 [supervisor contract](deep-sleep-protocol.md).
 
 ## Loading declared adapters
@@ -68,7 +68,8 @@ saved checkpoints, including copies of configured external adapters.
 Put DMN-owned copies in `INSTANCE/adapters/<sha256>.gguf`. Managed erasure removes
 these files and their matching `.gguf.partial` files, rejecting links and unknown
 entries. It does not delete external adapter files or copies in another archive.
-Adapter history is not automatically pruned yet; no trainer currently creates it.
+Adapter history is not automatically pruned. Completed training artifacts are
+retained to verify later review/adoption and exact continuation lineage.
 
 ## Model-authored drafts
 

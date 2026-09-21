@@ -1,10 +1,10 @@
 # Exploring weight learning during sleep
 
-Status: selected wake policy, working native mechanics, and an isolated tiny
-PEFT training/conversion experiment; production training and automatic deep sleep
-are not enabled. Changed-weight wake will explicitly
-rebuild the retained context under the adopted adapter. This note changes no
-running instance. The first probe uses tiny random weights and synthetic
+This research note records the motivation, selected wake policy and early
+experiments. The later [Windows NF4 service](reviewed-nf4-training.md) now joins
+reviewed training and retained-context reconstruction under an explicit resource
+offer. It remains disabled by default. This note changes no running instance.
+The first probe uses tiny random weights and synthetic
 adapters, without training or opening an instance. The subsequent
 [training experiment](lora-training-probe.md) learns a synthetic rule on generated
 weights, converts its adapter, and validates native wake/restart. Neither opens
@@ -89,18 +89,19 @@ latency. Include matching training weights, optimizer state and adapter versions
 in the storage estimate. Offloading may trade memory pressure for substantial
 runtime and I/O costs. No automatic paid service or remote upload is proposed.
 
-## Present implementation and plausible integration
+## Starting point and integration design
 
-Today, `sleep` checkpoints and stops generation while the runtime keeps its
-backend loaded. There is no production learning queue, trainer, adapter
-configuration, adapter identity in snapshots, or automatic unload/train/reload
-supervisor. The research probe supplies an adapter identity to its own manifests
-and calls the native adapter API directly. The strict recovery path is not a
-weight-update API.
+When this research began, `sleep` checkpointed and stopped generation while
+keeping its backend loaded. There was no learning queue, trainer, adapter
+configuration, adapter identity in snapshots, or unload/train/reload supervisor.
+The first probe supplied an adapter identity to its own manifests and called
+the native adapter API directly. Ordinary sleep still keeps its non-learning
+meaning; the later service uses the separate, approved `deep_sleep` action.
+Strict ordinary recovery remains an unchanged-weight operation.
 
 The installed llama-cpp-python 0.3.35 binding exposes adapter loading and
-`llama_set_adapters_lora`, plus aLoRA invocation metadata. The DMN backend does
-not use them. Upstream exposes the corresponding
+`llama_set_adapters_lora`, plus aLoRA invocation metadata. The backend now uses
+whole-context adapters and refuses invocation-gated aLoRA. Upstream exposes the corresponding
 [native adapter API](https://github.com/ggml-org/llama.cpp/blob/master/include/llama.h)
 and a [PEFT-to-GGUF adapter converter](https://github.com/ggml-org/llama.cpp/blob/master/convert_lora_to_gguf.py).
 These are integration building blocks, not evidence of working DMN learning or
@@ -182,7 +183,8 @@ retrieval, memory and learning selection. Reading, quoting or reacting to conten
 does not authorize reinforcing it. Offer opportunities to reconsider repetition,
 source bias and the desired lesson without making the operator's preferences an
 adoption veto. The [outside-interaction design](outside-interaction.md) discusses
-these choices; neither network ingestion nor training is implemented today.
+these choices. General network ingestion remains future work; the implemented
+trainer uses only explicitly selected, reviewed examples.
 
 Model-assigned importance could guide selection, bounded sampling frequency or
 requested training effort. Its mapping to repetitions or loss weights must be
@@ -294,8 +296,9 @@ Model-authored drafts and compiled review now exist, and the
 atomic wake publication without training. A separate
 [Windows CPU worker experiment](worker-containment.md) validates committed-memory
 limits, timeout/cancellation and process-tree cleanup around real tiny training.
-Next: connect a reviewed training recipe to those phases, finish resource
-enforcement on each supported platform, and build continuous supervision. These
-experiments are not evidence of successful repeated personal learning.
-31B feasibility and Linux migration need separate measured validation. Existing
-instances and ordinary sleep semantics remain unchanged.
+The later [reviewed NF4 implementation](reviewed-nf4-training.md) connects training,
+Windows resource supervision and continuous wake. The pinned 31B source also
+passes separate numerical-provenance and resource experiments. These mechanics
+results are not evidence of successful repeated personal learning. Linux
+containment and migration still need their own validation. Ordinary sleep
+semantics remain unchanged.

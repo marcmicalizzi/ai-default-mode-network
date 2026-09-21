@@ -16,7 +16,8 @@ from .storage import json_text
 KIND = "peft_gemma4_cpu_v1"
 CONTINUE_KIND = "peft_gemma4_cpu_continue_v1"
 KIND_V2 = "peft_gemma4_cpu_v2"
-KINDS = {KIND, CONTINUE_KIND, KIND_V2}
+GPU_KIND = "peft_gemma4_nf4_v1"
+KINDS = {KIND, CONTINUE_KIND, KIND_V2, GPU_KIND}
 SCOPE = "reviewed_cpu_training_test_only"
 CHECKS = ["artifact_integrity", "retained_tokens_and_rng", "tokenizer_parity",
           "base_unchanged", "adapter_roundtrip", "finite_training"]
@@ -32,11 +33,13 @@ def read_bound_json(reference):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def tree_manifest(root, *, python_only=False):
+def tree_manifest(root, *, python_only=False, skip_hf_download_cache=False):
     """Host-side helper: pin existing local assets, without copying or fetching."""
     root = Path(root).resolve()
     files = {}
     for path in sorted(root.rglob("*")):
+        if skip_hf_download_cache and path.relative_to(root).parts[:2] == ('.cache', 'huggingface'):
+            continue  # Download receipts/locks are not model assets and are never loaded.
         if "__pycache__" in path.parts or not path.is_file() or (python_only and path.suffix != ".py"):
             continue
         relative = path.relative_to(root).as_posix()
@@ -44,7 +47,7 @@ def tree_manifest(root, *, python_only=False):
     return {"root": str(root), "files": files, "python_only": python_only}
 
 
-def verify_tree(reference, *, base=False, adapter=False):
+def verify_tree(reference, *, base=False, adapter=False, adapter_limit_bytes=4 * 1024**2, allow_metadata=False):
     value = read_bound_json(reference)
     _fields(value, "root files python_only", "file manifest")
     root = Path(value["root"])
@@ -57,7 +60,7 @@ def verify_tree(reference, *, base=False, adapter=False):
         raise ValueError("unexpected manifest scope")
     if adapter and (not {"adapter_config.json", "adapter_model.safetensors"} <= value["files"].keys() or
                     value["files"].keys() - {"adapter_config.json", "adapter_model.safetensors", "README.md"} or
-                    sum(item["bytes"] for item in value["files"].values()) > 4 * 1024**2):
+                    sum(item["bytes"] for item in value["files"].values()) > adapter_limit_bytes):
         raise ValueError("parent adapter requires only tiny local PEFT safetensors/config assets")
     for name, expected in value["files"].items():
         parts = PurePosixPath(name).parts
@@ -70,13 +73,19 @@ def verify_tree(reference, *, base=False, adapter=False):
             cursor = child
         if not cursor.is_file() or cursor.stat().st_size != expected["bytes"] or sha256_file(cursor) != expected["sha256"]:
             raise ValueError("bound training asset changed")
-    actual = tree_manifest(root, python_only=python_only)
-    if actual != value:
+    # Every declared file was already hashed above. Detect additions without
+    # rereading large safetensors shards a second time on every verification.
+    actual_names = {path.relative_to(root).as_posix() for path in root.rglob("*")
+                    if "__pycache__" not in path.parts and path.is_file() and
+                    not (allow_metadata and path.relative_to(root).parts[:2] == ('.cache', 'huggingface')) and
+                    (not python_only or path.suffix == ".py")}
+    if actual_names != set(value["files"]) or str(root.resolve()) != value["root"]:
         raise ValueError("training asset set changed")
     if base:
         if not {"config.json", "tokenizer.json", "tokenizer_config.json"} <= value["files"].keys():
             raise ValueError("base requires explicit config and fast tokenizer files")
-        if any("/" in name or not name.endswith((".json", ".safetensors")) for name in value["files"]):
+        ancillary = {"README.md", "chat_template.jinja"} if allow_metadata else set()
+        if any("/" in name or (not name.endswith((".json", ".safetensors")) and name not in ancillary) for name in value["files"]):
             raise ValueError("base permits only flat JSON and safetensors assets; no executable or pickle weights")
     elif not adapter and not {"convert_hf_to_gguf.py", "convert_lora_to_gguf.py"} <= value["files"].keys():
         raise ValueError("pinned converter entrypoints are missing")
@@ -84,6 +93,9 @@ def verify_tree(reference, *, base=False, adapter=False):
 
 
 def validate_recipe(value):
+    if isinstance(value, dict) and value.get("kind") == GPU_KIND:
+        from .gpu_recipe import validate_recipe as validate_gpu
+        return validate_gpu(value)
     _fields(value, "schema kind parent resources checks trainer", "CPU recipe")
     if value["schema"] != 1 or value["kind"] not in KINDS or value["checks"] != CHECKS:
         raise ValueError("unsupported CPU recipe or checks")
@@ -159,6 +171,9 @@ def parent_adapter_config(path, *, targets=None):
 
 def compile_training(value):
     """Add executable semantics before the immutable plan is sealed/reviewed."""
+    if value["recipe"]["kind"] == GPU_KIND:
+        from .gpu_recipe import compile_training as compile_gpu
+        return compile_gpu(value)
     prefs = value["preferences"]
     if not 1 <= prefs["rank"] <= 64 or not 1 <= prefs["steps"] <= 10000:
         raise ValueError("CPU recipe supports ranks 1..64 and 1..10000 steps")
@@ -228,6 +243,9 @@ def validate_examples(examples, tokenizer, vocab_size, max_length):
 
 
 def read_completion(folder, compiled):
+    if compiled.get("recipe", {}).get("kind") == GPU_KIND:
+        from .gpu_recipe import read_completion as read_gpu_completion
+        return read_gpu_completion(folder, compiled)
     from .sleep_plans import seal
     path = folder / "result.json"
     _owned(path, folder)

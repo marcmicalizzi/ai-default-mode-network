@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -154,7 +155,8 @@ def worker(folder):
         chunk_rows = max(1, 1024**2 // cols)
         ranges = ([(row, min(chunk_rows, nrows - row)) for row in range(0, nrows, chunk_rows)]
                   if request['full'] else [(row, 1) for row in sorted({0, nrows // 2, nrows - 1})])
-        for row, count in ranges:
+        def compare_rows(item):
+            row, count = item
             values = read_rows(tensor, row, count)
             if kind == gguf.GGMLQuantizationType.F32:
                 expected = values.view(np.uint8)
@@ -163,11 +165,17 @@ def worker(folder):
                 written = quantize(int(kind), values.ctypes.data, expected.ctypes.data, 0, count, cols, None)
                 if written != expected.nbytes:
                     raise ValueError('native quantizer returned wrong byte count')
-            rows_checked += count
-            bytes_checked += expected.nbytes
-            if not np.array_equal(actual[row:row + count].reshape(-1).view(np.uint8), expected):
-                failures.append({'tensor': name, 'first_differing_chunk_row': row, 'rows_in_chunk': count})
-                break
+            equal = np.array_equal(actual[row:row + count].reshape(-1).view(np.uint8), expected)
+            return row, count, expected.nbytes, equal
+        # Native quantization releases the GIL. Each task owns its source and
+        # output buffers; joining before the next tensor keeps closure state fixed.
+        with ThreadPoolExecutor(max_workers=request.get('threads', 1)) as pool:
+            for row, count, checked, equal in pool.map(compare_rows, ranges):
+                rows_checked += count
+                bytes_checked += checked
+                if not equal:
+                    failures.append({'tensor': name, 'first_differing_chunk_row': row, 'rows_in_chunk': count})
+                    break
         write_durable(folder / 'progress.json', {'phase': 'comparing', 'tensors_completed': index + 1,
             'tensors_total': len(targets), 'mismatch_tensors': len(failures), 'rows_checked': rows_checked,
             'seconds': time.monotonic() - started})
@@ -187,6 +195,8 @@ def main():
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument('--full', action='store_true', help='compare every tensor row, not three sampled rows per matrix')
     scope.add_argument('--tokenizer-only', action='store_true', help='compare tokenizer assets instead of weight payloads')
+    parser.add_argument('--threads', type=int, choices=(1, 2, 4), default=1)
+    parser.add_argument('--max-seconds', type=int, default=1800)
     args = parser.parse_args()
     if args.worker:
         try:
@@ -199,9 +209,10 @@ def main():
     folder = args.output.resolve()
     folder.mkdir(parents=True, exist_ok=False)
     write_durable(folder / 'input.json', {**{name: str(getattr(args, name).resolve())
-        for name in ('source', 'gguf', 'gguf_python', 'ggml_base')}, 'full': args.full, 'tokenizer_only': args.tokenizer_only})
+        for name in ('source', 'gguf', 'gguf_python', 'ggml_base')}, 'full': args.full,
+        'tokenizer_only': args.tokenizer_only, 'threads': args.threads})
     process = run_cpu_worker(args.python, [__file__, '--worker', str(folder)], cwd=ROOT,
-        log=folder / 'worker.log', limits=WorkerLimits(2048 * 1024**2, 1800))
+        log=folder / 'worker.log', limits=WorkerLimits(2048 * 1024**2, args.max_seconds))
     write_durable(folder / 'process.json', process)
     print(json.dumps(process, indent=2))
     raise SystemExit(0 if process['succeeded'] else 1)

@@ -236,7 +236,34 @@ def run_gpu_research_worker(python, arguments, *, cwd, log, limits, allow_gpu=Fa
     return _run_worker(python, arguments, cwd=cwd, log=log, limits=limits, cancelled=cancelled, gpu_research=True)
 
 
-def _run_worker(python, arguments, *, cwd, log, limits, cancelled, gpu_research):
+def run_monitored_gpu_worker(python, arguments, *, cwd, log, limits, max_device_bytes, cancelled=lambda: False):
+    """RAM/time containment plus a conservative whole-device VRAM watchdog.
+
+    Unlike Torch's allocation ceiling this is sampled, so it cannot promise
+    zero transient overshoot. Other applications count against the allowance.
+    """
+    from .gpu_monitor import DeviceMemory
+    if type(max_device_bytes) is not int or max_device_bytes <= 0:
+        raise ValueError('positive device memory allowance required')
+    monitor = DeviceMemory()
+    peak = 0
+    try:
+        def guard():
+            nonlocal peak
+            peak = max(peak, monitor.used())
+            return 'device_memory_limit' if peak > max_device_bytes else None
+        if guard():
+            raise ValueError('device memory already exceeds the reviewed allowance')
+        result = _run_worker(python, arguments, cwd=cwd, log=log, limits=limits, cancelled=cancelled,
+                             gpu_research=True, resource_guard=guard)
+        result['device_memory'] = {'uuid': monitor.uuid, 'max_bytes': max_device_bytes,
+            'observed_peak_bytes': peak, 'scope': 'entire_device', 'transient_overshoot_possible': True}
+        return result
+    finally:
+        monitor.close()
+
+
+def _run_worker(python, arguments, *, cwd, log, limits, cancelled, gpu_research, resource_guard=None):
     """Run trusted Python code inside an OS-limited process tree; return evidence.
 
     The supervisor retains a job handle. It resumes the suspended child only
@@ -265,8 +292,11 @@ def _run_worker(python, arguments, *, cwd, log, limits, cancelled, gpu_research)
             TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1", PYTHONNOUSERSITE="1",
             PYTHONDONTWRITEBYTECODE="1")
         environment.pop("DMN_GPU_PROBE_CONTAINED", None)
+        environment.pop('DMN_CPU_WORKER_CONTAINED', None)
         if gpu_research:
             environment.update(CUDA_VISIBLE_DEVICES="0", DMN_GPU_PROBE_CONTAINED="1")
+        else:
+            environment['DMN_CPU_WORKER_CONTAINED'] = '1'
         process = SuspendedPython([str(python), *arguments], cwd, environment, job)
 
         def drain():
@@ -302,6 +332,11 @@ def _run_worker(python, arguments, *, cwd, log, limits, cancelled, gpu_research)
                     outcome = "time_limit"
                 elif drained["error"]:
                     outcome = "log_error"
+                elif resource_guard:
+                    try:
+                        outcome = resource_guard() or 'exited'
+                    except Exception:
+                        outcome = 'resource_monitor_error'
                 if outcome != "exited":
                     job.terminate()
                     break

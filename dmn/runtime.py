@@ -48,7 +48,7 @@ class Runtime(ImageInputMixin):
     def __init__(self, root: Path, config: Config, backend=None, now=time.time, kv_recovery="strict", initial_context=None,
                  monotonic=time.monotonic, prepare_only=False, start_staged=False,
                  release_hold=None, resume_condition=None, first_message=None, allow_placement_change=False,
-                 sleep_test_mode=False):
+                 sleep_test_mode=False, _session=None, sleep_offer=None):
         if kv_recovery not in {"strict", "fallback", "rebuild"}:
             raise ValueError("unknown KV recovery policy")
         if config.multi_user and initial_context:
@@ -56,7 +56,10 @@ class Runtime(ImageInputMixin):
         if allow_placement_change and (kv_recovery != "strict" or resume_condition == "original_environment"):
             raise ValueError("placement changes require strict recovery and cannot claim the original environment")
         self.root, self.config, self.now = root.resolve(), config, now
+        if _session is not None and (_session.root != self.root or _session._running or _session.backend is not None):
+            raise ValueError('runtime replacement requires the same stopped owner with its backend released')
         self.sleep_test_mode = sleep_test_mode
+        self.sleep_offer = sleep_offer
         self.monotonic = monotonic
         self.pacer = ActivityPacer(monotonic)
         self._sleep_save_due = None
@@ -65,7 +68,7 @@ class Runtime(ImageInputMixin):
         self.checkpoint_schedule = CheckpointSchedule(config, monotonic)
         self._checkpoint_metrics = {"committed_count": 0, "committed_snapshot_bytes": 0,
                                     "failed_count": 0, "in_progress": False, "last": None}
-        self._control_lock = threading.RLock()
+        self._control_lock = _session._control_lock if _session else threading.RLock()
         self._suspend_deadline = None
         self._suspending = False
         self._suspension_cause = "direct"
@@ -76,26 +79,29 @@ class Runtime(ImageInputMixin):
         self._end_requested = False
         self._end_complete = False
         self._end_challenge = None
-        self.lock = InstanceLock(self.root)
+        self.lock = _session.lock if _session else InstanceLock(self.root)
         try:
             self.lifecycle = Lifecycle(self.root)
             self.lifecycle.require_open()
+            from .conversation_migration import require_completed
+            require_completed(self.root)
             prior_state, _ = saved_state(self.root)
             check_hold(prior_state, release_hold, resume_condition, kv_recovery)
             if allow_placement_change and not prior_state:
                 raise ValueError("placement changes require an existing instance")
             if prepare_only and prior_state:
                 raise ValueError("prepare-only requires a fresh instance")
-            self.store = Store(self.root)
+            self.store = _session.store if _session else Store(self.root)
             self.image_permissions = ImagePermissions(self.store)
-            self.ephemeral_images = EphemeralImages(monotonic)
+            self.ephemeral_images = _session.ephemeral_images if _session else EphemeralImages(monotonic)
             self.conversations = (Conversations(self.store, config.operator_participant_id,
                 config.max_pending_messages, config.max_pending_messages_per_participant,
                 config.require_contact_consent) if config.multi_user else None)
         except BaseException:
-            if hasattr(self, "store"):
+            if hasattr(self, "store") and _session is None:
                 self.store.close()
-            self.lock.close()
+            if _session is None:
+                self.lock.close()
             raise
         self.backend = None
         self.wake = threading.Event()
@@ -141,6 +147,11 @@ class Runtime(ImageInputMixin):
                 # A resume event is factual input, not a fresh initialization prompt.
                 prior = self.state["mode"]
                 self.state["mode"] = self.state.get("mode_before_suspend", "active") if prior == "suspended" else prior
+                if self.state.get('first_contact_gate'):
+                    self.state['mode'] = 'awaiting_first_contact'
+                    self.state['pending_restore'] = {'prior': prior, 'evidence': evidence}
+                    self.publish_status()
+                    return  # No notices, retirement, evaluation or sampling before that contact request.
                 if prior == "staged":
                     if start_staged:
                         pending = self.store.next_event(self.state["event_cursor"])
@@ -193,6 +204,7 @@ class Runtime(ImageInputMixin):
                     "learning_protocol": "drafts_v1",
                     "learning_data_guidance": DATA_GUIDANCE_VERSION,
                     "sleep_plan_protocol": "fixture_review_v1",
+                    "conversation_protocol": 'addressed_v1' if config.multi_user else None,
                     "agreement": bootstrap(config.system_prompt, protocol, "host-supplied provisional bootstrap"),
                     "prompt_decisions": {},
                 }
@@ -223,16 +235,20 @@ class Runtime(ImageInputMixin):
                     self._eval(contract)
                     self.state["image_protocol"] = IMAGE_CONTRACT_VERSION
                     self.checkpoint(reason="image_capability")
+            if not self.state.get('pending_restore'):
+                self._announce_sleep_service()
             self.publish_status()
         except BaseException:
             if self.backend:
                 self.backend.close()
-            self.store.close()
-            self.lock.close()
+            if _session is None:
+                self.store.close()
+                self.lock.close()
             raise
 
     def _finish_restore(self, prior, evidence):
         self.state.pop("pending_restore", None)
+        self._announce_conversations()
         if self.state.get("activity_recovery"):
             self._append_event("activity_recovered", {**self.state["activity_recovery"],
                 "fact": "A durable activity choice was recovered separately from the native checkpoint. Unsaved processing may have been lost."})
@@ -286,7 +302,52 @@ class Runtime(ImageInputMixin):
             self.state["agreement"] = bootstrap(self.config.system_prompt, "See preserved original runtime seed.",
                                                 "legacy bootstrap; no model approval recorded")
         self._announce_activity()
+        self._announce_sleep_service()
         self.checkpoint(reason="restore")
+
+    def _announce_sleep_service(self):
+        from .sleep_plans import seal
+        enabled = self.sleep_offer is not None
+        notice = {'enabled': enabled, 'resources': self.sleep_offer['resources'] if enabled else None}
+        marker = seal(notice)['revision']
+        if self.state.get('sleep_service_notice') == marker or (not enabled and not self.state.get('sleep_service_notice')):
+            return
+        notice['fact'] = ('Supervised deep sleep is available. Read learning_execution_help for the current contract. '
+            'The offered recipe is not a request to train. You choose examples, review and approve each execution, '
+            'and decide when to sleep. Training releases inference, then reconstructs retained text under adopted weights. '
+            'Review-first can retain previous weights until you separately choose candidate adoption.' if enabled else
+            'The supervised deep-sleep service is unavailable in this launch; ordinary sleep is unchanged.')
+        tokens = self.backend.tokenize(event_text('deep_sleep_availability', notice, self.now(), resume_cognition=True))
+        self._ensure_space(len(tokens))
+        if not self.suspend_requested.is_set():
+            self._eval(tokens)
+            self.state['sleep_service_notice'] = marker
+            self.checkpoint(reason='sleep_service_availability')
+
+    def _announce_conversations(self):
+        if not self.conversations or self.state.get('conversation_protocol') == 'addressed_v1':
+            return
+        migration = self.state.get('conversation_migration')
+        if not migration:
+            raise ValueError('addressed-conversation restore requires explicit migration evidence')
+        if not self.state.get('conversation_address_notice'):
+            notice = {'fact': 'Addressed conversations now replace the single implicit recipient. Every send_message '
+                'requires conversation_id. The directory contains your existing WebUI counterpart at the address below. '
+                'This host mapping does not retroactively authenticate old text. New input waits for your contact_decide '
+                'after a contact_request; no acceptance was supplied for you. The full contract follows.',
+                'conversation_id': migration['conversation_id'], 'participant_id': migration['participant_id']}
+            tokens = self.backend.tokenize(event_text('conversation_transport_changed', notice, self.now(), resume_cognition=True))
+            if len(self.backend.tokens) + len(tokens) >= self.backend.n_ctx:
+                raise ValueError('insufficient room for the migration address notice; no generation started')
+            self._eval(tokens)
+            self.state['conversation_address_notice'] = True
+        from .contacts import CONTRACT as CONTACT_CONTRACT
+        text = CONVERSATION_CONTRACT + '\n' + CONTACT_CONTRACT
+        tokens = self.backend.tokenize(event_text('capability_added', {'contract': text}, self.now(), resume_cognition=True))
+        self._ensure_space(len(tokens))
+        if not self.suspend_requested.is_set():
+            self._eval(tokens)
+            self.state['conversation_protocol'] = 'addressed_v1'
 
     def elapsed(self, timestamp):
         return None if timestamp is None else self.now() - timestamp
@@ -403,8 +464,10 @@ class Runtime(ImageInputMixin):
             if self._end_requested or self.state.get("hold"):
                 raise ValueError("instance is stopped")
             recipe = put_recipe(self.store, value, self.now())
+            if self.state.get('first_contact_gate'):
+                return recipe  # Persist the offer without preceding the promised first contact.
             self.store.enqueue("learning_recipe_offered", {"revision": recipe["revision"],
-                "kind": recipe["kind"], "fact": "Host-offered mechanics recipe; no approval or training is implied."},
+                "kind": recipe["kind"], "fact": "Host-offered learning recipe; no approval or training is implied."},
                 self.now(), "recipe:" + recipe["revision"])
             self.wake.set()
             return recipe
@@ -457,6 +520,8 @@ class Runtime(ImageInputMixin):
         """Trusted local host registration; not an authenticated network adapter."""
         with self._control_lock:
             self._require_conversations_open()
+            if self.state.get('first_contact_gate') and participant_id != self.state['first_contact_gate']:
+                raise ValueError('this instance is waiting for its promised first contact before admitting other participants')
             return self.conversations.register(participant_id, display_name, conversation_id)
 
     def _require_conversations_open(self):
@@ -474,6 +539,9 @@ class Runtime(ImageInputMixin):
             raise ValueError("message exceeds max_event_bytes")
         with self._control_lock:
             self._require_conversations_open()
+            if (self.state.get('first_contact_gate') and
+                    self.conversations.read(conversation_id)['participant_id'] != self.state['first_contact_gate']):
+                raise ValueError('this instance is waiting for its promised first contact')
             event_id = self.conversations.enqueue(conversation_id, content, self.now(), idempotency_key)
         self.wake.set()
         return event_id
@@ -516,6 +584,12 @@ class Runtime(ImageInputMixin):
                 raise ValueError("the approved sleep transition owns restart; ordinary controls cannot bypass it")
             if self.state.get("hold"):
                 raise InstanceHeld("Instance is held; ordinary controls cannot release it")
+            if self.state.get('first_contact_gate'):
+                if action in {'shutdown', 'emergency_shutdown'}:
+                    self.exit_requested.set()
+                    self.stopped.set()
+                    return {'awaiting_first_contact': True, 'inference_started': False}
+                raise ValueError('this launch waits for the promised first contact; ordinary controls cannot start it')
             if self.state["mode"] == "staged":
                 if action == "start_staged":
                     pending = self.store.next_event(self.state["event_cursor"])
@@ -1402,6 +1476,34 @@ class Runtime(ImageInputMixin):
     def tick(self):
         with self._control_lock:
             self._prune_images()
+        if self.state.get('first_contact_gate'):
+            if self._shutdown_signal_pending:
+                self._shutdown_signal_pending = False
+                self.control('shutdown')
+                return False
+            event = self.store.next_event(self.state['event_cursor'])
+            if not event:
+                return False
+            if event['kind'] != 'contact_request' or event['payload'].get('participant_id') != self.state['first_contact_gate']:
+                raise ValueError('first-contact gate encountered an unexpected preceding event; no inference started')
+            payload = {**event['payload'], 'event_id': event['id'], 'arrived_at': event['created'], 'delivered_at': self.now()}
+            tokens = self.backend.tokenize(event_text('contact_request', payload, self.now(), resume_cognition=True))
+            if len(self.backend.tokens) + len(tokens) >= self.backend.n_ctx:
+                raise ValueError('insufficient context for the promised first contact; no inference started')
+            self._eval(tokens)
+            self.state['event_cursor'] = event['id']
+            self._delivered_events.add(event['id'])
+            self.state.pop('first_contact_gate')
+            self.state['mode'] = 'active'
+            self._focus_activity()
+            self.state['inbox_next_generated'] = self.state['generated_tokens'] + self.config.inbox_generation_tokens
+            pending = self.state.pop('pending_restore')
+            self._finish_restore(pending['prior'], pending['evidence'])
+            if self.sleep_offer:
+                from .sleep_host import offer_for_runtime
+                self.offer_learning_recipe(offer_for_runtime(self, self.sleep_offer))
+            self.publish_status()
+            return True
         if self.state["mode"] == "deep_sleep":
             return False
         if self._end_requested:
@@ -1604,7 +1706,7 @@ class Runtime(ImageInputMixin):
                     progressed = False
                 if self._end_requested:
                     break
-                if self.exit_requested.is_set() and self.state["mode"] in {"staged", "held", "suspended", "context_full", "deep_sleep"}:
+                if self.exit_requested.is_set() and self.state["mode"] in {"staged", "held", "suspended", "context_full", "deep_sleep", 'awaiting_first_contact'}:
                     break
                 if not progressed or self.config.token_delay_seconds:
                     self.wake.wait(self._wait_seconds(progressed))
@@ -1623,6 +1725,8 @@ class Runtime(ImageInputMixin):
         self.stopped.set()
         with self._control_lock:
             self.ephemeral_images.entries.clear()
-        self.backend.close()
+        if self.backend is not None:
+            self.backend.close()
+            self.backend = None
         self.store.close()
         self.lock.close()

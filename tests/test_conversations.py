@@ -464,7 +464,7 @@ class ConversationTest(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 dataclasses.replace(self.config, **changes)
 
-    def test_cli_rejects_experimental_mode_before_loading_any_model(self):
+    def test_cli_rejects_multi_user_without_authenticated_frontend_before_loading_any_model(self):
         from dmn.cli import main
         cfg = dataclasses.replace(self.config, backend="llama", model_path=str(self.root / "unopened.gguf"))
         path = self.root / "config.json"

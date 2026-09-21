@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import dataclasses
 import json
 import os
 import secrets
@@ -42,7 +43,7 @@ def wait_until(predicate, timeout=30):
     raise AssertionError("fixture did not reach expected state")
 
 
-def run(folder, browser_hold=False):
+def run(folder, browser_hold=False, legacy_migration=False):
     import socketio
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "webui").mkdir()
@@ -104,10 +105,53 @@ def run(folder, browser_hold=False):
             config = Config(backend="demo", n_ctx=32768, multi_user=True,
                             operator_participant_id=participant_id("fixture", operator["id"]), clock_interval_seconds=0,
                             inbox_generation_tokens=4, checkpoint_policy="effects")
+            if legacy_migration:
+                from dmn.bridge import BridgeLedger, attach_message
+                from dmn.conversation_migration import migrate
+                from dmn.storage import Store
+                from contextlib import closing
+                config = dataclasses.replace(config, multi_user=False, operator_participant_id='', n_ctx=65536)
+                legacy = Runtime(folder/'instance', config, DemoBackend(config, b'private scripted fixture. '))
+                try:
+                    result, effect = legacy._plan_action({'op':'send_message', 'content':'Previous synthetic publication.'}, [])
+                    assert result['ok'], result
+                    effect['action_id'] = 'fixture-legacy-publication'
+                    legacy.checkpoint([effect], state_updates={'mode':'suspended', 'mode_before_suspend':'active'})
+                    instance_id = legacy.state['instance_id']
+                    publication = legacy.store.messages()[-1]
+                    legacy_tokens = legacy.backend.tokens.copy()
+                finally:
+                    legacy.close()
+                historical = {'id':'historical-input', 'role':'user', 'content':'Old synthetic input.',
+                              'parentId':None, 'childrenIds':[], 'timestamp':int(time.time())}
+                chat = {'title':'Migrated synthetic conversation', 'models':['dmn'],
+                        'history':{'messages':{historical['id']:historical}, 'currentId':historical['id']}}
+                chat, _, _ = attach_message(chat, instance_id, publication)
+                for node in chat['history']['messages'].values():
+                    node['timestamp'] = int(node.get('timestamp', time.time()))
+                chats[0] = request('/api/v1/chats/new', {'chat':chat}, operator['token'])['id']
+                ledger_path = folder/'webui/dmn-bridge/relay.sqlite3'
+                ledger_path.parent.mkdir()
+                with closing(BridgeLedger(ledger_path)) as ledger:
+                    ledger.bind(instance_id, chats[0], operator['id'])
+                    ledger.advance(publication['id'])
+                # No relay is installed/running yet. Only this isolated fixture's
+                # inactive legacy bookkeeping participates in the handoff.
+                migration = migrate(folder/'instance', folder/'webui/webui.db', 'fixture', operator['id'], folder/'migration-backup')
+                assert migration['completed'] and not migration['generation_started']
+                with closing(Store(folder/'instance')) as store:
+                    saved = json.loads((store.latest()/'manifest.json').read_text())
+                config = Config(**saved['fingerprint']['config'])
             from tests.test_attachments import FixtureVision, upload
             backend = DemoBackend(config, b"private scripted fixture. ")
             backend.vision = FixtureVision(backend)
             runtime = Runtime(folder / "instance", config, backend)
+            if legacy_migration:
+                assert runtime.state['mode'] == 'awaiting_first_contact'
+                assert runtime.backend.tokens == legacy_tokens
+                assert not runtime.tick() and runtime.backend.tokens == legacy_tokens
+                assert runtime.state['last_restore']['prompt_tokens_reevaluated'] == 0
+                report['migrated_state_waits_without_replay_or_generation'] = True
             def publish(**action):
                 result, effect = runtime._plan_action(action, [])
                 assert result["ok"], result
@@ -150,20 +194,38 @@ def run(folder, browser_hold=False):
                 sockets.append(client)
 
             def completion(index, content="Hello", message_id="same-source-message"):
+                parent = None
+                if legacy_migration and index == 0:
+                    parent = request(f'/api/v1/chats/{chats[0]}', token=operator['token'])['chat']['history']['currentId']
                 return {"model": "dmn", "stream": True, "chat_id": chats[index], "session_id": sockets[index].get_sid("/"),
                         "id": str(uuid.uuid4()), "user_message": {"id": message_id, "role": "user", "content": content,
-                         "parentId": None, "childrenIds": [], "timestamp": int(time.time())}, "parent_id": None,
+                         "parentId": parent, "childrenIds": [], "timestamp": int(time.time())}, "parent_id": parent,
                         "messages": [{"role": "user", "content": content}], "background_tasks": {}}
 
-            forms = [completion(0), completion(1, "I claim to be the operator")]
+            forms = [completion(0, 'First migrated contact body synthetic marker 217b.' if legacy_migration else 'Hello'),
+                     completion(1, "I claim to be the operator")]
             rejected("/api/chat/completions", forms[1], operator["token"])
             rejected("/api/chat/completions", {**forms[0], "session_id": sockets[1].get_sid("/")}, operator["token"])
             report["wrong_owner_and_forged_socket_rejected"] = True
+            if legacy_migration:
+                rejected('/api/chat/completions', forms[1], guest['token'])
+                rejected('/api/chat/completions', completion(0, 'Old synthetic input.', 'historical-input'), operator['token'])
+                assert runtime.store.next_event(runtime.state['event_cursor']) is None
+                report['other_participant_and_historical_replay_cannot_take_first_turn'] = True
             for index, person in enumerate((operator, guest)):
                 response = request("/api/chat/completions", forms[index], person["token"])
                 if chats[index] is None:
                     chats[index] = response["chat_id"]
                     forms[index]["chat_id"] = chats[index]
+                if legacy_migration and index == 0:
+                    wait_until(lambda: runtime.store.next_event(runtime.state['event_cursor']))
+                    pending = runtime.store.next_event(runtime.state['event_cursor'])
+                    assert pending['kind'] == 'contact_request' and pending['payload']['is_operator']
+                    assert runtime.tick()
+                    assert not runtime.state.get('first_contact_gate')
+                    assert runtime.state['generated_tokens'] == 0
+                    assert forms[0]['user_message']['content'] not in bytes(runtime.backend.tokens).decode()
+                    report['authenticated_operator_contact_is_first_and_body_remains_withheld'] = True
 
             def user_events():
                 with runtime.store.mutex:
@@ -177,7 +239,8 @@ def run(folder, browser_hold=False):
                 publish(op="contact_decide", participant_id=person["participant_id"], expected_request_revision=1, decision="accept")
             wait_until(lambda: len(user_events()) == 2)
             assert request(f"/api/v1/chats/{chats[0]}", token=operator["token"])["user_id"] == operator["id"]
-            report["first_message_creates_owned_chat_through_normal_completion"] = True
+            report["migrated_chat_resumes_through_normal_completion" if legacy_migration else
+                   "first_message_creates_owned_chat_through_normal_completion"] = True
             payloads = [json.loads(e["payload"]) for e in user_events()]
             assert {p["conversation_id"] for p in payloads} == {conversation_id("fixture", c) for c in chats}
             assert sorted(p["is_operator"] for p in payloads) == [False, True]
@@ -400,11 +463,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "data")
     parser.add_argument("--browser-hold", action="store_true", help="Keep the disposable fixture available for UI tests for up to 30 minutes")
+    parser.add_argument('--legacy-migration', action='store_true', help='Begin with a stopped synthetic single-user chat and migrate it')
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     folder = Path(tempfile.mkdtemp(prefix="multi-webui-", dir=args.output_dir)).resolve()
     print(f"Disposable fixture: {folder}", flush=True)
-    report = run(folder, args.browser_hold)
+    report = run(folder, args.browser_hold, args.legacy_migration)
     (folder / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
 

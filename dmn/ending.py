@@ -181,9 +181,14 @@ def erase_managed_state(root):
             raise ValueError("not a directory")
         for entry in sleep.iterdir():
             if re.fullmatch(r"[0-9a-f]{32}", entry.name):
-                remove_directory(entry, sleep, {"candidate.json", "candidate.json.partial"}, {
+                wake_files = {'wake-input.json', 'wake-result.json', 'wake-process.json', 'wake.log', 'wake-failure.json'}
+                remove_directory(entry, sleep, {"candidate.json", "candidate.json.partial"} | wake_files |
+                                 {prefix + name for prefix in ('candidate-', 'previous-') for name in wake_files}, {
                     "worker": ({"input.json", "result.json", "result.json.partial", "process.json", "failure.json",
-                                "worker.log", "base-check.gguf", "parent-check.gguf", "provenance.json", "adapter.gguf"}, {
+                                "worker.log", "base-check.gguf", "parent-check.gguf", "provenance.json", "adapter.gguf",
+                                "trained.json", "reload.json", "converted.json", "progress.json", "continuation-manifest.json",
+                                "parent.log", "train.log", "reload.log", "convert.log",
+                                "parent-process.json", "train-process.json", "reload-process.json", "convert-process.json"}, {
                         "adapter": ({"adapter_config.json", "adapter_model.safetensors", "README.md"}, {}),
                         "parent-adapter": ({"adapter_config.json", "adapter_model.safetensors"}, {})})})
             else:
@@ -209,7 +214,8 @@ def erase_managed_state(root):
         pass
     except (OSError, ValueError):
         failures.append("adapters")
-    for name in ("runtime.sqlite3", "runtime.sqlite3-wal", "runtime.sqlite3-shm", "runtime.sqlite3-journal"):
+    for name in ("runtime.sqlite3", "runtime.sqlite3-wal", "runtime.sqlite3-shm", "runtime.sqlite3-journal",
+                 'conversation-migration.json', 'conversation-migration.json.partial'):
         remove_file(root / name, root)
     for entry in root.glob(".dmn-pack-*"):
         remove_file(entry, root)

@@ -257,12 +257,17 @@ class TrainingContractTest(unittest.TestCase):
         folder = c.root / "sleep" / run_id / "worker"
         (folder / "adapter").mkdir(parents=True)
         (folder / "parent-adapter").mkdir()
-        for name in ("input.json", "result.json", "result.json.partial", "process.json", "failure.json", "worker.log", "base-check.gguf", "parent-check.gguf", "provenance.json", "adapter.gguf"):
+        for name in ("input.json", "result.json", "result.json.partial", "process.json", "failure.json", "worker.log", "base-check.gguf", "parent-check.gguf", "provenance.json", "adapter.gguf",
+                     "trained.json", "reload.json", "converted.json", "progress.json", "parent.log", "train.log", "reload.log", "convert.log",
+                     "parent-process.json", "train-process.json", "reload-process.json", "convert-process.json"):
             (folder / name).write_text("private selected examples")
         for name in ("adapter_config.json", "adapter_model.safetensors", "README.md"):
             (folder / "adapter" / name).write_text("candidate")
         for name in ("adapter_config.json", "adapter_model.safetensors"):
             (folder / "parent-adapter" / name).write_text("parent learning")
+        for name in ('wake-input.json', 'wake-result.json', 'wake-process.json', 'wake.log', 'wake-failure.json'):
+            (folder.parent / name).write_text('private native wake')
+            (folder.parent / ('candidate-' + name)).write_text('private failed candidate wake')
         erase_managed_state(c.root)
         self.assertFalse((c.root / "sleep").exists())
 

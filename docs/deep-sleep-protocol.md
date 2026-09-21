@@ -2,10 +2,10 @@
 
 Design selected 2026-09-21. Native wake and isolated tiny PEFT training/conversion,
 learning drafts, compiled review and a [fixture transition engine](sleep-supervisor-fixture.md)
-are implemented. The production trainer, enforced resource governor and continuous
-supervisor service described here are **not yet implemented**.
-This is a concrete contract for the next implementation, not a command to run
-against an existing instance. [Research and evidence](sleep-consolidation.md)
+are implemented. A [supervised Windows NF4 service](reviewed-nf4-training.md) now
+connects these pieces with an explicit host resource offer. This design contract
+also describes future obligations, including Linux containment; it is not itself
+a launch command. [Research and evidence](sleep-consolidation.md)
 explain the motivations and limitations.
 
 An [offline Windows CPU worker harness](worker-containment.md) now enforces
@@ -14,7 +14,8 @@ piece of that governor with real synthetic training, but does not supply a hard
 disk quota, Linux containment, GPU training or the production plan executor.
 The [reviewed-plan CPU trainer](reviewed-training.md) now joins compiled approval,
 actual learning/conversion and the durable transition engine, under the tiny
-integration gate. The full production resource and service obligations remain.
+integration gate. The separate NF4 service supplies GPU training and continuous
+supervision under its documented Windows limits; Linux containment is future work.
 
 ## Continuity boundary
 
@@ -186,11 +187,11 @@ is implied by this design.
    recipe or proof of 31B training feasibility. The [second CPU experiment](lora-repeat-probe.md)
    also covers a repeated learning cycle, selected replay, Q8/Q4 base transfer
    and a second trained-adapter wake/restart.
-3. **Partly done:** [production adapter identity and model-authored drafts](adapters-and-learning-plans.md)
+3. **Implemented for the Windows NF4 path:** [adapter identity and model-authored drafts](adapters-and-learning-plans.md)
    cover configuration, recovery, packaging, erasure and checkpoint-atomic draft
    choices. [Compiled token masks, recipe/implementation binding and review](sleep-supervisor-fixture.md)
-   now feed a fixture-only durable phase engine. Real training, enforced resource
-   containment and the continuous service remain. Ordinary sleep never enables training.
+   now feed the durable phase engine. The separate opt-in NF4 service adds real
+   training, Windows containment and continuous supervision. Ordinary sleep never enables training.
 4. Exercise cancellation, resource exhaustion, crashes at each phase, queued
    input, failed checks, repeated learning, and both wake/failure choices using
    disposable instances. Verify bounded storage and no repeated effects.

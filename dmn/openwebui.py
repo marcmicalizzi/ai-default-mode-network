@@ -48,6 +48,8 @@ class OpenWebUIBridge:
         self.app = app
         self.client = RuntimeClient(os.environ.get("DMN_URL", "http://127.0.0.1:8765"), os.environ["DMN_INSTANCE_ID"])
         root = DATA_DIR / "dmn-bridge"
+        if (root / 'conversation-migration.json').exists():
+            raise ValueError('this bridge has a multi-user handoff; use its authenticated frontend configuration')
         self.owner_lock = InstanceLock(root)  # one web worker, one relay
         self.ledger = BridgeLedger(root / "relay.sqlite3")
         self.adoption = json.loads((root / "adoption.json").read_text()) if (root / "adoption.json").exists() else None

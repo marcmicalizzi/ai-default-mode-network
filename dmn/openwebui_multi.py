@@ -40,7 +40,19 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
                                          Path(manifest["token_file"]).read_text(encoding="utf-8").strip(), manifest["namespace"])
         self.client.status()
         root = DATA_DIR / "dmn-bridge"
-        if (root / "adoption.json").exists() or (root / "relay.sqlite3").exists():
+        self.legacy_adoption = None
+        migration = root / 'conversation-migration.json'
+        if migration.exists():
+            from .conversation_migration import record
+            from .sleep_plans import seal
+            handoff = record(migration)
+            if (handoff['phase'] != 'completed' or handoff['plan']['instance_id'] != self.client.instance_id or
+                    handoff['plan']['namespace'] != self.client.namespace):
+                raise ValueError('multi-user handoff is incomplete or belongs to a different source')
+            self.legacy_adoption = json.loads((root / 'legacy-history.json').read_text())
+            if seal(self.legacy_adoption)['revision'] != handoff['plan']['history_sha256']:
+                raise ValueError('multi-user legacy history evidence changed')
+        elif (root / "adoption.json").exists() or (root / "relay.sqlite3").exists():
             raise ValueError("multi-user experiments require a fresh bridge directory, without single-user adoption")
         self.owner_lock = InstanceLock(root)
         try:
@@ -100,10 +112,25 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
                 # Validate ownership before upstream can persist a placeholder.
                 # Re-read at submission; no byte cache survives the request.
                 await self.prepare_input(binding, message)
+        except HTTPError as exc:
+            try:
+                try:
+                    detail = json.loads(exc.read(8192)).get('error')
+                except (ValueError, AttributeError):
+                    detail = None
+                status = 403 if exc.code in {400, 403, 404, 409, 410} else 503
+                raise HTTPException(status, detail if isinstance(detail, str) else
+                                    'DMN could not admit this input; no message was delivered') from exc
+            finally:
+                exc.close()
         except (ValueError, KeyError, TypeError) as exc:
             raise HTTPException(403, str(exc)) from exc
 
     async def bind_chat(self, chat, person, message):
+        legacy = getattr(self, 'legacy_adoption', None)
+        if legacy and chat.id == legacy['chat_id']:
+            from .adoption import validate_adopted_message
+            validate_adopted_message(legacy, chat.chat, message)
         if not self.ledger.binding(chat.id):
             from open_webui.models.chats import Chats
             nodes = await Chats.get_messages_map_by_chat_id(chat.id)
@@ -183,6 +210,9 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
         return await asyncio.to_thread(self.client.enqueue, binding, message["id"], message["content"])
 
     async def retry_bound(self, binding, message, prior):
+        legacy = getattr(self, 'legacy_adoption', None)
+        if legacy and binding['chat_id'] == legacy['chat_id'] and message['id'] in legacy['source_messages']:
+            raise ValueError('historical input already belongs to the retained context; send a new message')
         uploads, digest = await self.prepare_input(binding, message)
         if digest != prior["digest"]:
             raise ValueError("Editing a delivered message or attachment cannot rewind DMN; send a new message")
@@ -237,6 +267,14 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
         self.ledger.save_contact_status(chat.id, status)
 
     async def persist_message(self, binding, outgoing):
+        legacy = getattr(self, 'legacy_adoption', None)
+        if legacy and binding['chat_id'] == legacy['chat_id']:
+            from open_webui.models.chats import Chats
+            from .adoption import validate_adopted_history
+            chat = await Chats.get_chat_by_id(binding['chat_id'])
+            if chat is None:
+                raise ValueError('migrated chat no longer exists')
+            validate_adopted_history(legacy, chat.chat)
         if (outgoing.get("conversation_id") != binding["conversation_id"]
                 or outgoing.get("participant_id") != binding["participant_id"]):
             raise ValueError("outgoing message is addressed to another destination")

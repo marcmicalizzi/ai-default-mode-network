@@ -1,14 +1,15 @@
 # Compiled review and the sleep transition engine
 
 This page describes the original prebuilt-adapter fixture. The engine also now
-supports an [actual reviewed-plan CPU trainer](reviewed-training.md), still
-restricted to tiny integration tests. The ordinary launcher remains disabled
-for both execution paths.
+supports an [actual reviewed-plan CPU trainer](reviewed-training.md) and a
+[reviewed NF4 worker chain](reviewed-nf4-training.md). The latter has an explicit
+opt-in Windows service with a persistent text queue and contained native wake.
+The prebuilt-adapter and CPU recipes described here remain disposable tests.
 
 This increment implements compiled-plan review and a durable sleep transition
 engine. **It does not implement a production trainer, hard resource governor, or
-an unattended inference/training service.** Ordinary `dmn run` cannot execute
-`deep_sleep`. The execution path is restricted to explicitly enabled disposable
+an unattended inference/training service.** That separate service is described
+in the NF4 guide. This fixture path is restricted to explicitly enabled disposable
 mechanics tests, using a reviewed prebuilt adapter. It performs no training and
 prepares a wake checkpoint without automatically starting generation.
 
@@ -16,10 +17,9 @@ The next integration is the separate, resource-controlled training/conversion
 worker and continuous supervisor service. Existing instances need neither new
 dependencies nor a restart for this development work.
 
-The separate [Windows worker experiment](worker-containment.md) now validates
-OS-enforced process-tree committed memory and failure cleanup around actual tiny
-training/conversion. It is not connected to these approved plans or phases yet;
-the fixture's preflight-only resource behavior described below is unchanged.
+The [Windows worker containment](worker-containment.md) now bounds the separate
+training/conversion workers connected to reviewed training recipes. The original
+non-training fixture's preflight-only behavior described below is unchanged.
 
 ## Review before a sleep request
 
@@ -31,7 +31,8 @@ The workflow is:
    [adapter identity and drafts](adapters-and-learning-plans.md).
 2. A host can offer a recipe through `Runtime.offer_learning_recipe`. This stores
    an immutable recipe and queues an offer event. It cannot grant approval.
-   There is no arbitrary shell-command recipe. Only `fixture_candidate_v1` exists.
+   There is no arbitrary shell-command recipe. `fixture_candidate_v1` is the
+   original non-training recipe; the linked training pages describe newer recipes.
 3. The instance inspects `learning_recipe_list` and `learning_recipe_read`, then
    requests `learning_compile(draft_revision, recipe_revision)`.
 4. The compiler binds the current parent weights, source draft, exact input and
@@ -96,10 +97,11 @@ uses normal strict restore; its retained tokens need no second reconstruction.
 Let the launcher use the committed configuration after an adapter adoption;
 an explicit old configuration will correctly fail its weight-identity check.
 
-Review-first currently prepares the old-weight wake and leaves a report accessible
-through `learning_sleep_report`. Interactive adoption following that review, a
-continuous frontend while workers are absent, worker process containment,
-cancellation UI and automatic return to generation remain integration work.
+Review-first prepares the old-weight wake and leaves a report accessible through
+`learning_sleep_report`. The separate [NF4 service](reviewed-nf4-training.md) adds
+reviewed adoption after that report, a continuous frontend, contained workers and
+automatic return after a committed wake. The CPU and prebuilt fixtures on this
+page remain explicitly gated test paths. A sleep-cancellation UI is future work.
 
 ## Resources and privacy
 

@@ -53,7 +53,8 @@ def worker(root, phase):
         if phase == 'base':
             unit = backend.tokenize('Synthetic cache mechanics. Red green blue. ')
             tokens = backend.tokenize('Disposable validation context. ', initial=True)
-            tokens += (unit * (3072 // len(unit) + 1))[:3072 - len(tokens)]
+            count = request.get('retained_tokens', 3072)
+            tokens += (unit * (count // len(unit) + 1))[:count - len(tokens)]
             backend.eval(tokens)
             backend.shift(32, 1024)
             backend.eval(backend.tokenize(' Context retirement completed. '))
@@ -156,6 +157,11 @@ def main():
     for name in ('model', 'adapter', 'projector', 'native-python', 'pillow-site', 'output', 'worker'):
         parser.add_argument('--' + name, type=Path)
     parser.add_argument('--phase', choices=PHASES)
+    parser.add_argument('--context', type=int, default=4096)
+    parser.add_argument('--retained-tokens', type=int, default=3072)
+    parser.add_argument('--gpu-layers', type=int, default=99)
+    parser.add_argument('--max-seconds', type=int, default=1200)
+    parser.add_argument('--text-only', action='store_true')
     args = parser.parse_args()
     if args.worker:
         try:
@@ -165,23 +171,27 @@ def main():
             raise
     if not all((args.model, args.adapter, args.projector, args.native_python, args.pillow_site, args.output)):
         parser.error('all asset paths and a fresh output directory are required')
+    if not 2048 <= args.retained_tokens < args.context - 512:
+        parser.error('retained tokens must leave a bounded continuation margin')
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     config = Config(model_path=str(args.model.resolve()),
         lora_adapters=(AdapterSpec(str(args.adapter.resolve()), sha256_file(args.adapter), BASE_SHA, .1),),
-        n_ctx=4096, n_batch=256, n_threads=4, n_gpu_layers=99, flash_attn=True,
+        n_ctx=args.context, n_batch=256, n_threads=4, n_gpu_layers=args.gpu_layers, flash_attn=True,
         type_k='q8_0', type_v='q8_0', swa_full=False, experimental_compact_swa=True,
         pack_checkpoints=True, prompt_format='plain')
     write_durable(root / 'config.local.json', config.to_dict())
-    write_durable(root / 'input.json', {'projector': str(args.projector.resolve()), 'pillow_site': str(args.pillow_site.resolve())})
-    for phase in PHASES:
+    write_durable(root / 'input.json', {'projector': str(args.projector.resolve()), 'pillow_site': str(args.pillow_site.resolve()),
+                                      'retained_tokens': args.retained_tokens})
+    phases = PHASES[:3] if args.text_only else PHASES
+    for phase in phases:
         process = run_gpu_research_worker(args.native_python, [__file__, '--worker', str(root), '--phase', phase],
-            cwd=ROOT, log=root / (phase + '.log'), limits=WorkerLimits(32768 * 1024**2, 1200), allow_gpu=True)
+            cwd=ROOT, log=root / (phase + '.log'), limits=WorkerLimits(32768 * 1024**2, args.max_seconds), allow_gpu=True)
         write_durable(root / (phase + '-process.json'), process)
         print(json.dumps({'phase': phase, **process}), flush=True)
         if not process['succeeded']:
             raise SystemExit(1)
-    write_durable(root / 'result.json', {'completed': True, 'phases': list(PHASES),
+    write_durable(root / 'result.json', {'completed': True, 'phases': list(phases),
         'synthetic_only': True, 'runtime_constructed': False, 'adoption_authorized': False})
 
 

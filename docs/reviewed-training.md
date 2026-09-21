@@ -1,5 +1,10 @@
 # Training from a reviewed learning plan
 
+This page describes the CPU recipes. The newer
+[reviewed NF4 integration](reviewed-nf4-training.md) uses separate GPU training
+and reload workers, complete pinned-source evidence and a device-memory watchdog.
+It has a separate opt-in Windows service; these CPU recipes remain fixture-only.
+
 The `peft_gemma4_cpu_v1` and `peft_gemma4_cpu_continue_v1` recipes connect
 compiled-plan approval to actual PEFT training, GGUF conversion, durable candidate
 validation and native context reconstruction. They use the same sleep transition engine as the prebuilt-adapter
@@ -121,8 +126,9 @@ With preauthorized adoption, the supervisor installs the validated adapter and
 rebuilds **the exact retained tokens** under those weights, preserving sampler
 RNG and runtime state. It executes no historical action frames. The new native
 checkpoint and completed transition publish atomically. Review-first instead
-prepares the old native state and a candidate report. Neither path automatically
-starts generation; the continuous supervisor remains separate work.
+prepares the old native state and a candidate report. This CPU fixture exits
+after the transition; the separate [NF4 service](reviewed-nf4-training.md) restores
+inference and retains the frontend across a model-requested sleep.
 
 ## Validation
 
@@ -175,31 +181,30 @@ $env:DMN_TEST_LORA_CONVERTER = 'D:\path\to\pinned-llama-source'
 
 ## Remaining production gates
 
-For a first live Windows/RTX 5090 deployment, the outstanding work is:
+The Windows NF4 implementation now covers the following integration requirements.
+Use the [current service evidence](reviewed-nf4-training.md) for measured scope;
+these CPU fixtures are not enabled for real instances.
 
-1. **An integrated GPU recipe.** Connect the measured NF4 training path to
-   compiled-plan review, exact examples/masks, pinned dependencies, conversion,
-   candidate receipts and failure handling. The standalone GPU experiment is
-   not offered to instances as an executable recipe.
-2. **Complete base compatibility evidence.** Resolve the published GGUF's
-   quantization provenance and document the differing chat templates. Sampled
-   weight equality and matching vocabulary are useful but insufficient. The
-   exact-token training/wake path must not silently substitute a chat template.
-3. **An enforceable, measured resource envelope.** Validate the supported example
-   sizes and steps, conversion, and a roughly 60,000-token wake using disposable
-   data. The successful 256-token/two-step probe does not establish a general
+1. **Explicit service enablement.** The reviewed recipe, exact masks, pinned
+   dependencies, worker stages and receipts are implemented. Ordinary launch
+   requires an explicit `--deep-sleep-recipe` resource offer.
+   The pinned 31B numerical-payload/vocabulary/inference-metadata proof is complete;
+   the differing chat templates are recorded, with no template substitution.
+2. **A bounded resource envelope.** The successful 256-token/two-step probe does not establish a general
    training budget; 512 tokens exceeded the configured allocator ceiling. RAM
    and worker duration are contained on Windows, but the allocator ceiling is
-   not a total-process VRAM quota, disk preflight is not a quota, and the full
-   wake phase still needs coverage.
-4. **Continuous supervision and adoption.** Connect inference shutdown, exclusive
+   not a total-process VRAM quota and disk preflight is not a quota.
+   The combined 31B service/projector rehearsal now passes with 43,231 retained
+   synthetic tokens. A separate 60,000-token allocation with 53,981
+   retained synthetic tokens now passes native rebuild and exact restart. The
+   separate contained wake worker and GPU device watchdog pass the tiny cycle.
+3. **Continuous supervision and adoption.** The service joins inference shutdown,
    GPU handoff, queued frontend input, training, wake and return to generation.
-   Complete candidate adoption after review-first. Preserve the approved
-   previous-state/stopped failure choice and recover without duplicate training,
-   message delivery or historical action execution.
-5. **An integrated disposable-instance rehearsal.** Exercise that production path
-   at supported limits, including worker/supervisor interruptions, strict restart
-   after adoption and a subsequent learning cycle. Candidate checks must report
+   It supports separately reviewed adoption after review-first and preserves the
+   approved previous-state/stopped failure choice. The tiny three-cycle rehearsal
+   passes strict restore, adoption without retraining, and subsequent continuation.
+   The launcher and explicit offline multi-user migration are implemented.
+4. **Integrated disposable-instance evidence.** Candidate checks must report
    what they measure; successful training loss is not proof of useful learning
    or absence of forgetting.
 
@@ -217,8 +222,10 @@ and explicit text targets in the full Gemma wrapper, still within the tiny CPU g
 The separate [tiny NF4 experiment](qlora-gpu-probe.md) now validates GPU training,
 PEFT reload and exact factor transfer into native inference. The
 [31B resource experiment](qlora-31b-probe.md) probes the real pinned source with
-synthetic text. Neither enables an instance recipe: quantized 31B provenance,
-realistic workload sizing and production resource enforcement remain gates.
+synthetic text. The [reviewed NF4 integration](reviewed-nf4-training.md) now uses
+checked full-payload provenance for that specific source and inference artifact.
+Real-instance execution is disabled by default and requires the explicit service
+offer, followed by the instance's own draft, complete review and approval.
 
 For the production quantized-base path, a recipe needs more than matching repository
 names: pin the source weights/tokenizer, converter and quantizer implementations,
@@ -234,18 +241,19 @@ also uses `Gemma4ForConditionalGeneration`; v2 now exercises this wrapper with a
 generated tiny text/vision fixture and frozen vision weights. Full-model training
 now passes a bounded 256-token/two-step synthetic probe on the pinned modified
 source, including fresh PEFT reload; a 512-token workload hits its allocator
-limit. The read-only 31B audit matches source-backed F32 tensors, sampled
-quantized rows and the token vocabulary/settings, but finds differing chat
-templates. It is not a full reproduction receipt and does not relax this gate.
+limit. The complete read-only 31B audit now compares all quantized rows as well as
+F32 tensors, vocabulary and inference settings. Its narrow numerical equivalence
+policy is bound into the compiled NF4 plan. It is not a whole-file reproduction
+receipt and does not claim knowledge of the publisher's original commands.
 
 The v1 harness regenerates the F32 proof on each run. The v2 path prepares a
 reusable, hash-bound provenance record and invalidates it when a bound input or
 tool changes. Rewriting a full 31B conversion each sleep cycle would impose
 unnecessary storage and write costs; that is not the production storage policy.
 
-Hard disk quotas, Linux containment, resource limits covering the full wake
-phase, interactive adoption after review-first, continuous service/frontend
-ownership and automatic return to inference remain unfinished. The tiny model
-and test-mode gates stay in place until those resource and lifecycle obligations
-are met. These limits are visible in the compiled plan; approval cannot enable
-unsupported production execution.
+OS disk/GPU allocation quotas are not implemented. Application output bounds,
+RAM/process limits and sampled GPU/time watchdogs must be described accurately
+and validated through the complete service. The NF4 path now includes interactive
+adoption after review-first and a continuous supervisor. Linux containment remains
+unfinished. The CPU test-mode gate stays in place; approval cannot enable an
+unsupported recipe or exceed the enabled host offer.

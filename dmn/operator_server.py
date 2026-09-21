@@ -1,7 +1,7 @@
 """Separate operator-only contact directory and reasoned reconsideration UI.
 
-This credential never travels through WebUI. The sole mutation queues a request;
-no endpoint in this server unblocks a participant or reopens a conversation.
+This credential never travels through WebUI. Mutations request maintenance or
+reconsideration; no endpoint overrides a contact decision or forces execution.
 """
 from __future__ import annotations
 
@@ -66,6 +66,12 @@ def serve_operator(runtime, *, token, port=0):
                     self.reply(200, (web / "operator.js").read_bytes(), "text/javascript; charset=utf-8")
                 elif self.path == "/api/operator/contacts":
                     self.reply(200, {"instance_id": instance_id, "participants": runtime.conversations.operator_directory()})
+                elif self.path == '/api/operator/status':
+                    value = runtime.status()
+                    fields = ('instance_id', 'mode', 'active_tokens', 'context_capacity', 'generated_tokens',
+                              'checkpoint_at', 'checkpoint_reason', 'context_retirement', 'activity', 'storage',
+                              'sleep_service', 'maintenance', 'action_diagnostics')
+                    self.reply(200, {key: value[key] for key in fields if key in value})
                 else:
                     self.reply(404, {"error": "unknown operator endpoint"})
             except (sqlite3.Error, RuntimeError):
@@ -77,13 +83,20 @@ def serve_operator(runtime, *, token, port=0):
             if not self.allowed():
                 return
             try:
-                if self.path != "/api/operator/unblock-requests":
+                if self.path not in {'/api/operator/unblock-requests', '/api/operator/maintenance'}:
                     self.reply(404, {"error": "unknown operator endpoint"})
                     return
                 length = int(self.headers.get("Content-Length", "0"))
                 if self.headers.get("Transfer-Encoding") or not 0 < length <= 32768 or self.headers.get_content_type() != "application/json":
                     raise ValueError("bounded application/json body required")
                 body = json.loads(self.rfile.read(length))
+                if self.path == '/api/operator/maintenance':
+                    if (not isinstance(body, dict) or set(body) != {'instance_id', 'action', 'reason'} or
+                            body['instance_id'] != instance_id or body['action'] not in {'shutdown', 'suspend'} or
+                            not isinstance(body['reason'], str) or not 1 <= len(body['reason']) <= 4000):
+                        raise ValueError('instance, shutdown/suspend action and a bounded reason are required')
+                    self.reply(202, runtime.control(body['action'], reason=body['reason']))
+                    return
                 if not isinstance(body, dict) or set(body) != {"instance_id", "participant_id", "expected_block_revision", "reason"}:
                     raise ValueError("instance, participant, block revision and reasoning are required")
                 if body["instance_id"] != instance_id:

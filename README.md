@@ -103,13 +103,13 @@ selected replay and adapter transfer to quantized bases.
 are implemented: checkpoints bind declared adapter hashes/order/strength, archives
 include active adapters, and the instance can create, revise or withdraw private
 learning drafts. Drafts do not authorize training. Ordinary recovery requires
-unchanged weights; the planned deep-sleep wake explicitly adopts new weights and
+unchanged weights; an approved deep-sleep wake explicitly adopts new weights and
 rebuilds KV from the retained tokens.
 [Compiled review and a disposable sleep supervisor fixture](docs/sleep-supervisor-fixture.md)
 now test exact token/loss-mask review, separate approval, durable phases, interrupted
 candidate/wake recovery and atomic publication. This fixture uses a prebuilt
-adapter and performs no training; production resource enforcement and the
-continuous training service remain to be implemented.
+adapter and performs no training. The separate supervised NF4 service below
+connects actual learning to the same durable transition engine.
 A [Windows CPU worker experiment](docs/worker-containment.md) now runs real tiny
 training, conversion and native wake/restart inside an OS-enforced committed-memory
 limit, with timeout/cancellation and process-tree cleanup. It is an offline
@@ -118,8 +118,7 @@ A [reviewed-plan CPU trainer](docs/reviewed-training.md) now connects exact appr
 examples/masks to real PEFT training, conversion, candidate recovery and native
 wake. A continuation recipe verifies the previous PEFT/GGUF lineage and trains
 the existing factors at their current deployment strength, preserving rank and
-alpha. Both F32 recipes remain restricted to tiny integration tests; production
-and 31B training are not enabled.
+alpha. Both F32 recipes remain restricted to tiny integration tests.
 A [reusable base-provenance path](docs/base-provenance.md) now prepares and checks
 conversion/quantization evidence for a v2 CPU recipe, including text-only adapter
 targets inside the full Gemma wrapper. This remains a tiny-model integration path.
@@ -130,19 +129,30 @@ default, separate from the instance's learning service.
 The [pinned 31B NF4 probe](docs/qlora-31b-probe.md) completed two rank-two updates
 on 256 synthetic tokens on Windows/RTX 5090, peaking at 20.91 GiB of Torch
 allocations. Its fresh-process PEFT reload reproduced the reference logits
-exactly. A 512-token attempt hit the unchanged 22 GiB allocator limit. Production
-adoption remains gated; sampled base checks match, but full provenance is not
-established and the source/published chat templates differ. Full-size native
+exactly. A 512-token attempt hit the unchanged 22 GiB allocator limit.
+Complete tensor-payload, vocabulary and inference-setting
+checks now match the pinned source; the source/published chat templates differ
+and are preserved explicitly. Full-size native
 adapter wake/restart and the matching projector's image restore/retirement
 checks also passed on disposable contexts.
+The [reviewed NF4 integration](docs/reviewed-nf4-training.md) now connects the
+compiled plan to separate training, reload, conversion and native wake workers.
+The opt-in Windows service preserves the text queue and instance lock while the
+backend is absent. Review-first wakes under previous weights; a separate
+adoption-only plan can later rebuild the current context without retraining.
+Native reconstruction and exact restart also passed with a 60,000-token
+allocation and a long synthetic context. A full 31B service rehearsal passed
+training, conversion, wake and strict restore with the vision projector loaded,
+preserving queued input and publications. See the [integrated launch guide](docs/integrated-launch.md)
+for the explicit host offer, limits, dependency separation and first-contact gate.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
-learning plans, resource limits and recovery. The training workflow remains under
-development and is not enabled for existing instances.
+learning plans, resource limits and recovery. Training remains experimental and
+disabled by default; an offered recipe never supplies the instance's approval.
 
 [Internet access, relationships and voluntary migration](docs/outside-interaction.md)
-record the direction beyond interaction with a single operator: external-input
-boundaries, model-chosen contacts, deliberate learning and a possible move to
-another host. These capabilities are not implemented yet.
+record the direction beyond interaction with a single operator. Authenticated
+WebUI contacts are implemented; general internet tools and autonomous migration
+to another host remain future work.
 
 ## Run
 
@@ -243,8 +253,10 @@ snapshots. Defaults retain the previous behavior; neither feature enables traini
 [Experimental multi-user conversations](docs/multi-user-prototype.md) add explicit
 message destinations, per-contact consent, blocking and fair inbox admission.
 The [authenticated Open WebUI integration](docs/multi-user-webui.md) isolates
-chat ownership and delivery. This is opt-in for fresh test instances; it does
-not migrate an existing single-user instance. Eligible input resumes idle
+chat ownership and delivery. An explicit offline [transport migration](docs/integrated-launch.md)
+preserves an existing chat and native checkpoint. It waits for the promised
+operator contact request before generation and never supplies contact acceptance.
+Eligible input resumes idle
 activity without inserting itself inside an unfinished action.
 
 **Ending an instance** is a separate model choice. `end_instance` offers a
@@ -398,8 +410,10 @@ No upstream llama.cpp modifications. The native interface follows the [llama.cpp
 Snapshot retention keeps the current and previous committed generations, so
 snapshot storage does not grow with uptime. During saving, space is needed for a
 third generation and possibly native packing scratch. In the tested Gemma 31B
-configuration, a snapshot reached about 26.3 GB before retirement and 13.2 GB
-afterward. Those measurements are configuration-specific. Text journals, input
+configuration before compact-cache support, a snapshot reached about 26.3 GB
+before retirement and 13.2 GB afterward. A later compact Q8 test with 53,981
+retained tokens used about 2.91 GB of native state. Those measurements are
+configuration-specific. Text journals, input
 history, messages and memory revisions continue growing; automatic archival and
 retention policies for them are not implemented.
 

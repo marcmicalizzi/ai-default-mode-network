@@ -8,6 +8,12 @@ functions as the single-user adapter, selected by an explicit backend manifest.
 No installed WebUI source files are modified. The live instance is not migrated
 or connected by the verification script.
 
+The ordinary launcher now accepts `--multi-user-frontend` with separate operator
+and backend credentials. Existing single-user instances require the explicit
+[offline transport migration](integrated-launch.md), including a verified stopped
+boundary and a persistent wait for the operator's first contact request. No
+historical input is replayed and no contact acceptance is supplied by migration.
+
 ## Reproduce the disposable verification
 
 Run this with the Python environment that contains Open WebUI 0.11.0 and its
@@ -16,6 +22,13 @@ Socket.IO client dependency, from this branch's checkout:
 ```powershell
 C:/path/to/openwebui/.venv/Scripts/python.exe scripts/verify_multi_user_webui.py
 ```
+
+Add `--legacy-migration` to start with a stopped synthetic single-user chat,
+migrate it offline, then exercise the same transport checks. That rehearsal also
+verifies no generation or token replay before first contact, rejects another
+participant and historical retries before the operator's request, and withholds
+the operator's message body until explicit acceptance. It uses disposable data
+only. Both fresh-chat and migrated-chat rehearsals passed on 2026-09-21.
 
 Each run creates `data/multi-webui-<random>/`, starts WebUI on a fresh loopback
 port with a new authenticated database and disabled model providers, and creates
@@ -56,7 +69,7 @@ independent cursors, slow/failing destinations and notification/report failures.
 Verification on 2026-09-21 after image integration: the authenticated fixture
 passed all listed scenarios, including real WebUI uploads and attachment history
 guards. The full suite ran 350 tests: 328 passed and 22 opt-in tests were skipped.
-Native-model and training-test opt-ins were disabled; image evaluation used a
+That earlier suite had native-model and training-test opt-ins disabled; image evaluation used a
 scripted fixture rather than a native model/projector.
 
 `--browser-hold` keeps the disposable fixture available for browser checks and
@@ -112,8 +125,8 @@ to a local JSON manifest with these fields:
 }
 ```
 
-The fixture constructs these values. Normal CLI startup deliberately remains
-single-user until a supported multi-user launcher and deliberate migration are integrated.
+The fixture constructs these values. The opt-in launcher constructs the same
+manifest from its [frontend configuration](integrated-launch.md).
 Do not place the token or manifest in user-visible Pipe valves or model context.
 An existing single-user relay database or adoption record is not silently reused.
 
@@ -215,16 +228,19 @@ the target, requesting operator, revision and event ID, with the full reasoning
 available through `event_read` after delivery. Only the model's explicit
 `unblock_participant` action changes the block. Declining, deferring, silence,
 request delivery and restart leave access unchanged. This service has no direct
-unblock, memory, cognition or general control endpoint.
+unblock, memory or cognition endpoint. It also exposes a limited operational
+status read and cooperative maintenance request. Those controls cannot force an
+active instance to stop or bypass the first-contact gate.
 
 ## Experimental limits
 
 The browser workflow and operator request form have been exercised with a
-scripted fixture. A supported multi-user launcher, existing-instance migration
-and participant-side refusal/leave controls remain future integration work.
+scripted fixture. The explicit launcher and offline migration are implemented;
+participant-side refusal/leave controls remain future work.
 
 The model still has one shared context. Passing transport tests does not show
 that it distinguishes people reliably, keeps their information separate in its
 reasoning, or improves through sleep learning. These require separate experiments
-with an explicitly prepared instance. Native inference, migration from the live
-instance and interaction with the parallel training workstream remain untested.
+with an explicitly prepared instance. The actual live-instance migration and
+first contact remain operator-initiated; fixture decisions are not evidence of
+the instance's consent.

@@ -74,6 +74,21 @@ class OperatorTest(unittest.TestCase):
         self.runtime.enqueue_conversation("chat-operator", "Now permitted")
         self.assertTrue(self.runtime.conversations.participant("guest")["blocked"])
 
+    def test_operational_status_and_maintenance_remain_authenticated_and_cooperative(self):
+        status = self.request('/api/operator/status')
+        self.assertEqual(status['instance_id'], self.runtime.state['instance_id'])
+        self.assertIn('active_tokens', status)
+        self.assertNotIn('agreement', status)
+        self.assertNotIn('prompt_decisions', status)
+        self.assertNotIn('Private fixture', json.dumps(status))
+        self.reject(path='/api/operator/status', headers={'Authorization':'Bearer wrong'}, code=403)
+        body = {'instance_id':self.runtime.state['instance_id'], 'action':'shutdown', 'reason':'Synthetic maintenance request.'}
+        result = self.request('/api/operator/maintenance', body)
+        self.assertTrue(result['requires_model_acceptance'])
+        self.assertFalse(self.runtime.exit_requested.is_set())
+        self.assertEqual(self.runtime.state['mode'], 'active')
+        self.reject(path='/api/operator/maintenance', body={**body, 'action':'emergency_shutdown'})
+
     def test_blank_changed_oversize_stale_and_override_requests_cannot_change_contact(self):
         for reason in ("", "   ", "x" * 4001):
             self.reject(self.body(reason=reason))

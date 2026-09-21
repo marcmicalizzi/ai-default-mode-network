@@ -83,10 +83,8 @@ class TrainingExecutor(FixtureExecutor):
             if partial.exists():
                 _owned(partial, directory)
                 partial.unlink()  # Interrupted copy only; the sealed source is intact.
-            with (self.work / "adapter.gguf").open("rb") as source, partial.open("xb") as output:
-                shutil.copyfileobj(source, output, 64 * 1024)
-                output.flush()
-                os.fsync(output.fileno())
+            from .training_artifacts import copy_bounded, MAX_ADAPTER_BYTES
+            copy_bounded(self.work / 'adapter.gguf', partial, MAX_ADAPTER_BYTES)
             if sha256_file(partial) != digest:
                 raise ValueError("candidate changed during managed copy")
             partial.rename(target)

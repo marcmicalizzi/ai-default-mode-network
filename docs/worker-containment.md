@@ -1,5 +1,10 @@
 # CPU training worker containment experiment
 
+The primitives below now also supervise the reviewed CPU/NF4 recipes. See
+[reviewed NF4 training](reviewed-nf4-training.md) for the separate GPU-memory
+watchdog, bounded adapter serialization and contained native wake path. The
+original CPU experiment described here remains independently reproducible.
+
 This is an offline research harness, not an enabled deep-sleep trainer. It runs
 the existing generated 330K-parameter Gemma4 training/conversion experiment in a
 separate Windows process tree. It reads no instance state and neither approves
@@ -97,8 +102,8 @@ The [reviewed-plan CPU trainer](reviewed-training.md) now connects a constrained
 real recipe to the durable sleep phases, using this launcher. The standalone
 experiment above is unchanged; the integrated recipe remains a tiny test path.
 
-Production still needs hard disk-space containment, Linux resource enforcement,
-measured GPU recipes and the continuous supervisor/frontend service. The integrated
-recipe now covers reviewed examples, candidate validation/publication and failure
-choices; its execution gate still permits only tiny CPU tests. Neither experiment
-implies that production resource and service integration is enabled.
+The separate [reviewed NF4 service](reviewed-nf4-training.md) uses the same RAM/time
+containment with a whole-device GPU watchdog and bounded trusted outputs. It now
+connects the continuous frontend, model review, candidate validation and native
+wake. OS disk/GPU allocation quotas and Linux resource enforcement remain absent;
+the CPU recipes on this page still permit only tiny tests.
