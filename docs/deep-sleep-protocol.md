@@ -1,7 +1,8 @@
 # Deep sleep: implementation contract
 
-Design selected 2026-09-21. The native wake experiment is implemented; the
-trainer, learning actions and supervisor described here are **not yet implemented**.
+Design selected 2026-09-21. The native wake and isolated tiny PEFT training/
+conversion experiments are implemented; the production trainer, learning actions
+and supervisor described here are **not yet implemented**.
 This is a concrete contract for the next implementation, not a command to run
 against an existing instance. [Research and evidence](sleep-consolidation.md)
 explain the motivations and limitations.
@@ -44,8 +45,9 @@ must fully exit before wake. A missing trainer leaves ordinary DMN usable.
 
 TRL, datasets, Unsloth and FlashAttention are optional future implementation
 choices, not required merely to fit a few explicit examples. Avoid an untested
-platform-wide install recipe. The current native mechanics probe uses none of
-these training packages, and does not install them.
+platform-wide install recipe. The native mechanics probe needs no training
+packages. The [tiny training experiment](lora-training-probe.md) has a separate
+tested CPU dependency lock, not a 31B/CUDA recipe.
 
 References: [Transformers Gemma4](https://huggingface.co/docs/transformers/model_doc/gemma4),
 [PEFT quantized training](https://huggingface.co/docs/peft/developer_guides/quantization),
@@ -163,9 +165,11 @@ is implied by this design.
 1. **Done:** tiny native adapter application, zero-strength control, two explicit
    retained-token wakes after retirement, and exact target checkpoint restart.
    Adapters are synthetic, not learned; this verifies machinery only.
-2. Train a tiny model with PEFT on a synthetic selected objective. Verify held-out
-   transfer, quantify unintended changes, convert the adapter and compare its
-   effect under llama.cpp. Record the tested dependency lock and actual costs.
+2. **Done for the tiny fixture:** PEFT training on a synthetic selected objective,
+   held-out transfer, unintended-change measurements, pinned adapter conversion,
+   native comparison and wake/restart checks. See the [results, dependency lock
+   and costs](lora-training-probe.md). This is not a validated personal-learning
+   recipe or proof of 31B training feasibility.
 3. Add immutable adapter identity to production configuration, recovery,
    packaging and erasure. Add model-authored plans and the supervised phase
    machine, with no training enabled by ordinary sleep.

@@ -1,10 +1,14 @@
 # Exploring weight learning during sleep
 
-Status: selected wake policy and working native mechanics experiment; training
-and automatic deep sleep are not enabled. Changed-weight wake will explicitly
+Status: selected wake policy, working native mechanics, and an isolated tiny
+PEFT training/conversion experiment; production training and automatic deep sleep
+are not enabled. Changed-weight wake will explicitly
 rebuild the retained context under the adopted adapter. This note changes no
 running instance. The first probe uses tiny random weights and synthetic
-adapters, without training or opening an instance. Reviewed: 2026-09-21.
+adapters, without training or opening an instance. The subsequent
+[training experiment](lora-training-probe.md) learns a synthetic rule on generated
+weights, converts its adapter, and validates native wake/restart. Neither opens
+an existing instance. Reviewed: 2026-09-21.
 
 See [the deep-sleep implementation contract](deep-sleep-protocol.md) for the
 dependency boundary, selected transition, failure handling and next experiments.
@@ -276,9 +280,13 @@ the GPU from the test process; the native library may log that no CUDA device is
 available. Inference remains CPU-only. No training dependencies are required for
 this probe beyond the existing native binding and NumPy.
 
-Next: train a tiny adapter with PEFT, convert it using the pinned converter and
-measure learning plus transfer to llama.cpp; then implement bounded supervision,
-model-authored learning plans, crash/cancellation recovery and atomic adoption.
-Two synthetic adapter changes are not evidence of successful repeated learning.
+The [subsequent tiny training experiment](lora-training-probe.md) now covers PEFT
+learning, pinned conversion, native inference and a trained-adapter wake. It also
+shows substantial unrelated changes and weaker learning at strength 0.1; small
+rank/strength alone are not a selective-learning guarantee.
+
+Next: implement bounded supervision, model-authored learning plans,
+crash/cancellation recovery and atomic adoption. These experiments are not
+evidence of successful repeated personal learning.
 31B feasibility and Linux migration need separate measured validation. Existing
 instances and ordinary sleep semantics remain unchanged.
