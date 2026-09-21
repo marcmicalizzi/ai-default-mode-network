@@ -80,7 +80,7 @@ def _copy_file(source, destination):
 
 def _extra_files(root):
     files = []
-    for folder, label in ((root / "import", "import"), (root / "adapters", "adapters"),
+    for folder, label in ((root / "import", "import"), (root / "adapters", "adapters"), (root / "sleep", "sleep"),
                           (Path(__file__).parent, "runtime-source/dmn")):
         if not folder.exists():
             continue

@@ -18,6 +18,7 @@ from .diskspace import InsufficientStorage, check_space
 from .ending import Lifecycle, InstanceEnded
 from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTRACT, PROMPT_CONTRACT, HOLD_CONTRACT, LEARNING_CONTRACT, ACTION_FORMAT_NOTICE, event_text
 from .learning import OPERATIONS as LEARNING_OPERATIONS, plan_action as plan_learning_action
+from .sleep_plans import OPERATIONS as SLEEP_OPERATIONS, BRIEF as SLEEP_CONTRACT, plan_action as plan_sleep_action
 from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
 from .compact_cache import validate_retirements
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
@@ -37,12 +38,14 @@ class Runtime:
     """
     def __init__(self, root: Path, config: Config, backend=None, now=time.time, kv_recovery="strict", initial_context=None,
                  monotonic=time.monotonic, prepare_only=False, start_staged=False,
-                 release_hold=None, resume_condition=None, first_message=None, allow_placement_change=False):
+                 release_hold=None, resume_condition=None, first_message=None, allow_placement_change=False,
+                 sleep_test_mode=False):
         if kv_recovery not in {"strict", "fallback", "rebuild"}:
             raise ValueError("unknown KV recovery policy")
         if allow_placement_change and (kv_recovery != "strict" or resume_condition == "original_environment"):
             raise ValueError("placement changes require strict recovery and cannot claim the original environment")
         self.root, self.config, self.now = root.resolve(), config, now
+        self.sleep_test_mode = sleep_test_mode
         self.monotonic = monotonic
         self.checkpoint_schedule = CheckpointSchedule(config, monotonic)
         self._checkpoint_metrics = {"committed_count": 0, "committed_snapshot_bytes": 0,
@@ -85,10 +88,15 @@ class Runtime:
         self._journal = bytearray()
         self._prompt_pending = None
         self._prompt_reads = {}
+        self._learning_reads = {}
         self._prepare_only = prepare_only
         self._first_message = first_message
         self.last_checkpoint_generated = 0
         try:
+            from .deep_sleep import refuse_pending, fixture_guard
+            refuse_pending(self.store)
+            if sleep_test_mode:
+                fixture_guard(config)
             self.backend = backend or make_backend(config)
             self.backend.storage_guard = self._require_storage
             self.backend._state_work_dir = self.root
@@ -141,11 +149,17 @@ class Runtime:
                     **({"previous_suspension": self.state["last_suspension"]} if self.state.get("last_suspension") else {}),
                 })
                 self._announce_cache_migration()
+                if self.state.get("deep_sleep_notice_pending"):
+                    report = self.state["last_deep_sleep"]
+                    self._append_event("deep_sleep_wake", {key: report[key] for key in (
+                        "run_id", "outcome", "training_performed", "reconstruction", "prior_context_retirements") if key in report})
+                    self.state.pop("deep_sleep_notice_pending")
                 for marker, contract_text in (("ending_protocol", ENDING_CONTRACT),
                                                ("maintenance_protocol", MAINTENANCE_CONTRACT),
                                                ("prompt_protocol", PROMPT_CONTRACT),
                                                ("hold_protocol", HOLD_CONTRACT),
                                                ("learning_protocol", LEARNING_CONTRACT),
+                                               ("sleep_plan_protocol", SLEEP_CONTRACT),
                                                ("action_format_protocol", ACTION_FORMAT_NOTICE)):
                     if self.state.get(marker) or self.suspend_requested.is_set():
                         continue
@@ -158,7 +172,8 @@ class Runtime:
                     if not self.suspend_requested.is_set():
                         self._eval(contract)
                         self.state[marker] = ({"action_format_protocol": "literal_whitespace_v1",
-                                               "learning_protocol": "drafts_v1"}.get(marker, "choice_v1"))
+                                               "learning_protocol": "drafts_v1",
+                                               "sleep_plan_protocol": "fixture_review_v1"}.get(marker, "choice_v1"))
                 if not self.state.get("agreement"):
                     self.state["agreement"] = bootstrap(config.system_prompt, "See preserved original runtime seed.",
                                                         "legacy bootstrap; no model approval recorded")
@@ -177,6 +192,7 @@ class Runtime:
                     "prompt_protocol": "choice_v1", "hold_protocol": "choice_v1",
                     "action_format_protocol": "literal_whitespace_v1",
                     "learning_protocol": "drafts_v1",
+                    "sleep_plan_protocol": "fixture_review_v1",
                     "agreement": bootstrap(config.system_prompt, PROTOCOL, "host-supplied provisional bootstrap"),
                     "prompt_decisions": {},
                 }
@@ -226,6 +242,18 @@ class Runtime:
             event_id = self.store.enqueue("prompt_proposal", value, self.now(), "prompt:" + value["revision"])
         self.wake.set()
         return {"event_id": event_id, "revision": value["revision"], "status": "awaiting_review"}
+
+    def offer_learning_recipe(self, value):
+        from .sleep_plans import put_recipe
+        with self._control_lock:
+            if self._end_requested or self.state.get("hold"):
+                raise ValueError("instance is stopped")
+            recipe = put_recipe(self.store, value, self.now())
+            self.store.enqueue("learning_recipe_offered", {"revision": recipe["revision"],
+                "kind": recipe["kind"], "fact": "Host-offered mechanics recipe; no approval or training is implied."},
+                self.now(), "recipe:" + recipe["revision"])
+            self.wake.set()
+            return recipe
 
     def prompt_status(self):
         with self.status_lock:
@@ -289,6 +317,8 @@ class Runtime:
         with self._control_lock:
             if self._end_requested:
                 raise InstanceEnded("This instance has chosen to end; controls cannot restart it")
+            if self.state["mode"] == "deep_sleep":
+                raise ValueError("the approved sleep transition owns restart; ordinary controls cannot bypass it")
             if self.state.get("hold"):
                 raise InstanceHeld("Instance is held; ordinary controls cannot release it")
             if self.state["mode"] == "staged":
@@ -483,6 +513,7 @@ class Runtime:
         discard = ranges[0][1]
         first_start = ranges[0][0]
         self._prompt_reads.clear()
+        self._learning_reads.clear()
         self.state["context_retirements"] += 1
         self.state["memory_reads"] = {}
         cancelled = self._cancel_action("context_retired")
@@ -526,7 +557,7 @@ class Runtime:
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS) and len(actions) != 1:
+            if action.get("op") in ({"end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -553,6 +584,13 @@ class Runtime:
             hold = effects[0]["hold"]
             self._append_event("action_result", results[0], allow_retirement=False)
             self.checkpoint(reason="model_hold", state_updates={"hold": hold, "mode": "held"})
+            self.exit_requested.set()
+            self.stopped.set()
+            return
+        if effects and effects[0]["op"] == "deep_sleep":
+            self._append_event("action_result", results[0], allow_retirement=False)
+            self.checkpoint(effects, reason="deep_sleep", state_updates={"mode": "deep_sleep",
+                            "sleep_run_id": effects[0]["run_id"]})
             self.exit_requested.set()
             self.stopped.set()
             return
@@ -590,6 +628,10 @@ class Runtime:
                     offset = actions[0].get("offset", 0)
                     if offset == self._prompt_reads.get(revision, 0):
                         self._prompt_reads[revision] = result["next_offset"]
+            if len(results) == 1 and results[0]["ok"] and actions[0]["op"] == "learning_execution_read" and delivery["complete"]:
+                revision = actions[0]["revision"]
+                if actions[0].get("offset", 0) == self._learning_reads.get(revision, 0):
+                    self._learning_reads[revision] = results[0]["next_offset"]
         if self.backend.is_eog(token):
             self.state["mode"], self.state["sleep_until"] = "sleeping", None
             self.parser.cancel()
@@ -616,6 +658,8 @@ class Runtime:
                                  + ". Retry a complete corrected frame if wanted.")
             elif op in LEARNING_OPERATIONS:
                 return plan_learning_action(self, action)
+            elif op in SLEEP_OPERATIONS:
+                return plan_sleep_action(self, action)
             elif op == "hold_instance":
                 hold = make_hold(action, self.now())
                 effect = {"op": op, "hold": hold}
@@ -788,7 +832,7 @@ class Runtime:
                     return {"op": op, "ok": False,
                             "error": "Unavailable operation. The captured frontend tool definitions are historical; only DMN actions are active.",
                             "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "hold_instance", "prompt_current", "prompt_propose", "prompt_read", "prompt_decide", "clock", "event_read",
-                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"] + sorted(LEARNING_OPERATIONS)}, None
+                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"] + sorted(LEARNING_OPERATIONS | SLEEP_OPERATIONS)}, None
                 raise ValueError(action.get("error", "unknown operation"))
         except KeyError as exc:
             result = {"op": op, "ok": False,
@@ -982,6 +1026,8 @@ class Runtime:
         # Keep current and preceding snapshot. Only remove known checkpoint files
         # in committed, UUID-named directories directly under this instance.
         with self.store.mutex:
+            if self.store.db.execute("SELECT 1 FROM sleep_runs WHERE phase!='WakeCommitted'").fetchone():
+                return
             rows = self.store.db.execute("SELECT directory FROM checkpoints ORDER BY id DESC LIMIT -1 OFFSET 2").fetchall()
         base = (self.root / "checkpoints").resolve()
         for row in rows:
@@ -1076,6 +1122,8 @@ class Runtime:
             return self._suspend_deadline is not None and self.monotonic() >= self._suspend_deadline
 
     def tick(self):
+        if self.state["mode"] == "deep_sleep":
+            return False
         if self._end_requested:
             return False
         if self.suspend_requested.is_set():
@@ -1197,7 +1245,7 @@ class Runtime:
                     progressed = False
                 if self._end_requested:
                     break
-                if self.exit_requested.is_set() and self.state["mode"] in {"staged", "held", "suspended", "context_full"}:
+                if self.exit_requested.is_set() and self.state["mode"] in {"staged", "held", "suspended", "context_full", "deep_sleep"}:
                     break
                 if not progressed or self.config.token_delay_seconds:
                     self.wake.wait(self.config.token_delay_seconds if progressed else 0.25)

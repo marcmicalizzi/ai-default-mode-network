@@ -99,6 +99,11 @@ include active adapters, and the instance can create, revise or withdraw private
 learning drafts. Drafts do not authorize training. Ordinary recovery requires
 unchanged weights; the planned deep-sleep wake explicitly adopts new weights and
 rebuilds KV from the retained tokens.
+[Compiled review and a disposable sleep supervisor fixture](docs/sleep-supervisor-fixture.md)
+now test exact token/loss-mask review, separate approval, durable phases, interrupted
+candidate/wake recovery and atomic publication. This fixture uses a prebuilt
+adapter and performs no training; production resource enforcement and the
+continuous training service remain to be implemented.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

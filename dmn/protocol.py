@@ -4,6 +4,8 @@ import base64
 import json
 import re
 
+from .sleep_plans import BRIEF as SLEEP_CONTRACT
+
 
 ACTION_FORMAT_NOTICE = '''Action text accepts literal newlines, carriage returns and tabs inside
 quoted JSON strings, preserving those characters exactly. Ordinary JSON escaping
@@ -106,8 +108,9 @@ checks and adoption/failure preferences. Optional replaces supersedes an active 
 learning_plan_read(revision, offset=0, limit=200): inspect an immutable draft.
 learning_plan_list(offset=0, limit=20): list revision IDs and their current status.
 learning_plan_withdraw(revision): withdraw an active draft; history remains.
-Use each learning action alone and await its result. No training, deep-sleep action
-or adapter adoption is available yet. Ordinary sleep never trains. Drafts are
+Use each learning action alone and await its result. No production trainer is
+available. The separate compiled-plan contract describes fixture-only testing.
+Ordinary sleep never trains. Drafts are
 included in instance archives and managed erasure. External weight copies remain.'''
 
 PROTOCOL = '''This is a persistent inference sequence. Ordinary generated text is internal
@@ -148,7 +151,7 @@ then rename it without overwriting another.
 memory_delete(path, expected_revision): read current memory first, then intentionally remove it.
 event_read(event_id, offset=0, limit=2000): inspect delivered input too large for one insertion.
 clock(): obtain factual UTC time and elapsed times.
-''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + LEARNING_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
+''' + ENDING_CONTRACT + '\n' + MAINTENANCE_CONTRACT + '\n' + PROMPT_CONTRACT + '\n' + HOLD_CONTRACT + '\n' + LEARNING_CONTRACT + '\n' + SLEEP_CONTRACT + '\n' + ACTION_FORMAT_NOTICE + '''
 Paths are your own logical organization, e.g. /self, /memories, /interests,
 /unfinished, /goals, /private; none of these categories is mandatory.
 Runtime records and KV snapshots are distinct from your editable memories.

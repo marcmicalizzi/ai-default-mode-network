@@ -88,6 +88,12 @@ class Store:
                 key TEXT PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES events(id));
             CREATE TABLE IF NOT EXISTS learning_plans (
                 revision TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS sleep_recipes (
+                revision TEXT PRIMARY KEY, payload TEXT NOT NULL, created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS sleep_executions (
+                revision TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS sleep_runs (
+                id TEXT PRIMARY KEY, phase TEXT NOT NULL, payload TEXT NOT NULL);
         ''')
         # Archive existing current values once when opening an older database.
         self.db.execute("""INSERT INTO memory_versions(path,revision,content,operation,created)
@@ -167,6 +173,9 @@ class Store:
                 elif op in {"learning_plan_create", "learning_plan_withdraw"}:
                     from .learning import commit_effect
                     commit_effect(db, effect, now)
+                elif op in {"learning_compile", "learning_execution_decide", "deep_sleep"}:
+                    from .sleep_plans import commit_effect
+                    commit_effect(db, effect, now, directory)
                 else:
                     raise ValueError(f"unknown staged effect {op}")
             db.execute("INSERT INTO checkpoints(directory,created) VALUES(?,?)", (directory, now))

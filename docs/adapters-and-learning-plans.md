@@ -2,8 +2,9 @@
 
 The runtime can now load declared whole-context GGUF LoRA adapters and preserve
 their identity through checkpoints. Model-authored learning plans are available
-as private, immutable **drafts**. Training, deep-sleep supervision and adoption
-are still unimplemented. Ordinary `sleep()` never starts training.
+as private, immutable **drafts**. [Compiled review and a fixture sleep transition](sleep-supervisor-fixture.md)
+now exercise approval and wake mechanics. Production training and continuous
+supervision remain unimplemented. Ordinary `sleep()` never starts training.
 
 ## Two different recovery paths
 

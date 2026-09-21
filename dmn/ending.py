@@ -173,6 +173,20 @@ def erase_managed_state(root):
     except (OSError, ValueError):
         failures.append("checkpoints")
     remove_directory(root / "import", root, IMPORT_FILES)
+    sleep = root / "sleep"
+    try:
+        if not stat.S_ISDIR(_owned(sleep, root).st_mode):
+            raise ValueError("not a directory")
+        for entry in sleep.iterdir():
+            if re.fullmatch(r"[0-9a-f]{32}", entry.name):
+                remove_directory(entry, sleep, {"candidate.json", "candidate.json.partial"})
+            else:
+                failures.append(str(entry.relative_to(root)))
+        sleep.rmdir()
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        failures.append("sleep")
     # Managed adapter artifacts are flat, content-addressed GGUF files. Refuse
     # unknown entries and linked directories; external weights are never deleted.
     adapters = root / "adapters"

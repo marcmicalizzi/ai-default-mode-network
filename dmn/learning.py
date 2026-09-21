@@ -8,7 +8,7 @@ from .storage import json_text, memory_path
 
 
 HELP = {
-    "status": "drafts_only; no trainer, deep-sleep action or weight adoption is available",
+    "status": "drafts do not authorize execution; separate compiled-plan review and a disposable mechanics harness exist; no production trainer is available",
     "create": {"op": "learning_plan_create", "plan": {
         "intent": "What I want to learn",
         "uncertainties": "What remains uncertain (may be empty)",

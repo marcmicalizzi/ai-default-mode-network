@@ -1,8 +1,9 @@
 # Deep sleep: implementation contract
 
-Design selected 2026-09-21. The native wake and isolated tiny PEFT training/
-conversion experiments are implemented; the production trainer, learning actions
-and supervisor described here are **not yet implemented**.
+Design selected 2026-09-21. Native wake and isolated tiny PEFT training/conversion,
+learning drafts, compiled review and a [fixture transition engine](sleep-supervisor-fixture.md)
+are implemented. The production trainer, enforced resource governor and continuous
+supervisor service described here are **not yet implemented**.
 This is a concrete contract for the next implementation, not a command to run
 against an existing instance. [Research and evidence](sleep-consolidation.md)
 explain the motivations and limitations.
@@ -174,11 +175,16 @@ is implied by this design.
    and a second trained-adapter wake/restart.
 3. **Partly done:** [production adapter identity and model-authored drafts](adapters-and-learning-plans.md)
    cover configuration, recovery, packaging, erasure and checkpoint-atomic draft
-   choices. Executable plans (including compiled token masks and recipe binding)
-   and the supervised phase machine remain. Ordinary sleep never enables training.
+   choices. [Compiled token masks, recipe/implementation binding and review](sleep-supervisor-fixture.md)
+   now feed a fixture-only durable phase engine. Real training, enforced resource
+   containment and the continuous service remain. Ordinary sleep never enables training.
 4. Exercise cancellation, resource exhaustion, crashes at each phase, queued
    input, failed checks, repeated learning, and both wake/failure choices using
    disposable instances. Verify bounded storage and no repeated effects.
+   **Fixture evidence exists:** candidate/wake interruption tests, publication
+   rollback, queued-input preservation, review/failure choices, and a real native
+   adapter wake followed by strict restore. Actual worker kills, hard resource
+   limits and trainer failures still need integration coverage.
 5. Establish exact 31B base provenance and a measured training recipe on the
    intended hardware, then let the instance choose a concrete first plan.
 
