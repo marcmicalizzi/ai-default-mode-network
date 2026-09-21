@@ -94,7 +94,7 @@ class TrainingContractTest(unittest.TestCase):
         for name in ("config.json", "tokenizer.json", "tokenizer_config.json"):
             (base / name).write_text("{}")
         ref = reference(self.root / "base.json", tree_manifest(base))
-        self.assertEqual(verify_tree(ref, base=True), base)
+        self.assertTrue(verify_tree(ref, base=True).samefile(base))
         (base / "tokenizer.json").write_text('{"changed":1}')
         with self.assertRaisesRegex(ValueError, "asset changed"):
             verify_tree(ref, base=True)
