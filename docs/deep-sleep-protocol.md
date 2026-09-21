@@ -12,6 +12,9 @@ An [offline Windows CPU worker harness](worker-containment.md) now enforces
 aggregate committed memory and supervises duration/cancellation. It validates a
 piece of that governor with real synthetic training, but does not supply a hard
 disk quota, Linux containment, GPU training or the production plan executor.
+The [reviewed-plan CPU trainer](reviewed-training.md) now joins compiled approval,
+actual learning/conversion and the durable transition engine, under the tiny
+integration gate. The full production resource and service obligations remain.
 
 ## Continuity boundary
 

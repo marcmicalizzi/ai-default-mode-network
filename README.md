@@ -107,8 +107,11 @@ continuous training service remain to be implemented.
 A [Windows CPU worker experiment](docs/worker-containment.md) now runs real tiny
 training, conversion and native wake/restart inside an OS-enforced committed-memory
 limit, with timeout/cancellation and process-tree cleanup. It is an offline
-research harness; Linux containment, disk quotas and integration with approved
-plans remain outstanding.
+research harness; Linux containment and disk quotas remain outstanding.
+A [reviewed-plan CPU trainer](docs/reviewed-training.md) now connects exact approved
+examples/masks to real PEFT training, conversion, candidate recovery and native
+wake. Its first-adapter/F32 recipe remains restricted to tiny integration tests;
+production and 31B training are not enabled.
 [Dependencies and the implementation contract](docs/deep-sleep-protocol.md) cover
 learning plans, resource limits and recovery. The training workflow remains under
 development and is not enabled for existing instances.

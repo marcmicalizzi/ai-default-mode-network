@@ -1,0 +1,173 @@
+"""Pinned CPU recipe and artifact contracts; never authorizes learning by itself."""
+from __future__ import annotations
+
+import ctypes
+import hashlib
+import json
+import math
+from pathlib import Path, PurePosixPath
+import re
+
+from .backend import sha256_file
+from .ending import _owned
+from .learning import _fields
+from .storage import json_text
+
+KIND = "peft_gemma4_cpu_v1"
+SCOPE = "reviewed_cpu_training_test_only"
+CHECKS = ["artifact_integrity", "retained_tokens_and_rng", "tokenizer_parity",
+          "base_unchanged", "adapter_roundtrip", "finite_training"]
+PACKAGES = ("torch", "transformers", "peft", "safetensors", "tokenizers", "numpy")
+CONVERTER_REVISION = "4df29be4f4c3673f428170fda944a5b19f743bb8"
+
+
+def read_bound_json(reference):
+    _fields(reference, "path sha256", "manifest reference")
+    path = Path(reference["path"])
+    if path.stat().st_size > 1024 * 1024 or sha256_file(path) != reference["sha256"]:
+        raise ValueError("bound manifest changed or is too large")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def tree_manifest(root, *, python_only=False):
+    """Host-side helper: pin existing local assets, without copying or fetching."""
+    root = Path(root).resolve()
+    files = {}
+    for path in sorted(root.rglob("*")):
+        if "__pycache__" in path.parts or not path.is_file() or (python_only and path.suffix != ".py"):
+            continue
+        relative = path.relative_to(root).as_posix()
+        files[relative] = {"sha256": sha256_file(path), "bytes": path.stat().st_size}
+    return {"root": str(root), "files": files, "python_only": python_only}
+
+
+def verify_tree(reference, *, base=False):
+    value = read_bound_json(reference)
+    _fields(value, "root files python_only", "file manifest")
+    root = Path(value["root"])
+    if not root.is_absolute() or not isinstance(value["files"], dict) or not value["files"]:
+        raise ValueError("manifest requires an absolute root and explicit files")
+    if value["python_only"] is not (not base):
+        raise ValueError("unexpected manifest scope")
+    for name, expected in value["files"].items():
+        parts = PurePosixPath(name).parts
+        if not parts or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) or part in {".", ".."} for part in parts):
+            raise ValueError("invalid artifact-relative path")
+        cursor = root
+        for part in parts:
+            child = cursor / part
+            _owned(child, cursor)
+            cursor = child
+        if not cursor.is_file() or cursor.stat().st_size != expected["bytes"] or sha256_file(cursor) != expected["sha256"]:
+            raise ValueError("bound training asset changed")
+    actual = tree_manifest(root, python_only=not base)
+    if actual != value:
+        raise ValueError("training asset set changed")
+    if base:
+        if not {"config.json", "tokenizer.json", "tokenizer_config.json"} <= value["files"].keys():
+            raise ValueError("base requires explicit config and fast tokenizer files")
+        if any("/" in name or not name.endswith((".json", ".safetensors")) for name in value["files"]):
+            raise ValueError("base permits only flat JSON and safetensors assets; no executable or pickle weights")
+    elif not {"convert_hf_to_gguf.py", "convert_lora_to_gguf.py"} <= value["files"].keys():
+        raise ValueError("pinned converter entrypoints are missing")
+    return root
+
+
+def validate_recipe(value):
+    _fields(value, "schema kind parent resources checks trainer", "CPU recipe")
+    if value["schema"] != 1 or value["kind"] != KIND or value["checks"] != CHECKS:
+        raise ValueError("unsupported CPU recipe or checks")
+    if (value["parent"].get("kind") != "native_llama_kv" or value["parent"].get("lora_adapters") or
+            value["parent"].get("research_lora")):
+        raise ValueError("this first-adapter recipe requires an unadapted native parent; existing learning cannot be discarded")
+    trainer = value["trainer"]
+    _fields(trainer, "python python_sha256 packages base_manifest converter_manifest converter_revision inference_name learning_rate seed", "trainer")
+    for reference in (trainer["base_manifest"], trainer["converter_manifest"]):
+        _fields(reference, "path sha256", "manifest reference")
+        if not Path(reference["path"]).is_absolute() or not re.fullmatch(r"[0-9a-f]{64}", reference["sha256"]):
+            raise ValueError("invalid manifest binding")
+    if not Path(trainer["python"]).is_absolute() or not re.fullmatch(r"[0-9a-f]{64}", trainer["python_sha256"]):
+        raise ValueError("trainer interpreter must have a bound absolute path")
+    if set(trainer["packages"]) != set(PACKAGES) or any(not isinstance(v, str) or not v for v in trainer["packages"].values()):
+        raise ValueError("explicit training package versions required")
+    if trainer["converter_revision"] != CONVERTER_REVISION:
+        raise ValueError("unvalidated converter revision")
+    if not isinstance(trainer["inference_name"], str) or not trainer["inference_name"] or len(trainer["inference_name"]) > 256:
+        raise ValueError("conversion requires the reviewed inference model name")
+    rate = trainer["learning_rate"]
+    if type(rate) not in (float, int) or not math.isfinite(rate) or not 0 < rate <= .1:
+        raise ValueError("learning rate must be finite, positive and at most 0.1")
+    if type(trainer["seed"]) is not int or not 0 <= trainer["seed"] < 2**32:
+        raise ValueError("invalid training seed")
+    if value["resources"]["max_vram_bytes"] != 0:
+        raise ValueError("CPU recipe requires a zero GPU budget")
+
+
+def compile_training(value):
+    """Add executable semantics before the immutable plan is sealed/reviewed."""
+    prefs = value["preferences"]
+    if not 1 <= prefs["rank"] <= 64 or not 1 <= prefs["steps"] <= 10000:
+        raise ValueError("CPU recipe supports ranks 1..64 and 1..10000 steps")
+    if (type(prefs["alpha"]) not in (int, float) or prefs["alpha"] != int(prefs["alpha"]) or
+            not 1 <= prefs["alpha"] <= 1024):
+        raise ValueError("CPU recipe requires integer alpha 1..1024")
+    scale = ctypes.c_float(prefs["scale"]).value
+    if not math.isfinite(scale) or (prefs["scale"] != 0 and scale == 0):
+        raise ValueError("deployment strength is not representable")
+    from .worker_limits import WorkerLimits
+    WorkerLimits(value["resources"]["max_ram_bytes"], value["resources"]["max_training_seconds"])
+    value.update(execution_scope=SCOPE, training_requested=True,
+        adapter_operation="first_adapter_only; existing adapters rejected",
+        resource_enforcement="Windows aggregate committed-memory limit and process-tree watchdog. Disk preflight only. Tiny CPU integration gate remains mandatory; no production execution.",
+        limitation="F32 base must reproduce the exact inference GGUF. No existing adapters, GPU, quantized-base provenance, hard disk quota or unattended service yet.",
+        training={"dtype": "float32", "device": "cpu", "threads": 1, "batch_size": 1,
+                  "example_order": "round_robin_in_reviewed_order", "target_modules": ["q_proj", "o_proj"],
+                  "optimizer": "AdamW", "optimizer_reset": True, "betas": [.9, .999], "epsilon": 1e-8,
+                  "weight_decay": 0., "max_gradient_norm": 1., "dropout": 0.,
+                  "training_scale": 1., "deployment_scale_float32": scale,
+                  "loss": "mean_cross_entropy_on_shifted_target_labels_only; no padding/truncation",
+                  "evaluation": "selected-example loss at training and deployment scale; no heldout or benefit guarantee"})
+    return value
+
+
+def validate_examples(examples, tokenizer, vocab_size, max_length):
+    """No retokenization substitutions: fail if the approved native IDs differ."""
+    for row in examples:
+        prefix = tokenizer.encode(row["input"], add_special_tokens=False)
+        tokens = tokenizer.encode(row["input"] + row["target"], add_special_tokens=False)
+        if not prefix or tokens[:len(prefix)] != prefix or len(tokens) <= len(prefix) or tokens != row["tokens"]:
+            raise ValueError("training tokenizer differs from the reviewed inference tokens/boundary")
+        mask = [0] * len(prefix) + [1] * (len(tokens) - len(prefix))
+        if row["loss_mask"] != mask or row["labels"] != [t if m else -100 for t, m in zip(tokens, mask)]:
+            raise ValueError("reviewed target-only mask or labels are invalid")
+        if len(tokens) > max_length or any(type(t) is not int or not 0 <= t < vocab_size for t in tokens):
+            raise ValueError("reviewed example exceeds training model geometry; no truncation")
+
+
+def read_completion(folder, compiled):
+    from .sleep_plans import seal
+    path = folder / "result.json"
+    _owned(path, folder)
+    result = json.loads(path.read_text())
+    if (seal({k: v for k, v in result.items() if k != "revision"}) != result or result.get("schema") != 1 or
+            result.get("training_performed") is not True or
+            result.get("execution") != compiled["revision"] or result.get("completed") is not True):
+        raise ValueError("training completion identity failed")
+    required = {"adapter.gguf", "adapter/adapter_config.json", "adapter/adapter_model.safetensors", "base-check.gguf"}
+    if set(result["artifacts"]) != required:
+        raise ValueError("training completion has unexpected artifacts")
+    for name, digest in result["artifacts"].items():
+        path = folder
+        for part in PurePosixPath(name).parts:
+            child = path / part
+            _owned(child, path)
+            path = child
+        if sha256_file(path) != digest:
+            raise ValueError("completed training artifact changed")
+    if result["artifacts"]["base-check.gguf"] != compiled["parent"]["model_sha256"]:
+        raise ValueError("training base does not reproduce inference identity")
+    if (result.get("checks") != {key: True for key in CHECKS if key != "retained_tokens_and_rng"} or
+            result.get("steps_completed") != compiled["preferences"]["steps"] or
+            result.get("examples_sha256") != hashlib.sha256(json_text(compiled["examples"]).encode()).hexdigest()):
+        raise ValueError("training checks, examples or step count differ from the reviewed plan")
+    return result

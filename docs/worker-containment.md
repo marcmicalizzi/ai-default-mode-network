@@ -84,11 +84,12 @@ retry training. Tiny-model success is not a 31B training feasibility result.
 
 ## Remaining production work
 
-Before enabling model-approved training, connect the immutable compiled examples,
-loss masks, parent identity and reviewed recipe to the worker and durable phases;
-validate and publish the resulting candidate. The current worker runs only the
-synthetic research script and does not consume approved plans. Production also
-needs hard disk-space containment, Linux resource enforcement, measured GPU
-recipes, integration of worker failure/cancellation with the chosen wake policy,
-and the continuous supervisor/frontend service. The existing fixture and this
-experiment do not collectively imply those missing integrations are enabled.
+The [reviewed-plan CPU trainer](reviewed-training.md) now connects a constrained
+real recipe to the durable sleep phases, using this launcher. The standalone
+experiment above is unchanged; the integrated recipe remains a tiny test path.
+
+Production still needs hard disk-space containment, Linux resource enforcement,
+measured GPU recipes and the continuous supervisor/frontend service. The integrated
+recipe now covers reviewed examples, candidate validation/publication and failure
+choices; its execution gate still permits only tiny CPU tests. Neither experiment
+implies that production resource and service integration is enabled.

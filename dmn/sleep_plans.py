@@ -22,10 +22,12 @@ learning_execution_decide(revision, decision): approve, decline or defer. Approv
 requires reading the complete compiled plan after the latest retirement/restart.
 Decline withdraws prior approval. Draft withdrawal/replacement invalidates its plans.
 Use each action alone. deep_sleep(revision) saves and stops for the approved plan
-ONLY in the explicitly enabled disposable mechanics harness. Ordinary launch has
-no executable trainer; approval cannot enable one. The only current recipe is a
-mechanics fixture: it does NOT train or claim to learn your examples. Its proposed
-adapter and this limitation must be reviewed. learning_sleep_report(run_id, offset=0,
+ONLY in the explicitly enabled tiny CPU integration harness. Ordinary launch has
+no executable trainer; approval cannot enable one. fixture_candidate_v1 copies a
+prebuilt adapter without learning. peft_gemma4_cpu_v1 actually trains the compiled
+examples on a verified F32 base with target-only loss, then converts and checks
+the adapter. Both remain restricted tests; all recipe limits must be reviewed.
+learning_sleep_report(run_id, offset=0,
 limit=200) reads a completed cycle report. Ordinary sleep remains unchanged.'''
 
 
@@ -42,19 +44,24 @@ def implementation_identity():
     from .backend import sha256_file
     return {name: sha256_file(Path(__file__).with_name(name)) for name in (
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
-        "runtime.py", "protocol.py", "learning.py")}
+        "runtime.py", "protocol.py", "learning.py", "training.py", "training_worker.py",
+        "training_executor.py", "worker_limits.py")}
 
 
 def put_recipe(store, value, now):
     """Host can offer a recipe, never approve it or supply executable commands."""
     from .adapters import AdapterSpec
-    _fields(value, "schema kind parent candidate resources checks", "recipe")
-    if value["schema"] != 1 or value["kind"] != "fixture_candidate_v1":
-        raise ValueError("only the non-training fixture_candidate_v1 recipe is implemented")
-    if value["checks"] != CHECKS:
-        raise ValueError("fixture recipe requires artifact_integrity and retained_tokens_and_rng checks")
-    if value["candidate"] is not None:
-        AdapterSpec(**value["candidate"])
+    from .training import KIND, validate_recipe
+    if isinstance(value, dict) and value.get("kind") == KIND:
+        validate_recipe(value)
+    else:
+        _fields(value, "schema kind parent candidate resources checks", "recipe")
+        if value["schema"] != 1 or value["kind"] != "fixture_candidate_v1":
+            raise ValueError("unsupported learning recipe")
+        if value["checks"] != CHECKS:
+            raise ValueError("fixture recipe requires artifact_integrity and retained_tokens_and_rng checks")
+        if value["candidate"] is not None:
+            AdapterSpec(**value["candidate"])
     _fields(value["resources"], "max_training_seconds max_ram_bytes max_vram_bytes max_disk_bytes", "resources")
     for key, limit in value["resources"].items():
         if type(limit) is not int or limit < (0 if key == "max_vram_bytes" else 1):
@@ -94,7 +101,7 @@ def compile_plan(runtime, draft_revision, recipe_revision):
         raise ValueError("requested checks are not implemented by this recipe; none were silently dropped")
     if any(recipe["resources"][k] > v for k, v in plan["resources"].items()):
         raise ValueError("recipe exceeds a requested resource ceiling")
-    if recipe["candidate"]:
+    if recipe.get("candidate"):
         import ctypes
         if ctypes.c_float(recipe["candidate"]["scale"]).value != ctypes.c_float(plan["preferences"]["scale"]).value:
             raise ValueError("candidate strength differs from the requested deployment strength")
@@ -111,7 +118,7 @@ def compile_plan(runtime, draft_revision, recipe_revision):
         mask = [0] * len(prefix) + [1] * (len(tokens) - len(prefix))
         examples.append({**example, "tokens": tokens, "loss_mask": mask,
                          "labels": [token if learn else -100 for token, learn in zip(tokens, mask)]})
-    return seal({"schema": 1, "instance_id": runtime.state["instance_id"],
+    value = {"schema": 1, "instance_id": runtime.state["instance_id"],
         "draft_revision": draft_revision, "recipe": recipe, "parent": parent,
         "tokenizer_identity": {"inference_model": parent, "add_special": False, "parse_special": False},
         "boundary_policy": "reject_cross_boundary_tokens; no inserted template/BOS/EOS",
@@ -121,7 +128,11 @@ def compile_plan(runtime, draft_revision, recipe_revision):
         "implementation": implementation_identity(), "adapter_operation": "replace_all_with_reviewed_candidate",
         "resource_enforcement": "Fixture-only file/CPU/GPU preflight. No hard RAM/time governor or production trainer is implemented; do not use this harness for a real instance.",
         "training_performed": False,
-        "limitation": "This recipe copies an explicitly identified prebuilt candidate; it does not train the requested examples. It prepares a wake checkpoint without automatically starting generation."})
+        "limitation": "This recipe copies an explicitly identified prebuilt candidate; it does not train the requested examples. It prepares a wake checkpoint without automatically starting generation."}
+    from .training import KIND, compile_training
+    if recipe["kind"] == KIND:
+        compile_training(value)
+    return seal(value)
 
 
 def execution_status(store, revision):

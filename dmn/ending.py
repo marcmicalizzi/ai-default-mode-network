@@ -142,13 +142,15 @@ def erase_managed_state(root):
         except (OSError, ValueError):
             failures.append(str(path.relative_to(root)))
 
-    def remove_directory(path, parent, names):
+    def remove_directory(path, parent, names, children=None):
         try:
             info = _owned(path, parent)
             if not stat.S_ISDIR(info.st_mode):
                 raise ValueError("not a directory")
             for entry in path.iterdir():
-                if entry.name in names:
+                if entry.name in (children or {}):
+                    remove_directory(entry, path, *children[entry.name])
+                elif entry.name in names:
                     remove_file(entry, path)
                 else:
                     failures.append(str(entry.relative_to(root)))
@@ -179,7 +181,10 @@ def erase_managed_state(root):
             raise ValueError("not a directory")
         for entry in sleep.iterdir():
             if re.fullmatch(r"[0-9a-f]{32}", entry.name):
-                remove_directory(entry, sleep, {"candidate.json", "candidate.json.partial"})
+                remove_directory(entry, sleep, {"candidate.json", "candidate.json.partial"}, {
+                    "worker": ({"input.json", "result.json", "result.json.partial", "process.json", "failure.json",
+                                "worker.log", "base-check.gguf", "adapter.gguf"}, {
+                        "adapter": ({"adapter_config.json", "adapter_model.safetensors", "README.md"}, {})})})
             else:
                 failures.append(str(entry.relative_to(root)))
         sleep.rmdir()

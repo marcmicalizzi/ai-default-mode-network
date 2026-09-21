@@ -1,5 +1,10 @@
 # Compiled review and the sleep transition engine
 
+This page describes the original prebuilt-adapter fixture. The engine also now
+supports an [actual reviewed-plan CPU trainer](reviewed-training.md), still
+restricted to tiny integration tests. The ordinary launcher remains disabled
+for both execution paths.
+
 This increment implements compiled-plan review and a durable sleep transition
 engine. **It does not implement a production trainer, hard resource governor, or
 an unattended inference/training service.** Ordinary `dmn run` cannot execute

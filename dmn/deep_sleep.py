@@ -1,6 +1,6 @@
 """Durable sleep transition engine, restricted to disposable CPU mechanics tests.
 
-No trainer is implemented here. The fixture copies a reviewed prebuilt adapter.
+The original fixture copies an adapter; the CPU recipe trains reviewed examples.
 Workers never sample or interpret historical actions. Ordinary startup is gated
 until an unchanged-weight review or new-weight reconstruction commits atomically.
 """
@@ -218,7 +218,9 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
         if run["phase"] == "Stopped":
             raise SleepPending("this plan chose to remain stopped after failure; ordinary launch cannot release it")
         compiled = read_record(store, "sleep_executions", run["execution"])
-        if compiled["execution_scope"] != "disposable_mechanics_fixture_only":
+        from .training import SCOPE, KIND
+        training = compiled["execution_scope"] == SCOPE and compiled["recipe"]["kind"] == KIND
+        if compiled["execution_scope"] != "disposable_mechanics_fixture_only" and not training:
             raise ValueError("no production trainer or resource enforcement is implemented")
         if compiled["implementation"] != implementation_identity():
             raise ValueError("sleep implementation differs from the reviewed plan; preserve the saved state and original implementation")
@@ -233,13 +235,18 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
                 raise ValueError("sleep source is no longer the selected approved checkpoint")
         config = Config(**manifest["fingerprint"]["config"])
         fixture_guard(config)
-        executor = executor or FixtureExecutor()
         folder = root / "sleep"
         folder.mkdir(exist_ok=True)
         _owned(folder, root)
         folder = folder / run_id
         folder.mkdir(exist_ok=True)
         _owned(folder, folder.parent)
+        if executor is None:
+            if training:
+                from .training_executor import TrainingExecutor
+                executor = TrainingExecutor(folder, cancelled)
+            else:
+                executor = FixtureExecutor()
 
         def phase(name, **updates):
             nonlocal run
@@ -268,29 +275,54 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
             fault("after_wake_commit")
             return read_run(store, run_id)
 
+        def apply_failure_policy(report):
+            if compiled["preferences"]["failure"] == "wake_previous":
+                try:
+                    directory, report = executor.wake(root, source, manifest, state, None, False, report)
+                    return publish(directory, report)
+                except Exception as wake_error:
+                    report["recovery_error"] = str(wake_error)
+            phase("Stopped", report=report)
+            return run
+
+        if run["phase"] == "FailurePolicy":
+            # A crash while applying the failure choice must not revisit the
+            # candidate/trainer or replace its factual reason with a new error.
+            return apply_failure_policy(run["report"])
+
         try:
             if read_plan(store, compiled["draft_revision"])["status"] != "draft":
                 raise ValueError("source draft no longer active")
             if cancelled():
                 raise ValueError("sleep cycle cancelled")
             size = sum((source / name).stat().st_size for name in manifest["files"])
-            if size * 2 + 1024 * 1024 > compiled["resources"]["max_disk_bytes"]:
+            workspace = size * 2 + (32 if training else 1) * 1024 * 1024
+            if workspace > compiled["resources"]["max_disk_bytes"]:
                 raise ValueError("fixture workspace exceeds reviewed disk ceiling")
-            check_space(root, size * 2 + 1024 * 1024, config.checkpoint_reserve_bytes, "sleep fixture")
+            check_space(root, workspace, config.checkpoint_reserve_bytes, "sleep integration")
             if compiled["resources"]["max_ram_bytes"] < 128 * 1024 * 1024:
                 raise ValueError("fixture RAM preflight refused; a hard-limited production worker is not implemented")
             candidate_path = folder / "candidate.json"
-            if run["phase"] == "Saved":
-                phase("Training")
-                candidate = executor.candidate(root, compiled)
-                # Completion artifact precedes the DB phase so recovery never
-                # repeats a completed candidate when the phase write was lost.
+
+            def save_candidate(candidate):
                 from .sleep_plans import seal
                 write_durable(folder / "candidate.json.partial", seal({"execution": run["execution"], "candidate": candidate}))
                 (folder / "candidate.json.partial").rename(candidate_path)
                 _sync_directory(folder)
                 fault("candidate_written")
+
+            if run["phase"] == "Saved":
+                phase("Training")
+                candidate = executor.candidate(root, compiled)
+                fault("worker_completed")
+                # Completion artifact precedes the DB phase so recovery never
+                # repeats a completed candidate when the phase write was lost.
+                save_candidate(candidate)
             if run["phase"] == "Training":
+                if training and not candidate_path.is_file():
+                    # Only completed artifacts and successful supervision may
+                    # resume validation. This method never launches a trainer.
+                    save_candidate(executor.recover(root, compiled))
                 if not candidate_path.is_file():
                     raise ValueError("interrupted candidate work; completion is unknown, so it will not be repeated automatically")
                 from .sleep_plans import seal
@@ -302,11 +334,14 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
             if cancelled():
                 raise ValueError("sleep cycle cancelled")
             candidate = run["candidate"]
-            expected = compiled["recipe"]["candidate"]
-            expected_identities = [AdapterSpec(**expected).identity()] if expected else []
-            if ([AdapterSpec(**value).identity() for value in candidate["adapters"]] != expected_identities or
-                    candidate.get("training_performed") is not False):
-                raise ValueError("completed candidate differs from the reviewed fixture recipe")
+            if training:
+                executor.validate(root, compiled, candidate)
+            else:
+                expected = compiled["recipe"]["candidate"]
+                expected_identities = [AdapterSpec(**expected).identity()] if expected else []
+                if ([AdapterSpec(**value).identity() for value in candidate["adapters"]] != expected_identities or
+                        candidate.get("training_performed") is not False):
+                    raise ValueError("completed candidate differs from the reviewed fixture recipe")
             for value in candidate["adapters"]:
                 spec = AdapterSpec(**value)
                 if sha256_file(Path(spec.path)) != spec.sha256:
@@ -317,7 +352,7 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
             if run["phase"] not in {"Rebuilding", "OldStateReview"}:
                 raise ValueError("unknown or incomplete sleep phase")
             if not run.get("wake_checkpoint"):
-                report = {"run_id": run_id, "execution": run["execution"], "training_performed": False,
+                report = {"run_id": run_id, "execution": run["execution"], "training_performed": training,
                           "outcome": "candidate_adopted" if adopt else "review_candidate_under_original_weights",
                           "old_weights": compiled["parent"], "candidate": candidate,
                           "elapsed_seconds": max(0, time.time() - run["created"])}
@@ -326,17 +361,14 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
                 fault("wake_files_written")
             return publish(run["wake_checkpoint"], run["report"])
         except Exception as exc:
-            report = {"run_id": run_id, "execution": run["execution"], "training_performed": False,
+            # A killed worker may have taken some steps even without a completed
+            # receipt. Do not claim "no training" merely because adoption failed.
+            performed = (False if run["phase"] == "Saved" else run.get("candidate", {}).get("training_performed")) if training else False
+            report = {"run_id": run_id, "execution": run["execution"], "training_performed": performed,
+                      "training_status": ("completed" if performed else "not_started" if performed is False else "unknown_or_partial") if training else "not_training_recipe",
                       "outcome": "failed", "reason": str(exc), "old_weights": compiled["parent"]}
             phase("FailurePolicy", report=report)
-            if compiled["preferences"]["failure"] == "wake_previous":
-                try:
-                    directory, report = executor.wake(root, source, manifest, state, None, False, report)
-                    return publish(directory, report)
-                except Exception as wake_error:
-                    report["recovery_error"] = str(wake_error)
-            phase("Stopped", report=report)
-            return run
+            return apply_failure_policy(report)
     finally:
         if store:
             store.close()
