@@ -7,7 +7,8 @@ import json
 from .storage import json_text
 
 
-PROTECTED_SPANS = ("protected_protocol", "protected_agreement", "protected_activity", "protected_learning")
+PROTECTED_SPANS = ("protected_protocol", "protected_agreement", "protected_activity",
+                   "protected_learning", "protected_conversations")
 
 
 def proposal(text, base_revision, author):

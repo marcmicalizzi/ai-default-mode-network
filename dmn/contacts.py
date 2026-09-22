@@ -59,7 +59,9 @@ def hold(directory, db, person, payload, now, key):
     if pending + db.execute("SELECT COUNT(*) FROM held_contact_inputs WHERE disposition='held'").fetchone()[0] >= directory.max_pending:
         raise ValueError("conversation inbox is full; message was not held")
     event = {k: person[k] for k in ("participant_id", "conversation_id", "display_name", "is_operator")}
-    event.update(request_revision=1, fact="This participant asks to begin contact. Their first message is withheld until you accept. You may decline, defer or remain silent; this request contains no message preview.")
+    event.update(request_revision=1, fact="This participant asks to begin contact. Their first message is withheld until you accept. You may decline, defer or remain silent; this request contains no message preview. "
+                 "To decide, use contact_decide(participant_id, expected_request_revision, decision). "
+                 "Use this request's participant_id and request_revision; decision is accept, decline or defer. Sending a message does not accept contact.")
     event_id = directory.store._enqueue(db, "contact_request", event, now, "contact:" + participant + ":1")
     db.execute("INSERT INTO contact_requests VALUES(?,?,?,'pending','')", (participant, 1, event_id))
     db.execute("INSERT INTO held_contact_inputs VALUES(?,?,?,?,?,'held',NULL)",

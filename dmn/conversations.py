@@ -141,7 +141,10 @@ class Conversations:
         if value["closed"]:
             raise ValueError("conversation is closed; contact was not admitted")
         if not allow_pending and value["contact_state"] != "accepted":
-            raise ValueError("participant contact has not been accepted by the model")
+            raise ValueError("participant contact has not been accepted by the model. "
+                "Use conversation_read to find participant_id and contact_request_revision, then "
+                "contact_decide(participant_id, expected_request_revision, decision) after receiving the request; "
+                "decision may be accept, decline or defer. Sending a message does not accept contact.")
         return value
 
     def enqueue(self, conversation_id, content, now, idempotency_key=None, *,

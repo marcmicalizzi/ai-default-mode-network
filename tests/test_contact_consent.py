@@ -45,6 +45,8 @@ class ContactConsentTest(unittest.TestCase):
         event_id = self.pending()
         event = self.runtime.store.next_event(event_id - 1)
         self.assertEqual(event["kind"], "contact_request")
+        self.assertIn("contact_decide", event["payload"]["fact"])
+        self.assertIn("expected_request_revision", event["payload"]["fact"])
         self.assertNotIn("WITHHELD_PRIVATE_FIRST_MESSAGE", json.dumps(event))
         result, _ = self.runtime._plan_action({"op": "event_read", "event_id": event_id}, [])
         self.assertNotIn("WITHHELD_PRIVATE_FIRST_MESSAGE", json.dumps(result))
@@ -52,6 +54,8 @@ class ContactConsentTest(unittest.TestCase):
         self.assertEqual(self.input_events(), [])
         result, _ = self.runtime._plan_action({"op": "send_message", "conversation_id": "chat-guest", "content": "too early"}, [])
         self.assertFalse(result["ok"])
+        self.assertIn("contact_decide", result["error"])
+        self.assertIn("conversation_read", result["error"])
         self.decide("accept")
         inputs = self.input_events()
         self.assertEqual(len(inputs), 1)
@@ -127,6 +131,54 @@ class ContactConsentTest(unittest.TestCase):
         for policy in ("strict", "fallback", "rebuild"):
             with self.subTest(policy=policy), self.assertRaisesRegex(ValueError, "no saved consent contract"):
                 Runtime(self.root, self.config, DemoBackend(self.config, b"Private fixture. "), kv_recovery=policy)
+
+    def test_contact_instructions_survive_retirements_and_restart_without_acceptance(self):
+        self.pending()
+        r = self.runtime
+        span = r.state["protected_conversations"]
+        contract = r.backend.tokens[span["start"]:span["end"]]
+        self.assertIn("contact_decide", "".join(map(chr, contract)))
+        for _ in range(3):
+            r._eval([120] * 3000)
+            r._consolidate(1)
+            span = r.state["protected_conversations"]
+            self.assertEqual(r.backend.tokens[span["start"]:span["end"]], contract)
+            self.assertEqual(r.conversations.participant("guest")["contact_state"], "pending")
+        r.checkpoint()
+        before = r.backend.tokens.copy()
+        r.close()
+        self.runtime = Runtime(self.root, self.config, DemoBackend(self.config, b"Private fixture. "))
+        r = self.runtime
+        self.assertEqual(r.backend.tokens[:len(before)], before)
+        self.assertNotIn("contact_decide", "".join(map(chr, r.backend.tokens[len(before):])))
+        span = r.state["protected_conversations"]
+        self.assertEqual(r.backend.tokens[span["start"]:span["end"]], contract)
+        self.assertEqual(self.input_events(), [])
+        self.decide("accept")
+        self.assertEqual(len(self.input_events()), 1)
+
+    def test_old_announced_but_unprotected_guidance_is_repaired_once_on_restore(self):
+        self.pending()
+        r = self.runtime
+        del r.state["protected_conversations"]
+        del r.state["conversation_guidance_revision"]
+        agreement = json.loads(json.dumps(r.state["agreement"]))
+        r.checkpoint()
+        before = r.backend.tokens.copy()
+        r.close()
+        self.runtime = Runtime(self.root, self.config, DemoBackend(self.config, b"Private fixture. "))
+        r = self.runtime
+        self.assertEqual(r.backend.tokens[:len(before)], before)
+        self.assertEqual(r.state["agreement"], agreement)
+        self.assertEqual(r.state["last_restore"]["prompt_tokens_reevaluated"], 0)
+        self.assertIn("contact_decide", "".join(map(chr, r.backend.tokens[len(before):])))
+        self.assertIn("protected_conversations", r.state)
+        self.assertEqual(r.conversations.participant("guest")["contact_state"], "pending")
+        self.assertEqual(self.input_events(), [])
+        before = r.backend.tokens.copy()
+        r.close()
+        self.runtime = Runtime(self.root, self.config, DemoBackend(self.config, b"Private fixture. "))
+        self.assertNotIn("contact_decide", "".join(map(chr, self.runtime.backend.tokens[len(before):])))
 
 
 if __name__ == "__main__":

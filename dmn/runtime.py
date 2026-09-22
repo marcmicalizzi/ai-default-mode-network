@@ -331,12 +331,21 @@ class Runtime(ImageInputMixin):
             self.checkpoint(reason='sleep_service_availability')
 
     def _announce_conversations(self):
-        if not self.conversations or self.state.get('conversation_protocol') == 'addressed_v1':
+        if not self.conversations:
+            return
+        from .contacts import CONTRACT as CONTACT_CONTRACT
+        from .sleep_plans import seal
+        text = CONVERSATION_CONTRACT
+        if self.config.require_contact_consent:
+            text += '\n' + CONTACT_CONTRACT
+        revision = seal({'contract': text})['revision']
+        if (self.state.get('conversation_guidance_revision') == revision
+                and self.state.get('protected_conversations')):
             return
         migration = self.state.get('conversation_migration')
-        if not migration:
+        if self.state.get('conversation_protocol') != 'addressed_v1' and not migration:
             raise ValueError('addressed-conversation restore requires explicit migration evidence')
-        if not self.state.get('conversation_address_notice'):
+        if migration and not self.state.get('conversation_address_notice'):
             notice = {'fact': 'Addressed conversations now replace the single implicit recipient. Every send_message '
                 'requires conversation_id. The directory contains your existing WebUI counterpart at the address below. '
                 'This host mapping does not retroactively authenticate old text. New input waits for your contact_decide '
@@ -347,12 +356,13 @@ class Runtime(ImageInputMixin):
                 raise ValueError('insufficient room for the migration address notice; no generation started')
             self._eval(tokens)
             self.state['conversation_address_notice'] = True
-        from .contacts import CONTRACT as CONTACT_CONTRACT
-        text = CONVERSATION_CONTRACT + '\n' + CONTACT_CONTRACT
         tokens = self.backend.tokenize(event_text('capability_added', {'contract': text}, self.now(), resume_cognition=True))
         self._ensure_space(len(tokens))
-        if not self.suspend_requested.is_set():
+        if not self._end_requested and not self.suspend_requested.is_set() and not self.state.get('hold'):
+            start = len(self.backend.tokens)
             self._eval(tokens)
+            self.state['protected_conversations'] = {'start': start, 'end': len(self.backend.tokens)}
+            self.state['conversation_guidance_revision'] = revision
             self.state['conversation_protocol'] = 'addressed_v1'
 
     def elapsed(self, timestamp):
@@ -409,6 +419,7 @@ class Runtime(ImageInputMixin):
 
     def finish_initialization(self):
         self._announce_activity()
+        self._announce_conversations()
         if self._first_message:
             self.enqueue(self._first_message, "staged:first-question")
         if self._prepare_only:

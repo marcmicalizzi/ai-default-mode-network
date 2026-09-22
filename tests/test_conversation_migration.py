@@ -84,6 +84,7 @@ class ConversationMigrationTests(unittest.TestCase):
         try:
             self.assertEqual(r.state['last_restore']['prompt_tokens_reevaluated'], 0)
             self.assertEqual(r.state['mode'], 'awaiting_first_contact')
+            self.assertNotIn('protected_conversations', r.state)
             before = r.backend.tokens.copy()
             generated = r.state['generated_tokens']
             for _ in range(3):
@@ -98,6 +99,7 @@ class ConversationMigrationTests(unittest.TestCase):
             self.assertEqual(r.store.next_event(event-1)['kind'], 'contact_request')
             r.tick()
             self.assertEqual(r.state['conversation_protocol'], 'addressed_v1')
+            self.assertIn('protected_conversations', r.state)
             self.assertEqual(r.state['generated_tokens'], generated)
             self.assertEqual(r.state['event_cursor'], event)
             self.assertTrue(r.event_delivered(event))

@@ -46,6 +46,18 @@ as everyone else's: Syllas, or another instance, receives a contact request and
 may accept, decline or defer. Only acceptance admits the message content.
 The gate survives closing the window and restarting before contact.
 
+Contact acceptance is an explicit model action:
+`contact_decide(participant_id, expected_request_revision, decision)`, where
+`decision` is `accept`, `decline`, or `defer`. Use the ID and `request_revision`
+from the delivered request; `conversation_read` also exposes the current
+`contact_request_revision`. Sending a message to a pending contact does not
+accept them. Requests and rejected sends include this guidance.
+
+The current conversation and contact contract is protected from context
+retirement. Restoring an older checkpoint appends the missing protected copy
+without rewriting the behavioral agreement or accepting any contact. The
+first-contact gate and recovered ordinary sleep still defer announcements.
+
 ## Authenticated frontend configuration
 
 Create two separate random access keys of at least 32 ASCII characters, in local
