@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
 import time
 import weakref
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 from .conversation_bridge import ConversationClient, conversation_id, participant_id
@@ -18,6 +20,10 @@ from .openwebui_images import REQUEST_COMMAND, validate_message, sources, load_i
 from .storage import InstanceLock
 
 log = logging.getLogger(__name__)
+
+PIPE_UPGRADE = ("Update the installed DMN Pipe in Open WebUI Admin Panel > Functions using "
+                "integrations/openwebui/dmn_pipe.py; the installed Pipe does not supply authenticated user identity. "
+                "Updating the checkout alone does not update installed functions. No message was delivered.")
 
 
 class MultiUserOpenWebUIBridge(OpenWebUIBridge):
@@ -96,6 +102,7 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
         from open_webui.utils.access_control import check_model_access
         await check_model_access(user, await Models.get_model_by_id("dmn"))
         try:
+            await self.require_authenticated_pipe()
             message = form.get("user_message") or form.get("parent_message") or {}
             new_chat = form.get("chat_id") is None and "parent_id" in form and form["parent_id"] is None
             self.validate_message({**form, "chat_id": "new-chat-preflight" if new_chat else form.get("chat_id"),
@@ -125,6 +132,14 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
                 exc.close()
         except (ValueError, KeyError, TypeError) as exc:
             raise HTTPException(403, str(exc)) from exc
+
+    async def require_authenticated_pipe(self):
+        # Use the same loaded function as upstream. Database changes invalidate
+        # its cache, so the admin can upgrade the Pipe without stopping DMN.
+        from open_webui.utils.plugin import get_function_module_from_cache
+        pipe, _, _ = await get_function_module_from_cache(SimpleNamespace(app=self.app), "dmn")
+        if "__user__" not in inspect.signature(pipe.pipe).parameters:
+            raise ValueError(PIPE_UPGRADE)
 
     async def bind_chat(self, chat, person, message):
         legacy = getattr(self, 'legacy_adoption', None)
@@ -221,6 +236,8 @@ class MultiUserOpenWebUIBridge(OpenWebUIBridge):
     async def submit(self, metadata, user=None):
         message = self.validate_message(metadata)
         user_id = (user or {}).get("id")
+        if not user_id:
+            raise ValueError(PIPE_UPGRADE)
         if user_id != metadata.get("user_id"):
             raise ValueError("authenticated Pipe identity and server metadata disagree")
         async with self.lock_for(metadata["chat_id"]):

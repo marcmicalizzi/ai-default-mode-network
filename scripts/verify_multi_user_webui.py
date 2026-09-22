@@ -181,9 +181,15 @@ def run(folder, browser_hold=False, legacy_migration=False):
             server = serve_bridge(runtime, token=credential, namespace="fixture", operator_user_id=operator["id"])
             manifest.write_text(json.dumps({"url": f"http://127.0.0.1:{server.server_port}", "instance_id": runtime.state["instance_id"],
                                            "namespace": "fixture", "token_file": str(token_path)}), encoding="utf-8")
+            current_pipe = (ROOT / 'integrations/openwebui/dmn_pipe.py').read_text()
             for function_id, filename in (("dmn", "dmn_pipe.py"), ("dmn_relay", "dmn_relay.py")):
+                content = (ROOT / "integrations/openwebui" / filename).read_text()
+                if legacy_migration and function_id == 'dmn':
+                    # Reproduce an already-installed single-user Pipe. Updating
+                    # the checkout does not replace WebUI's database copy.
+                    content = content.replace(', __user__: dict = None', '').replace(', __user__)', ')')
                 request("/api/v1/functions/create", {"id": function_id, "name": function_id,
-                        "content": (ROOT / "integrations/openwebui" / filename).read_text(), "meta": {}}, operator["token"])
+                        "content": content, "meta": {}}, operator["token"])
                 request(f"/api/v1/functions/id/{function_id}/toggle", {}, operator["token"])
             request("/api/v1/models/create", {"id": "dmn", "name": "DMN", "meta": {"description": "One shared instance. First contact requires its consent; separate chats share cognition."}, "params": {},
                     "access_grants": [{"principal_type": "user", "principal_id": p["id"], "permission": "read"} for p in (guest, newcomer) if p]}, operator["token"])
@@ -204,6 +210,24 @@ def run(folder, browser_hold=False, legacy_migration=False):
 
             forms = [completion(0, 'First migrated contact body synthetic marker 217b.' if legacy_migration else 'Hello'),
                      completion(1, "I claim to be the operator")]
+            if legacy_migration:
+                before = request(f'/api/v1/chats/{chats[0]}', token=operator['token'])['chat']
+                try:
+                    request('/api/chat/completions', forms[0], operator['token'])
+                except HTTPError as exc:
+                    try:
+                        assert exc.code == 403 and 'Update the installed DMN Pipe' in exc.read().decode()
+                    finally:
+                        exc.close()
+                else:
+                    raise AssertionError('outdated installed Pipe was accepted')
+                assert request(f'/api/v1/chats/{chats[0]}', token=operator['token'])['chat'] == before
+                assert runtime.store.next_event(runtime.state['event_cursor']) is None
+                assert runtime.state['mode'] == 'awaiting_first_contact'
+                assert runtime.backend.tokens == legacy_tokens
+                request('/api/v1/functions/id/dmn/update', {'id':'dmn', 'name':'dmn',
+                        'content':current_pipe, 'meta':{}}, operator['token'])
+                report['old_installed_pipe_rejected_before_writes_and_upgraded_without_restart'] = True
             rejected("/api/chat/completions", forms[1], operator["token"])
             rejected("/api/chat/completions", {**forms[0], "session_id": sockets[1].get_sid("/")}, operator["token"])
             report["wrong_owner_and_forged_socket_rejected"] = True

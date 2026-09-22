@@ -5,6 +5,11 @@ one WebUI worker. This includes first-contact consent and operator reconsiderati
 following the authenticated transport milestone of the
 [multi-user prototype](multi-user-prototype.md). It uses the same Pipe and Event
 functions as the single-user adapter, selected by an explicit backend manifest.
+Replace the installed DMN Pipe with the current `integrations/openwebui/dmn_pipe.py`
+(version 0.2.0) in **Admin Panel > Functions** before using multi-user mode.
+The old single-user Pipe omits authenticated identity; a Git update alone does
+not replace the copy saved inside WebUI. Saving the updated Pipe takes effect
+without restarting the DMN instance.
 No installed WebUI source files are modified. The live instance is not migrated
 or connected by the verification script.
 
@@ -29,6 +34,9 @@ verifies no generation or token replay before first contact, rejects another
 participant and historical retries before the operator's request, and withholds
 the operator's message body until explicit acceptance. It uses disposable data
 only. Both fresh-chat and migrated-chat rehearsals passed on 2026-09-21.
+The migrated rehearsal also starts with an outdated installed Pipe, verifies
+rejection before chat writes or first contact, updates it through WebUI's admin
+API, and completes the consent flow without restarting either process.
 
 Each run creates `data/multi-webui-<random>/`, starts WebUI on a fresh loopback
 port with a new authenticated database and disabled model providers, and creates
@@ -45,6 +53,7 @@ contains results, not credentials. Failed runs retain their logs.
 
 The verification covers:
 
+- Upgrading an outdated installed Pipe without starting inference or losing the first-contact gate.
 - Admin attempts to use another account's chat and mismatched socket owners.
 - Stable operator identity despite identical names and contradictory message text.
 - The same source message ID in different chats, with independent receipts.

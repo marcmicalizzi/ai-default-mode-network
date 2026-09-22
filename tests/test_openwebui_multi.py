@@ -80,6 +80,43 @@ class MultiRelayTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "another destination"):
             await self.bridge.persist_message(binding, {"conversation_id": "conversation-b", "participant_id": "person-b"})
 
+    async def test_installed_pipe_upgrade_is_checked_again_after_admin_replacement(self):
+        class OldPipe:
+            async def pipe(self, body, __request__, __metadata__=None):
+                pass
+        current = {}
+        exec((Path(__file__).resolve().parents[1] / 'integrations/openwebui/dmn_pipe.py').read_text(), current)
+        load = AsyncMock(side_effect=[(OldPipe(), 'pipe', {}), (current['Pipe'](), 'pipe', {})])
+        with patch.dict('sys.modules', {'open_webui.utils.plugin':
+                                      types.SimpleNamespace(get_function_module_from_cache=load)}):
+            with self.assertRaisesRegex(ValueError, 'Update the installed DMN Pipe'):
+                await self.bridge.require_authenticated_pipe()
+            await self.bridge.require_authenticated_pipe()
+        self.bridge.client.enqueue.assert_not_called()
+
+    async def test_missing_or_conflicting_identity_cannot_reach_chat_or_runtime(self):
+        metadata = {'session_id':'socket', 'chat_id':'a', 'message_id':'response', 'user_id':'user-a',
+                    'user_message':{'id':'input', 'role':'user', 'content':'Synthetic input'}}
+        self.bridge.authenticate = AsyncMock()
+        with self.assertRaisesRegex(ValueError, 'Update the installed DMN Pipe'):
+            await self.bridge.submit(metadata)
+        with self.assertRaisesRegex(ValueError, 'identity and server metadata disagree'):
+            await self.bridge.submit(metadata, {'id':'user-b'})
+        self.bridge.authenticate.assert_not_awaited()
+        self.bridge.client.enqueue.assert_not_called()
+
+    async def test_current_pipe_passes_authenticated_identity_and_reports_withheld_contact(self):
+        module = {}
+        exec((Path(__file__).resolve().parents[1] / 'integrations/openwebui/dmn_pipe.py').read_text(), module)
+        submit = AsyncMock(return_value={'event_id':7, 'admission':'contact_request'})
+        bridge = types.SimpleNamespace(closed=False, submit=submit)
+        request = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace(dmn_bridge=bridge)))
+        user, metadata, emitter = {'id':'owner'}, {'user_id':'owner'}, AsyncMock()
+        result = await module['Pipe']().pipe({}, request, __metadata__=metadata, __user__=user, __event_emitter__=emitter)
+        submit.assert_awaited_once_with(metadata, user)
+        self.assertEqual(result, '')
+        self.assertIn('held outside its context', emitter.call_args.args[0]['data']['description'])
+
 
 if __name__ == "__main__":
     unittest.main()

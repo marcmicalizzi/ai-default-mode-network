@@ -7,6 +7,14 @@ training environments remain separate; launching never approves a learning plan.
 
 ## Existing single-user conversations
 
+Before migration, replace the installed **DMN** Pipe in Open WebUI's
+**Admin Panel > Functions** with the current
+[`integrations/openwebui/dmn_pipe.py`](../integrations/openwebui/dmn_pipe.py)
+and save it. Open WebUI stores its own copy: updating this repository does not
+upgrade an installed function. Pipe version 0.2.0 supplies authenticated identity
+and contact/image-consent status. Saving the Pipe reloads it without restarting
+the DMN instance; the relay Event function is unchanged.
+
 First observe migration readiness without changing the instance or WebUI:
 
 ```powershell

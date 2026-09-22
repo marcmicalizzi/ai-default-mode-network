@@ -256,6 +256,10 @@ The [authenticated Open WebUI integration](docs/multi-user-webui.md) isolates
 chat ownership and delivery. An explicit offline [transport migration](docs/integrated-launch.md)
 preserves an existing chat and native checkpoint. It waits for the promised
 operator contact request before generation and never supplies contact acceptance.
+Upgrade the **installed DMN Pipe** to the current
+[`dmn_pipe.py`](integrations/openwebui/dmn_pipe.py) in WebUI's Admin Panel > Functions
+before switching to multi-user mode. Updating this checkout does not replace
+WebUI's saved function copy; the old Pipe omits authenticated identity.
 Eligible input resumes idle
 activity without inserting itself inside an unfinished action.
 

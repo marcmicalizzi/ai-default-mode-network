@@ -1,7 +1,7 @@
 """
 title: DMN
 description: Deliver events to one persistent DMN instance. In multi-user mode, /dmn-images requests image consent.
-version: 0.1.0
+version: 0.2.0
 """
 
 
