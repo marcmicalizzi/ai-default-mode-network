@@ -111,6 +111,22 @@ it, and requests `deep_sleep`. Ordinary sleep never trains. The inference backen
 is released before workers start. New text can remain queued during sleep.
 An adopted candidate rebuilds the exact then-retained tokens under the new weights.
 
+The model-facing entry points are `learning_execution_help` (paged current launch
+availability and execution contract), `learning_recipe_list`, and
+`learning_plan_help` (draft schema). Follow each help result's `next_offset` until
+`total_characters` is reached. `deep_sleep(revision)` takes a separately reviewed
+and approved execution revision; calling ordinary `sleep()` is never a training
+request. An offered recipe does not create a draft or supply approval.
+
+Earlier builds incorrectly described learning as fixture-only or unavailable in
+the draft help. A configured NF4 service in those builds is still discoverable
+through `learning_execution_help` and `learning_recipe_list`; no restart is needed
+to call those existing actions. Updated builds append a factual correction when
+restored, preserve the behavioral agreement and original KV prefix, and protect
+the current learning command summary and availability from context retirement.
+The correction respects recovered sleep and the first-contact gate. Apply the
+code update during agreed maintenance, with no pending reviewed sleep transition.
+
 With `review_first`, the instance wakes under its previous weights and reads
 `learning_sleep_report`. `learning_candidate_prepare(run_id)` offers a new
 adoption-only plan, requiring another complete review and approval. It uses the

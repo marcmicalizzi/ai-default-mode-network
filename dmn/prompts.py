@@ -7,6 +7,9 @@ import json
 from .storage import json_text
 
 
+PROTECTED_SPANS = ("protected_protocol", "protected_agreement", "protected_activity", "protected_learning")
+
+
 def proposal(text, base_revision, author):
     if not isinstance(text, str) or not text.strip():
         raise ValueError("proposal text must be nonempty")
@@ -46,7 +49,7 @@ def retirement_ranges(state, length, required, reserve, notice, minimum_suffix=1
     if type(minimum_suffix) is not int or not 1 <= minimum_suffix <= length:
         raise ValueError("invalid minimum retained suffix")
     eligible_end = length - minimum_suffix
-    spans = sorted((dict(state[key]) for key in ("protected_protocol", "protected_agreement", "protected_activity")
+    spans = sorted((dict(state[key]) for key in PROTECTED_SPANS
                     if state.get(key)), key=lambda span: span["start"])
     cursor, gaps = keep, []
     for span in spans:
@@ -75,7 +78,7 @@ def retirement_ranges(state, length, required, reserve, notice, minimum_suffix=1
 
 
 def shift_protected(state, start, count):
-    for key in ("protected_protocol", "protected_agreement", "protected_activity"):
+    for key in PROTECTED_SPANS:
         span = state.get(key)
         if span and start < span["end"] and start + count > span["start"]:
             raise ValueError("retirement would remove protected tokens")

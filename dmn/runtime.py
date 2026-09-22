@@ -21,7 +21,7 @@ from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTR
 from .learning import (OPERATIONS as LEARNING_OPERATIONS, plan_action as plan_learning_action,
                        DATA_GUIDANCE, DATA_GUIDANCE_VERSION)
 from .sleep_plans import OPERATIONS as SLEEP_OPERATIONS, BRIEF as SLEEP_CONTRACT, plan_action as plan_sleep_action
-from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
+from .prompts import PROTECTED_SPANS, bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
 from .compact_cache import validate_retirements
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
@@ -306,21 +306,27 @@ class Runtime(ImageInputMixin):
         self.checkpoint(reason="restore")
 
     def _announce_sleep_service(self):
-        from .sleep_plans import seal
+        from .sleep_plans import DISCOVERY, seal
         enabled = self.sleep_offer is not None
-        notice = {'enabled': enabled, 'resources': self.sleep_offer['resources'] if enabled else None}
+        notice = {'enabled': enabled, 'resources': self.sleep_offer['resources'] if enabled else None,
+                  'contract': LEARNING_CONTRACT + '\n' + DISCOVERY}
         marker = seal(notice)['revision']
-        if self.state.get('sleep_service_notice') == marker or (not enabled and not self.state.get('sleep_service_notice')):
+        if ((self.state.get('sleep_service_notice') == marker and self.state.get('protected_learning'))
+                or (not enabled and not self.state.get('sleep_service_notice'))):
             return
-        notice['fact'] = ('Supervised deep sleep is available. Read learning_execution_help for the current contract. '
+        notice['fact'] = ('Supervised NF4/QLoRA deep sleep is available. Read learning_execution_help for the current contract. '
             'The offered recipe is not a request to train. You choose examples, review and approve each execution, '
             'and decide when to sleep. Training releases inference, then reconstructs retained text under adopted weights. '
             'Review-first can retain previous weights until you separately choose candidate adoption.' if enabled else
             'The supervised deep-sleep service is unavailable in this launch; ordinary sleep is unchanged.')
+        notice['fact'] += (' This notice updates earlier capability descriptions, including preparation-only or '
+                           'fixture-only descriptions; it does not change your behavioral agreement.')
         tokens = self.backend.tokenize(event_text('deep_sleep_availability', notice, self.now(), resume_cognition=True))
         self._ensure_space(len(tokens))
-        if not self.suspend_requested.is_set():
+        if not self._end_requested and not self.suspend_requested.is_set() and not self.state.get('hold'):
+            start = len(self.backend.tokens)
             self._eval(tokens)
+            self.state['protected_learning'] = {'start': start, 'end': len(self.backend.tokens)}
             self.state['sleep_service_notice'] = marker
             self.checkpoint(reason='sleep_service_availability')
 
@@ -1075,7 +1081,8 @@ class Runtime(ImageInputMixin):
                 if len(self.backend.tokens) + len(tokens) + self._event_budget() > self.backend.n_ctx - 32:
                     raise ValueError("agreement does not fit now; current agreement unchanged; retry after retirement or propose shorter text")
                 permanent = self.state["keep_prefix"] + sum(
-                    self.state[key]["end"] - self.state[key]["start"] for key in ("protected_protocol", "protected_activity") if self.state.get(key))
+                    self.state[key]["end"] - self.state[key]["start"] for key in PROTECTED_SPANS
+                    if key != "protected_agreement" and self.state.get(key))
                 if permanent + len(tokens) + self.config.turnover_reserve + self._event_budget() + 256 >= self.backend.n_ctx:
                     raise ValueError("agreement exceeds available protected context; text was not shortened")
                 effect = {"op": op, "proposal": value, "decision": decision, "tokens": tokens}

@@ -1,4 +1,4 @@
-"""Compiled, reviewed sleep plans. Only mechanics fixtures are executable today."""
+"""Compiled, reviewed sleep plans for explicitly offered training and fixtures."""
 from __future__ import annotations
 
 import json
@@ -12,8 +12,19 @@ CHECKS = ["artifact_integrity", "retained_tokens_and_rng"]
 OPERATIONS = {"learning_recipe_list", "learning_recipe_read", "learning_compile",
               "learning_execution_help", "learning_execution_read", "learning_execution_decide", "deep_sleep", "learning_sleep_report",
               "learning_candidate_prepare"}
-BRIEF = '''learning_execution_help(offset=0, limit=200): read the separate compiled-plan
-review contract. An explicit host offer and supervised service are required to execute.'''
+BRIEF = '''learning_execution_help(offset=0, limit=200): read current deep-sleep availability
+and review steps. learning_recipe_list(): discover offers. deep_sleep(revision)
+requires separate approval.'''
+DISCOVERY = '''Optional deep-sleep learning is separate from ordinary sleep().
+learning_execution_help(offset=0, limit=200): read this launch's availability and
+the compiled-plan review contract; follow next_offset until the complete text is read.
+learning_recipe_list(): discover offered recipes, including NF4/QLoRA when enabled.
+learning_recipe_read(revision, offset=0, limit=200): inspect a recipe.
+After choosing a learning draft, learning_compile(draft_revision, recipe_revision)
+prepares an execution plan. Read it completely with learning_execution_read,
+then choose learning_execution_decide(revision, decision). Only your separate
+deep_sleep(revision) request starts an approved plan through an enabled supervisor.
+An offer or draft is not approval; ordinary sleep() never trains.'''
 CONTRACT = '''Compiled learning plans require separate review and choice.
 learning_recipe_list(): list offered recipes. learning_recipe_read(revision, offset=0,
 limit=200): inspect one. learning_compile(draft_revision, recipe_revision): bind exact
@@ -61,7 +72,7 @@ def implementation_identity():
     from .backend import sha256_file
     return {name: sha256_file(Path(__file__).with_name(name)) for name in (
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
-        "runtime.py", "protocol.py", "learning.py", "training.py", "training_worker.py",
+        "runtime.py", "protocol.py", "prompts.py", "learning.py", "training.py", "training_worker.py",
         "training_executor.py", "training_models.py", "base_provenance.py", "provenance_native.py", "worker_limits.py",
         "gpu_recipe.py", "gpu_training_worker.py", "exact_base_provenance.py", "safetensor_stream.py", "qlora_prepare.py",
         "gpu_training_executor.py", "gpu_conversion_worker.py", "training_artifacts.py", "sleep_service.py", "gpu_monitor.py",
@@ -243,8 +254,11 @@ def plan_action(runtime, action):
         effect = {"op": op, "run_id": run_id, "execution": value["revision"]}
     else:
         if op == "learning_execution_help":
-            raw = CONTRACT + '\nThis launch: ' + ('supervised NF4 enabled.' if runtime.sleep_offer else
+            # Put current availability on the first page, not after several
+            # pages of historical recipe descriptions.
+            raw = 'This launch: ' + ('supervised NF4/QLoRA deep-sleep training enabled.' if runtime.sleep_offer else
                 'disposable fixture enabled.' if runtime.sleep_test_mode else 'deep-sleep execution unavailable.')
+            raw += '\n' + CONTRACT
         elif op == "learning_sleep_report":
             from .deep_sleep import read_run
             raw = json_text(read_run(runtime.store, action["run_id"]))

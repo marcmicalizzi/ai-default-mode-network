@@ -24,7 +24,7 @@ only; citing a source does not train on its text. Nothing here authorizes traini
 
 
 HELP = {
-    "status": "drafts do not authorize execution; separate compiled-plan review and a disposable mechanics harness exist; no production trainer is available",
+    "status": "Drafts do not authorize execution. Read learning_execution_help for this launch's availability and review workflow; learning_recipe_list lists host offers.",
     "create": {"op": "learning_plan_create", "plan": {
         "intent": "What I want to learn",
         "uncertainties": "What remains uncertain (may be empty)",
@@ -46,11 +46,11 @@ HELP = {
         "Each example references source indices; purpose is new or replay. Only target text is intended for loss, never input text or entire source memories.",
         "Exact token IDs, tokenizer identity, boundary handling and token loss masks still require a compiled recipe and explicit review before execution.",
         "adoption: review_first or automatic_if_checks_pass; failure: remain_stopped or wake_previous. These are draft preferences, not execution consent.",
-        "Resources are requested ceilings, not reservations or measured feasibility. A future executable plan must also respect host resource limits.",
+        "Resources are requested ceilings, not reservations or measured feasibility. A compiled execution plan must also respect host resource limits.",
         "replaces optionally names an active draft revision to supersede atomically. Withdraw with learning_plan_withdraw(revision). Both preserve history.",
         "Plans are immutable, private local records; they are included in instance packaging and removed by managed erasure. Machine owners can access them.",
         "Read with learning_plan_read(revision, offset=0, limit=200); list with learning_plan_list(offset=0, limit=20).",
-        "A future execution request must bind a trainer/converter recipe, base and parent identities, exact examples/masks, resource ceilings, checks and decisions."]}
+        "An execution request must bind a trainer/converter recipe, base and parent identities, exact examples/masks, resource ceilings, checks and decisions."]}
 
 
 def digest_text(text):

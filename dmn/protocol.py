@@ -123,8 +123,9 @@ checks and adoption/failure preferences. Optional replaces supersedes an active 
 learning_plan_read(revision, offset=0, limit=200): inspect an immutable draft.
 learning_plan_list(offset=0, limit=20): list revision IDs and their current status.
 learning_plan_withdraw(revision): withdraw an active draft; history remains.
-Use each learning action alone and await its result. No production trainer is
-available. The separate compiled-plan contract describes fixture-only testing.
+Use each learning action alone and await its result. For this launch's execution
+availability and review workflow, read learning_execution_help. Offered recipes
+are discoverable with learning_recipe_list; a draft never authorizes execution.
 Ordinary sleep never trains. Drafts are
 included in instance archives and managed erasure. External weight copies remain.'''
 

@@ -1,8 +1,8 @@
-"""Stable transport/queue ownership across disposable sleep integration cycles.
+"""Stable transport/queue ownership across supervised sleep cycles.
 
 The service never supplies approval, retries uncertain training, or releases a
 hold. Native inference is closed before the transition begins. Real-instance
-execution remains gated until production resource/wake validation is complete.
+execution requires an explicit, validated host recipe and model-reviewed plan.
 """
 from __future__ import annotations
 
