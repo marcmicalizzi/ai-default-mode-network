@@ -55,7 +55,12 @@
     get('checkpoint-policy').textContent = checkpoint ? `Periodic limit: ${limits.join(' or ') || 'disabled'}. ` + (checkpoint.policy === 'effects' ? 'Durable effects also checkpoint. ' : 'Actions and delivered inputs also checkpoint. ') + (checkpoint.sleep_min_interval_seconds ? `Ordinary-sleep snapshot cooldown: ${duration(checkpoint.sleep_min_interval_seconds)}. ` : '') + (checkpoint.sleep_save_in_seconds != null ? `Sleep snapshot due in ${duration(checkpoint.sleep_save_in_seconds)}.` : '') : '';
     const blocked = runtime.storage?.blocked;
     get('checkpoint-storage').textContent = blocked ? `Inference paused for storage: ${bytes(blocked.free_bytes)} free; ${bytes(blocked.required_bytes)} needed including reserve. The checkpoint has not completed.` : checkpoint?.failed_count ? `${number(checkpoint.failed_count)} checkpoint attempt(s) failed during this process.` : '';
-    get('maintenance-status').textContent = runtime.maintenance ? `Maintenance: ${runtime.maintenance.status}` : '';
+    const maintenance = runtime.maintenance;
+    get('maintenance-status').textContent = maintenance?.status === 'accepting'
+      ? 'Maintenance accepted. Saving the stop checkpoint; wait for confirmation in the command window.'
+      : maintenance?.status === 'accepted' && runtime.mode === 'suspended' && runtime.checkpoint_reason === 'shutdown'
+        ? 'Shutdown checkpoint committed. The instance is suspended.'
+        : maintenance ? `Maintenance: ${maintenance.status}` : '';
     get('refresh-time').textContent = `Updated ${new Date().toLocaleTimeString()} · refreshes every 5 seconds while visible`;
     get('prompt-availability').textContent = runtime.operator_ui_version >= 2 ? '' : 'Prompt controls require the updated backend at the next consented restart. Syllas can continue this run.';
     get('refresh-prompts').disabled = !(runtime.operator_ui_version >= 2);
@@ -182,5 +187,9 @@
     } catch (error) { notice(error.message, true); }
     finally { promptBusy = false; updatePromptControls(); }
   });
-  setInterval(() => { if (key && !document.hidden && !busy && !promptBusy) refresh().catch(error => notice(`Refresh failed; displayed values may be stale: ${error.message}`, true)); }, 5000);
+  setInterval(() => { if (key && !document.hidden && !busy && !promptBusy) refresh().catch(error => notice(
+    (runtimeState?.maintenance?.status === 'accepting' ||
+      (runtimeState?.maintenance?.status === 'accepted' && runtimeState?.mode === 'suspended'))
+      ? 'Connection lost after maintenance acceptance. Displayed values may be stale; loss of connection alone does not confirm a saved shutdown. Check the command window for "Shutdown checkpoint committed".'
+      : `Refresh failed; displayed values may be stale: ${error.message}`, true)); }, 5000);
 })();

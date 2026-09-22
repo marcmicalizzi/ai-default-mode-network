@@ -279,6 +279,9 @@ def main(argv=None):
         if hasattr(signal, "SIGTERM"):
             signal.signal(signal.SIGTERM, request_shutdown)
         runtime.run()
+        if runtime.state['mode'] == 'suspended' and runtime.state.get('checkpoint_reason') == 'shutdown':
+            print('Shutdown checkpoint committed. The instance is suspended. Checkpoint: '
+                  + str(runtime.store.latest()), flush=True)
         ending = runtime.status().get("ending")
         if ending:
             print("Instance end: " + json_text(ending), flush=True)

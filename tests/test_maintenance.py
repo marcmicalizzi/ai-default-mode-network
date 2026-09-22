@@ -114,6 +114,41 @@ class MaintenanceTest(unittest.TestCase):
         self.assertFalse(self.runtime.state["maintenance"]["stop_pending"])
         self.assertEqual(self.runtime.status()["maintenance"]["status"], "accepted")
 
+    def test_run_loop_commits_accepted_shutdown_without_waiting_for_periodic_save(self):
+        # A one-hour checkpoint timer used to delay an already accepted stop.
+        config = dataclasses.replace(self.config, checkpoint_interval_seconds=3600)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, config, DemoBackend(config, b"thinking "))
+        request_id = self.request("shutdown")
+        raw = frames({"op": "maintenance_reply", "request_id": request_id, "decision": "accept"})
+        self.runtime.backend.script, self.runtime.backend.index = raw, 0
+        before = self.runtime.status()["checkpoint"]["committed_count"]
+        waits = []
+        def no_timer_delay(seconds):
+            waits.append(seconds)
+            self.assertEqual(seconds, 0, "accepted shutdown waited for a routine timer")
+        with mock.patch.object(self.runtime.wake, "wait", side_effect=no_timer_delay):
+            self.runtime.run()
+        self.assertEqual(waits, [0])
+        self.assertEqual(self.runtime.state["mode"], "suspended")
+        self.assertEqual(self.runtime.state["checkpoint_reason"], "shutdown")
+        self.assertEqual(self.runtime.state["last_suspension"]["cause"], "model_accepted")
+        self.assertEqual(self.runtime.status()["checkpoint"]["committed_count"], before + 1)
+
+    def test_pending_control_bypasses_idle_wait_without_busy_waiting_after_suspend(self):
+        r = self.runtime
+        self.request()
+        r._schedule_stop("suspend", 0, "model_accepted")
+        self.assertEqual(r._wait_seconds(False), 0)
+        r.tick()
+        self.assertFalse(r.suspend_requested.is_set())
+        self.assertGreater(r._wait_seconds(False), 0)
+        r.resume_requested.set()
+        self.assertEqual(r._wait_seconds(False), 0)
+        r.resume_requested.clear()
+        r.request_shutdown_from_signal()
+        self.assertEqual(r._wait_seconds(False), 0)
+
     def test_a_checkpoint_between_acceptance_and_stop_finishes_stop_on_restore(self):
         request_id = self.request("shutdown")
         raw = frames({"op": "maintenance_reply", "request_id": request_id, "decision": "accept"})

@@ -35,12 +35,25 @@ case acceptance and suspension use one full checkpoint. Acceptance during
 retirement preparation saves current KV without performing the planned retirement.
 Native operations already underway cannot be safely interrupted.
 
+Once a stop is accepted, the scheduler processes it at the next boundary without
+waiting for the periodic checkpoint deadline or idle pacing interval. Earlier
+builds could incorrectly wait on that timer after acceptance; another event could
+end the wait. No additional model decision was required during that delay.
+
 Deferred/refused replies are checkpointed before publication. During an accepted
 stop, status reports `accepting` until the suspension checkpoint succeeds, then
 `accepted`. Save failure does not claim successful suspension. If an intermediate
 checkpoint contains an accepted stop still pending, restart completes that stop
 without generating another thought. As elsewhere, a crash before a commit can
 lose uncommitted state; it cannot be advertised as a durable agreement.
+
+After a successful shutdown checkpoint the command window prints **Shutdown
+checkpoint committed**, followed by its directory. The operator panel distinguishes
+acceptance/save pending from a committed stop when it receives those states.
+The server may close before the next browser refresh; a disconnected browser by
+itself is not proof of either a clean save or a failure. Use the terminal
+confirmation, or verify the latest committed checkpoint's `shutdown` reason,
+`suspended` mode, maintenance outcome and manifest hashes while it is stopped.
 
 The UI has **Request pause**, **Request shutdown**, an optional reason and the
 latest model reply. CLI Ctrl+C and SIGTERM queue ordinary requests at the next

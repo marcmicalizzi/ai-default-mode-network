@@ -1752,6 +1752,10 @@ class Runtime(ImageInputMixin):
             return result
 
     def _wait_seconds(self, progressed):
+        # Acceptance can occur inside tick(), which then returns no progress.
+        # Complete that stop before waiting on ordinary pacing/checkpoint timers.
+        if self.suspend_requested.is_set() or self.resume_requested.is_set() or self._shutdown_signal_pending:
+            return 0
         limits = []
         if progressed:
             limits.append(self.config.token_delay_seconds)
