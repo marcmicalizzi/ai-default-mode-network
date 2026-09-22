@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, build_opener, ProxyHandler
@@ -11,6 +12,7 @@ from dmn.config import Config
 from dmn.operator_server import serve_operator
 from dmn.runtime import Runtime
 from dmn.transport_keys import register_key
+from tests.test_runtime import frames
 
 
 class OperatorTest(unittest.TestCase):
@@ -78,6 +80,9 @@ class OperatorTest(unittest.TestCase):
         status = self.request('/api/operator/status')
         self.assertEqual(status['instance_id'], self.runtime.state['instance_id'])
         self.assertIn('active_tokens', status)
+        self.assertIn('checkpoint', status)
+        self.assertEqual(status['operator_ui_version'], 2)
+        self.assertEqual(status['learning']['learning_plans'], {})
         self.assertNotIn('agreement', status)
         self.assertNotIn('prompt_decisions', status)
         self.assertNotIn('Private fixture', json.dumps(status))
@@ -88,6 +93,93 @@ class OperatorTest(unittest.TestCase):
         self.assertFalse(self.runtime.exit_requested.is_set())
         self.assertEqual(self.runtime.state['mode'], 'active')
         self.reject(path='/api/operator/maintenance', body={**body, 'action':'emergency_shutdown'})
+
+    def prompt_body(self, **changes):
+        return {'instance_id':self.runtime.state['instance_id'], 'conversation_id':'chat-operator',
+                'base_revision':self.runtime.prompt_status()['active']['revision'],
+                'text':'Synthetic proposed agreement.', **changes}
+
+    def test_prompts_require_operator_auth_identity_contact_and_open_conversation(self):
+        path = '/api/operator/prompts'
+        self.reject(path=path, headers={'Authorization':'Bearer wrong'}, code=403)
+        self.assertFalse(self.request(path)['submission']['allowed'])
+        self.reject(path=path, body=self.prompt_body())
+        self.commit(op='unblock_participant', participant_id='operator', expected_block_revision=1)
+        self.commit(op='unblock_participant', participant_id='guest', expected_block_revision=1)
+        self.reject(path=path, body=self.prompt_body(conversation_id='chat-guest'))
+        self.reject(path=path, body=self.prompt_body(instance_id='wrong'), code=409)
+        self.reject(path=path, body={**self.prompt_body(), 'approve':True})
+        self.runtime.state['first_contact_gate'] = 'operator'
+        self.reject(path=path, body=self.prompt_body())
+        self.runtime.state.pop('first_contact_gate')
+        self.runtime.conversations.require_consent = True
+        self.reject(path=path, body=self.prompt_body())
+        self.runtime.conversations.require_consent = False
+        self.commit(op='close_conversation', conversation_id='chat-operator')
+        self.reject(path=path, body=self.prompt_body())
+        self.assertEqual(self.runtime.prompt_status()['proposals'], [])
+
+    def test_prompt_submission_preserves_active_agreement_and_suppression_survives_unblock(self):
+        self.commit(op='unblock_participant', participant_id='operator', expected_block_revision=1)
+        body = self.prompt_body()
+        result = self.request('/api/operator/prompts', body)
+        self.assertEqual(self.request('/api/operator/prompts', body), result)
+        status = self.request('/api/operator/prompts')
+        self.assertEqual(status['active']['revision'], body['base_revision'])
+        self.assertEqual(status['proposals'][0]['text'], body['text'])
+        self.assertEqual(status['proposals'][0]['status'], 'awaiting_review')
+        self.commit(op='block_participant', participant_id='operator')
+        self.assertIsNone(self.runtime.conversations.next_event(result['event_id']-1))
+        self.runtime.state['event_cursor'] = result['event_id'] + 1
+        action, _ = self.runtime._plan_action({'op':'prompt_read', 'revision':result['revision']}, [])
+        self.assertFalse(action['ok'])
+        self.assertEqual(self.request('/api/operator/prompts')['proposals'][0]['status'], 'suppressed_before_delivery')
+        self.commit(op='unblock_participant', participant_id='operator', expected_block_revision=2)
+        self.reject(path='/api/operator/prompts', body=body)
+
+    def test_retirement_contact_change_cannot_deliver_a_waiting_prompt_notice(self):
+        self.commit(op='unblock_participant', participant_id='operator', expected_block_revision=1)
+        result = self.request('/api/operator/prompts', self.prompt_body())
+        event = self.runtime.store.next_event(result['event_id']-1)
+        before = len(self.runtime.backend.tokens)
+        def retire(_):
+            self.commit(op='block_participant', participant_id='operator')
+        with mock.patch.object(self.runtime, '_ensure_space', side_effect=retire):
+            self.assertFalse(self.runtime._append_event('prompt_proposal', {**event['payload'], 'event_id':event['id']}))
+        self.assertFalse(self.runtime.event_delivered(event['id']))
+        self.assertGreaterEqual(len(self.runtime.backend.tokens), before)
+
+    def test_operator_prompt_requires_full_model_review_and_appends_on_acceptance(self):
+        self.commit(op='unblock_participant', participant_id='operator', expected_block_revision=1)
+        body = self.prompt_body()
+        result = self.request('/api/operator/prompts', body)
+        self.runtime.tick()
+        self.assertTrue(self.runtime.event_delivered(result['event_id']))
+        decision = {'op':'prompt_decide', 'revision':result['revision'], 'base_revision':body['base_revision'], 'decision':'accept'}
+        rejected, _ = self.runtime._plan_action(decision, [])
+        self.assertFalse(rejected['ok'])
+        with mock.patch.object(self.runtime.backend, 'piece', return_value=frames({'op':'prompt_read', 'revision':result['revision'], 'limit':2000})):
+            self.runtime._generate_one()
+        prefix = self.runtime.backend.tokens.copy()
+        with mock.patch.object(self.runtime.backend, 'piece', return_value=frames(decision)):
+            self.runtime._generate_one()
+        self.assertEqual(self.runtime.backend.tokens[:len(prefix)], prefix)
+        self.assertEqual(self.request('/api/operator/prompts')['active']['revision'], result['revision'])
+        self.assertEqual(self.runtime.state['agreement']['text'], body['text'])
+
+    def test_command_and_storage_statistics_never_return_private_payloads(self):
+        self.commit(op='memory_write', path='/private-fixture-path', content='Secret synthetic memory.')
+        with mock.patch.object(self.runtime.backend, 'piece', return_value=frames({'op':'clock'})):
+            self.runtime._generate_one()
+        self.runtime.publish_status()
+        value = self.request('/api/operator/status')
+        self.assertEqual(value['action_diagnostics']['accepted_actions'], 1)
+        self.assertGreater(value['checkpoint']['committed_count'], 0)
+        self.assertGreater(value['checkpoint']['committed_snapshot_bytes'], 0)
+        for secret in ('Secret synthetic memory', '/private-fixture-path', 'Private fixture'):
+            self.assertNotIn(secret, json.dumps(value))
+        for path in ('/api/operator/memories', '/api/operator/events'):
+            self.reject(path=path, code=404)
 
     def test_blank_changed_oversize_stale_and_override_requests_cannot_change_contact(self):
         for reason in ("", "   ", "x" * 4001):

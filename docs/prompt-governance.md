@@ -117,6 +117,16 @@ live DMN context. The adapter forwards new user events and bypasses prompt
 reconstruction. Fresh DMN initialization uses `Config.system_prompt` once;
 imported instances use the captured source text. The dedicated DMN panel submits proposals through `POST /api/prompts`; `GET /api/prompts` returns the active record and proposal history.
 
+In multi-user mode the authenticated operator panel uses
+`GET /api/operator/prompts` and `POST /api/operator/prompts`. Submission additionally
+names the instance and an open operator `conversation_id`. The operator must have
+accepted contact and be unblocked; first-contact waiting, holds and endings cannot
+be bypassed. Proposals use the conversation inbox limits and are suppressed if
+their conversation closes or participant is blocked before delivery. Suppression
+does not become delivery merely because a later event advances the cursor, and
+unblocking does not replay an earlier suppressed proposal. Full reads and exact
+model approval remain mandatory. Viewing an agreement does not approve it.
+
 The DMN panel distinguishes awaiting review, deferred, declined, awaiting checkpoint,
 active and superseded revisions. It displays full texts and provenance. Refresh
 shows the latest committed result. It does not add a synthetic assistant message

@@ -1,7 +1,7 @@
-"""Separate operator-only contact directory and reasoned reconsideration UI.
+"""Authenticated operational dashboard, prompt proposals and contact requests.
 
 This credential never travels through WebUI. Mutations request maintenance or
-reconsideration; no endpoint overrides a contact decision or forces execution.
+reconsideration or prompt review; no endpoint approves behavioral text or contact.
 """
 from __future__ import annotations
 
@@ -14,6 +14,43 @@ from pathlib import Path
 
 from .ending import InstanceEnded
 from .transport_keys import register_key
+
+
+def operator_status(runtime):
+    value = runtime.status()
+    fields = ('instance_id', 'mode', 'active_tokens', 'context_capacity', 'generated_tokens',
+              'checkpoint_at', 'checkpoint_reason', 'context_retirement', 'activity', 'storage',
+              'sleep_service', 'maintenance', 'action_diagnostics', 'checkpoint', 'continuity',
+              'native_context_retirement_supported')
+    result = {key: value[key] for key in fields if key in value}
+    result['operator_ui_version'] = 2
+    with runtime.store.mutex:
+        result['published_messages'] = runtime.store.db.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
+        result['learning'] = {table: dict(runtime.store.db.execute(f'SELECT {column},COUNT(*) FROM {table} GROUP BY {column}'))
+                              for table, column in (('learning_plans', 'status'), ('sleep_executions', 'status'), ('sleep_runs', 'phase'))}
+    return result
+
+
+def operator_prompts(runtime):
+    if runtime._end_requested:
+        raise InstanceEnded('This instance ended; prompt records are unavailable here')
+    value = runtime.prompt_status()
+    with runtime._control_lock, runtime.store.mutex:
+        suppressed = {row[0] for row in runtime.store.db.execute('SELECT event_id FROM suppressed_events')}
+        for item in value['proposals']:
+            if item['event_id'] in suppressed:
+                item['status'] = 'suppressed_before_delivery'
+        directory = runtime.conversations.operator_directory()
+        person = next((p for p in directory if p['is_operator']), None)
+        chats = [c['conversation_id'] for c in (person or {}).get('conversations', []) if not c['closed']]
+        reason = ('Wait for the promised first contact in Open WebUI.' if runtime.state.get('first_contact_gate') else
+                  'The instance is on hold.' if runtime.state.get('hold') else
+                  'The instance must accept operator contact first.' if not person or person['contact_state'] != 'accepted' else
+                  'The operator is blocked; use reconsideration to request contact.' if person['blocked'] else
+                  'An open operator conversation is required.' if not chats else '')
+    value['submission'] = {'allowed': not reason, 'reason': reason, 'conversations': chats,
+                           'max_text_bytes': runtime.config.max_event_bytes}
+    return value
 
 
 def serve_operator(runtime, *, token, port=0):
@@ -67,15 +104,15 @@ def serve_operator(runtime, *, token, port=0):
                 elif self.path == "/api/operator/contacts":
                     self.reply(200, {"instance_id": instance_id, "participants": runtime.conversations.operator_directory()})
                 elif self.path == '/api/operator/status':
-                    value = runtime.status()
-                    fields = ('instance_id', 'mode', 'active_tokens', 'context_capacity', 'generated_tokens',
-                              'checkpoint_at', 'checkpoint_reason', 'context_retirement', 'activity', 'storage',
-                              'sleep_service', 'maintenance', 'action_diagnostics')
-                    self.reply(200, {key: value[key] for key in fields if key in value})
+                    self.reply(200, operator_status(runtime))
+                elif self.path == '/api/operator/prompts':
+                    self.reply(200, operator_prompts(runtime))
                 else:
                     self.reply(404, {"error": "unknown operator endpoint"})
+            except InstanceEnded as exc:
+                self.reply(410, {'error': str(exc)})
             except (sqlite3.Error, RuntimeError):
-                self.reply(503, {"error": "contact directory unavailable"})
+                self.reply(503, {"error": "operator data unavailable"})
             except OSError:
                 self.close_connection = True
 
@@ -83,13 +120,22 @@ def serve_operator(runtime, *, token, port=0):
             if not self.allowed():
                 return
             try:
-                if self.path not in {'/api/operator/unblock-requests', '/api/operator/maintenance'}:
+                if self.path not in {'/api/operator/unblock-requests', '/api/operator/maintenance', '/api/operator/prompts'}:
                     self.reply(404, {"error": "unknown operator endpoint"})
                     return
                 length = int(self.headers.get("Content-Length", "0"))
-                if self.headers.get("Transfer-Encoding") or not 0 < length <= 32768 or self.headers.get_content_type() != "application/json":
+                maximum = runtime.config.max_event_bytes * 6 + 2048 if self.path == '/api/operator/prompts' else 32768
+                if self.headers.get("Transfer-Encoding") or not 0 < length <= maximum or self.headers.get_content_type() != "application/json":
                     raise ValueError("bounded application/json body required")
                 body = json.loads(self.rfile.read(length))
+                if self.path == '/api/operator/prompts':
+                    if not isinstance(body, dict) or set(body) != {'instance_id', 'text', 'base_revision', 'conversation_id'}:
+                        raise ValueError('instance, proposal text, base revision and operator conversation are required')
+                    if body['instance_id'] != instance_id:
+                        self.reply(409, {'error': 'runtime instance identity does not match'})
+                        return
+                    self.reply(202, runtime.propose_prompt(body['text'], body['base_revision'], body['conversation_id']))
+                    return
                 if self.path == '/api/operator/maintenance':
                     if (not isinstance(body, dict) or set(body) != {'instance_id', 'action', 'reason'} or
                             body['instance_id'] != instance_id or body['action'] not in {'shutdown', 'suspend'} or

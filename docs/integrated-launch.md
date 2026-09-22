@@ -77,6 +77,26 @@ The separate operator page shows context usage and maintenance status. Its
 authenticated shutdown control requests consent during an active run; it does
 not force a shutdown or override a contact block.
 
+The operator dashboard also shows command diagnostics, context retirement,
+checkpoint age, unsaved state, snapshot write totals, save failures and aggregate
+learning-plan/transition states. It exposes no private memory paths, memory
+contents, training examples or internal cognition. Accepted-action counts begin
+when an upgraded runtime first observes an action; older successes cannot be
+reconstructed. They count successful validation, including reads, rather than
+durable publication. Checkpoint totals and published-message counts are separate.
+
+The **System prompt and behavioral agreement** panel shows the active text and
+immutable proposals. A host proposal requires an accepted, unblocked operator
+and an open operator conversation. It cannot precede the promised first contact.
+Later blocking or closure suppresses undelivered proposals; only model review and
+approval can activate wording. See [prompt governance](prompt-governance.md).
+
+Static page changes take effect on refresh. A running process does not reload
+new Python API routes: a newer page labels missing metrics and disables unavailable
+prompt controls until the next consented restart. Keep backend source changes in
+an isolated checkout while an instance may prepare or execute source-bound sleep
+plans, and finish pending transitions before updating that implementation.
+
 ## Sleep resource offer
 
 `--deep-sleep-recipe` names a local `peft_gemma4_nf4_v1` recipe with verified base,

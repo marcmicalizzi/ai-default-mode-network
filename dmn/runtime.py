@@ -443,20 +443,55 @@ class Runtime(ImageInputMixin):
             self.pacer.select(self.state["activity"])
             self.checkpoint_schedule.changed()
 
-    def propose_prompt(self, text, base_revision):
+    def propose_prompt(self, text, base_revision, conversation_id=None):
         value = proposal(text, base_revision, "host")
         if len(text.encode()) > self.config.max_event_bytes:
             raise ValueError("proposal exceeds max_event_bytes; text was not shortened")
         with self._control_lock:
             if self._end_requested or self.state.get("hold"):
                 raise ValueError("instance is stopped")
+            if self.state.get('first_contact_gate'):
+                raise ValueError('wait for the promised first contact before proposing prompt revisions')
             if self.state["mode"] == "staged":
                 first = self.store.next_event(self.state["event_cursor"])
                 if not first or first["kind"] != "user_message":
                     raise ValueError("Queue the first question before proposing revisions to a staged instance")
-            event_id = self.store.enqueue("prompt_proposal", value, self.now(), "prompt:" + value["revision"])
+            with self.store.transaction() as db:
+                if self.conversations:
+                    person = self.conversations.require_open(conversation_id)
+                    if not person['is_operator']:
+                        raise ValueError('prompt proposals require an accepted operator conversation')
+                    prior = db.execute('SELECT event_id FROM event_keys WHERE key=?',
+                                       ('prompt:' + value['revision'],)).fetchone()
+                    if prior:
+                        origin = db.execute('SELECT conversation_id FROM conversation_inputs WHERE event_id=?',
+                                            (prior[0],)).fetchone()
+                        if not origin or origin[0] != conversation_id or not self.conversations.admissible(prior[0]):
+                            raise ValueError('proposal belongs to a different or suppressed conversation input')
+                    else:
+                        pending = db.execute('''SELECT i.participant_id FROM conversation_inputs i
+                            LEFT JOIN delivered_events d ON d.event_id=i.event_id
+                            LEFT JOIN suppressed_events s ON s.event_id=i.event_id
+                            WHERE d.event_id IS NULL AND s.event_id IS NULL''').fetchall()
+                        held = db.execute("SELECT COUNT(*) FROM held_contact_inputs WHERE disposition='held'").fetchone()[0]
+                        if (len(pending) + held >= self.config.max_pending_messages or
+                                sum(row[0] == person['participant_id'] for row in pending) >= self.config.max_pending_messages_per_participant):
+                            raise ValueError('conversation inbox is full; proposal was not admitted')
+                event_id = self.store._enqueue(db, "prompt_proposal", value, self.now(), "prompt:" + value["revision"])
+                if self.conversations:
+                    db.execute('INSERT OR IGNORE INTO conversation_inputs VALUES(?,?,?)',
+                               (event_id, conversation_id, person['participant_id']))
         self.wake.set()
         return {"event_id": event_id, "revision": value["revision"], "status": "awaiting_review"}
+
+    def _addressed_prompt(self, event_id):
+        if not self.conversations:
+            return False
+        with self.store.mutex:
+            return self.store.db.execute('SELECT 1 FROM conversation_inputs WHERE event_id=?', (event_id,)).fetchone() is not None
+
+    def _prompt_delivered(self, event_id):
+        return self.event_delivered(event_id) if self._addressed_prompt(event_id) else event_id <= self.state['event_cursor']
 
     def offer_learning_recipe(self, value):
         from .sleep_plans import put_recipe
@@ -709,7 +744,8 @@ class Runtime(ImageInputMixin):
         # Making room may run retirement preparation, during which the model
         # can close this conversation or block its participant. Recheck at the
         # actual insertion boundary, after any such generation/checkpoint.
-        if self.conversations and kind in {"user_message", "image_permission_request"} and not self.conversations.admissible(payload["event_id"]):
+        addressed = kind in {"user_message", "image_permission_request"} or (kind == 'prompt_proposal' and self._addressed_prompt(payload['event_id']))
+        if self.conversations and addressed and not self.conversations.admissible(payload["event_id"]):
             return False
         self._eval(tokens)
         return True
@@ -868,8 +904,11 @@ class Runtime(ImageInputMixin):
             else:
                 result, effect = self._plan_action(action, effects)
             results.append(result)
+            diagnostics = self.state.setdefault("action_diagnostics", {})
+            diagnostics.setdefault('accepted_count_started_at_generated_token', self.state['generated_tokens'])
+            if result['ok']:
+                diagnostics['accepted_actions'] = diagnostics.get('accepted_actions', 0) + 1
             if not result["ok"]:
-                diagnostics = self.state.setdefault("action_diagnostics", {})
                 diagnostics["rejected_actions"] = diagnostics.get("rejected_actions", 0) + 1
                 message = action.get("op") == "send_message" or (
                     action.get("op") == "__invalid__" and action.get("attempted_op") == "send_message")
@@ -1004,7 +1043,7 @@ class Runtime(ImageInputMixin):
                     raw = json_text(self.state["agreement"])
                 else:
                     value, event_id = get_proposal(self.store, action["revision"])
-                    if event_id > self.state["event_cursor"]:
+                    if not self._prompt_delivered(event_id):
                         raise ValueError("proposal has not been delivered yet")
                     raw = value["text"]
                 offset, limit = self._range({"limit": 200, **action}, 2000)
@@ -1023,7 +1062,7 @@ class Runtime(ImageInputMixin):
                 decision = action["decision"]
                 if decision not in {"accept", "decline", "defer"}:
                     raise ValueError("decision must be accept, decline or defer")
-                if event_id > self.state["event_cursor"]:
+                if not self._prompt_delivered(event_id):
                     raise ValueError("proposal has not been delivered")
                 if (action["base_revision"] != self.state["agreement"]["revision"] or
                         value["base_revision"] != action["base_revision"]):
