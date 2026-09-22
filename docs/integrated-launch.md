@@ -174,3 +174,11 @@ requires `--vision-projector PATH` with the matching projector and Pillow in the
 still requires explicit global and participant permission. Retained image
 positions prevent text-only deep-sleep reconstruction until ordinary retirement
 has removed them. Idle is offered as a choice and is never selected for the model.
+
+Optional `--working-memory-tokens 4096` offers a shared allowance for a protected
+note and a model-selected raw-token span inside the existing context. The
+[working-memory actions](working-memory.md) preserve selected material through
+retirement without a separate KV branch or automatic summary. Offer this during
+agreed maintenance; changing checked implementation files while the instance is
+running can invalidate reviewed learning plans. This option does not change the
+current 256-token per-example training limit.

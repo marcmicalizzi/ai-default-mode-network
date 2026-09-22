@@ -21,7 +21,10 @@ from .protocol import ActionParser, PROTOCOL, ENDING_CONTRACT, MAINTENANCE_CONTR
 from .learning import (OPERATIONS as LEARNING_OPERATIONS, plan_action as plan_learning_action,
                        DATA_GUIDANCE, DATA_GUIDANCE_VERSION)
 from .sleep_plans import OPERATIONS as SLEEP_OPERATIONS, BRIEF as SLEEP_CONTRACT, plan_action as plan_sleep_action
-from .prompts import PROTECTED_SPANS, bootstrap, proposal, get_proposal, retirement_ranges, shift_protected
+from .prompts import bootstrap, proposal, get_proposal, retirement_ranges, shift_protected, protected_size
+from .working_memory import (OPERATIONS as WORKING_MEMORY_OPERATIONS, plan_action as plan_working_memory,
+                             announce as announce_working_memory, validate_restored as validate_working_memory,
+                             usage as working_memory_usage)
 from .compact_cache import validate_retirements
 from .preservation import InstanceHeld, saved_state, check_hold, make_hold
 from .recovery import restore_checkpoint
@@ -134,6 +137,7 @@ class Runtime(ImageInputMixin):
                 if initial_context:
                     raise ValueError("initial-context import requires a fresh instance")
                 self.state, evidence = restore_checkpoint(self.backend, saved, kv_recovery, allow_placement_change)
+                validate_working_memory(self)
                 self.parser = ActionParser(config.max_action_bytes, self.state["parser"])
                 self._restore_activity()
                 self.state["last_restore"] = evidence
@@ -302,6 +306,7 @@ class Runtime(ImageInputMixin):
             self.state["agreement"] = bootstrap(self.config.system_prompt, "See preserved original runtime seed.",
                                                 "legacy bootstrap; no model approval recorded")
         self._announce_activity()
+        announce_working_memory(self)
         self._announce_sleep_service()
         self.checkpoint(reason="restore")
 
@@ -420,6 +425,7 @@ class Runtime(ImageInputMixin):
     def finish_initialization(self):
         self._announce_activity()
         self._announce_conversations()
+        announce_working_memory(self)
         if self._first_message:
             self.enqueue(self._first_message, "staged:first-question")
         if self._prepare_only:
@@ -823,6 +829,9 @@ class Runtime(ImageInputMixin):
             self._append_event("context_retirement_pending", {
                 "keep_prefix_tokens": keep, "oldest_retirable_position": keep,
                 "active_tokens": len(self.backend.tokens),
+                **({"working_memory": {"used_tokens": working_memory_usage(self.state),
+                    "marker_unprotected": (self.state.get("working_memory_mark") or {}).get("position") is not None}}
+                   if self.config.working_memory_tokens else {}),
                 "maximum_preparation_tokens": self.config.preparation_tokens,
                 "fact": "Oldest tokens will leave active context. Stored memories survive unchanged; no rewrite is needed. Save genuinely new information if wanted. Read existing memory before replacing uncertain details. An unfinished message may continue after retirement; sleep is optional.",
             })
@@ -874,6 +883,8 @@ class Runtime(ImageInputMixin):
                                   **({"additional_ranges": [{"start_position": start, "removed_tokens": count}
                                       for start, count in ranges[1:]]} if len(ranges) > 1 else {}),
                                   "fact": "Older KV entries were retired and retained positions shifted. No external summary was substituted.",
+                                  **({"working_memory_marker_invalidated": True} if
+                                      (self.state.get("working_memory_mark") or {}).get("invalidated_by_retirement") else {}),
                                   "memory_writes_committed_during_preparation": [a["path"] for a in preparation_actions
                                       if a["op"] == "memory_write" and a["ok"]],
                                   **cancelled})
@@ -915,7 +926,7 @@ class Runtime(ImageInputMixin):
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in ({"activity", "end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS | CONVERSATION_OPERATIONS) and len(actions) != 1:
+            if action.get("op") in ({"activity", "end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS | CONVERSATION_OPERATIONS | WORKING_MEMORY_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -938,6 +949,13 @@ class Runtime(ImageInputMixin):
                     "generated_token": self.state["generated_tokens"]}
             if effect:
                 effects.append(effect)
+        if effects and effects[0]["op"] == "working_memory":
+            effect = effects[0]
+            if effect["tokens"]:
+                self._eval(effect["tokens"])
+            self._append_event("action_result", results[0], allow_retirement=False)
+            self.checkpoint(reason="working_memory", state_updates=effect["updates"])
+            return
         if effects and effects[0]["op"] == "activity":
             profile = effects[0]["profile"]
             self._append_event("action_result", results[0], allow_retirement=False)
@@ -1035,6 +1053,8 @@ class Runtime(ImageInputMixin):
                 profile = requested_profile(action, self.config)
                 result.update(profile)
                 effect = {"op": "activity", "profile": profile}
+            elif op in WORKING_MEMORY_OPERATIONS:
+                return plan_working_memory(self, action)
             elif op in LEARNING_OPERATIONS:
                 return plan_learning_action(self, action)
             elif op in SLEEP_OPERATIONS:
@@ -1091,9 +1111,7 @@ class Runtime(ImageInputMixin):
                 tokens = self._adoption_tokens(value) if decision == "accept" else []
                 if len(self.backend.tokens) + len(tokens) + self._event_budget() > self.backend.n_ctx - 32:
                     raise ValueError("agreement does not fit now; current agreement unchanged; retry after retirement or propose shorter text")
-                permanent = self.state["keep_prefix"] + sum(
-                    self.state[key]["end"] - self.state[key]["start"] for key in PROTECTED_SPANS
-                    if key != "protected_agreement" and self.state.get(key))
+                permanent = protected_size(self.state, len(self.backend.tokens), exclude=("protected_agreement",))
                 if permanent + len(tokens) + self.config.turnover_reserve + self._event_budget() + 256 >= self.backend.n_ctx:
                     raise ValueError("agreement exceeds available protected context; text was not shortened")
                 effect = {"op": op, "proposal": value, "decision": decision, "tokens": tokens}
@@ -1231,7 +1249,7 @@ class Runtime(ImageInputMixin):
                     return {"op": op, "ok": False,
                             "error": "Unavailable operation. The captured frontend tool definitions are historical; only DMN actions are active.",
                             "available_operations": ["send_message", "sleep", "end_instance", "cancel_end", "maintenance_reply", "hold_instance", "prompt_current", "prompt_propose", "prompt_read", "prompt_decide", "clock", "event_read",
-                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"] + (["activity"] if self.config.idle_enabled else []) + sorted(LEARNING_OPERATIONS | SLEEP_OPERATIONS)}, None
+                                "memory_read", "memory_write", "memory_list", "memory_history", "memory_move", "memory_delete"] + (["activity"] if self.config.idle_enabled else []) + sorted(LEARNING_OPERATIONS | SLEEP_OPERATIONS | WORKING_MEMORY_OPERATIONS)}, None
                 raise ValueError(action.get("error", "unknown operation"))
         except KeyError as exc:
             result = {"op": op, "ok": False,

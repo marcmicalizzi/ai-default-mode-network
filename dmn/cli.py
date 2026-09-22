@@ -38,6 +38,8 @@ def main(argv=None):
     run.add_argument("--idle-enabled", action=argparse.BooleanOptionalAction, default=None,
                      help="offer model-selected idle pacing; no automatic switch into idle")
     run.add_argument("--idle-max-burst-tokens", type=int, help="maximum ordinary generated tokens per idle burst")
+    run.add_argument("--working-memory-tokens", type=int,
+                     help="shared token allowance for model-selected context protection; 0 disables new pins")
     run.add_argument("--idle-min-interval-seconds", type=float, help="minimum quiet interval after an idle burst")
     run.add_argument("--sleep-checkpoint-min-interval-seconds", type=float,
                      help="ordinary-sleep snapshot cooldown under effects policy; 0 preserves immediate saves")
@@ -206,7 +208,7 @@ def main(argv=None):
         parser.error("import requires a new instance directory")
     overrides = {key: getattr(args, key) for key in
                  ("checkpoint_policy", "checkpoint_interval_seconds", "checkpoint_tokens", "suspend_preparation_seconds", "checkpoint_reserve_bytes",
-                  "idle_enabled", "idle_max_burst_tokens", "idle_min_interval_seconds", "sleep_checkpoint_min_interval_seconds")
+                  "idle_enabled", "idle_max_burst_tokens", "idle_min_interval_seconds", "sleep_checkpoint_min_interval_seconds", "working_memory_tokens")
                  if getattr(args, key) is not None}
     if overrides:
         try:

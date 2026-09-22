@@ -18,6 +18,9 @@ rank, adding examples or silently reducing the number of steps.
 The current supported envelope is dense Gemma4 text, query/output projections,
 rank 1–2, at most 256 tokens per example and at most 64 steps. Those are explicit
 upper limits, not defaults or a claim that every combination fits every machine.
+Larger examples are the next planned investigation after working memory; see
+[the longer-example experiment docket](longer-training-examples.md). The current
+256-token production limit remains in place until that work is validated.
 The NF4 base stays frozen, including the unused vision components. The recipe
 uses nested quantization, BF16 computation, a static GPU text/CPU vision placement,
 non-reentrant gradient checkpointing, and a fresh AdamW optimizer. Training the

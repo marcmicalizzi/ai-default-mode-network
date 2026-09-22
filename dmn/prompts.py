@@ -8,7 +8,33 @@ from .storage import json_text
 
 
 PROTECTED_SPANS = ("protected_protocol", "protected_agreement", "protected_activity",
-                   "protected_learning", "protected_conversations")
+                   "protected_learning", "protected_conversations", "protected_working_guidance",
+                   "protected_working_note", "protected_working_raw")
+
+
+def protected_ranges(state, length, exclude=()):
+    """Union retained intervals; a selected raw span may include another pin."""
+    if type(state["keep_prefix"]) is not int or not 0 <= state["keep_prefix"] <= length:
+        raise ValueError("invalid protected prefix")
+    spans = [(0, state["keep_prefix"])] if state["keep_prefix"] else []
+    for key in PROTECTED_SPANS:
+        span = state.get(key)
+        if span and key not in exclude:
+            start, end = span["start"], span["end"]
+            if type(start) is not int or type(end) is not int or not 0 <= start < end <= length:
+                raise ValueError("invalid protected context spans")
+            spans.append((start, end))
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def protected_size(state, length, exclude=()):
+    return sum(end - start for start, end in protected_ranges(state, length, exclude))
 
 
 def proposal(text, base_revision, author):
@@ -40,26 +66,21 @@ def get_proposal(store, revision):
 
 
 def retirement_ranges(state, length, required, reserve, notice, minimum_suffix=1):
-    """Plan oldest-first removals around the prefix, import contract and agreement.
+    """Plan oldest-first removals around the prefix and all protected intervals.
 
     Positions returned refer to the progressively shifted sequence. The last
     token remains available for native layout materialization. Compact SWA can
     require a longer contiguous suffix so evicted local KV never becomes needed.
     """
-    keep = state["keep_prefix"]
     if type(minimum_suffix) is not int or not 1 <= minimum_suffix <= length:
         raise ValueError("invalid minimum retained suffix")
     eligible_end = length - minimum_suffix
-    spans = sorted((dict(state[key]) for key in PROTECTED_SPANS
-                    if state.get(key)), key=lambda span: span["start"])
-    cursor, gaps = keep, []
-    for span in spans:
-        if not cursor <= span["start"] < span["end"] <= length:
-            raise ValueError("invalid protected context spans")
-        end = min(span["start"], eligible_end)
+    cursor, gaps = 0, []
+    for start, stop in protected_ranges(state, length):
+        end = min(start, eligible_end)
         if end > cursor:
             gaps.append((cursor, end - cursor))
-        cursor = span["end"]
+        cursor = stop
     if eligible_end > cursor:
         gaps.append((cursor, eligible_end - cursor))
     available = sum(count for _, count in gaps)
@@ -79,12 +100,22 @@ def retirement_ranges(state, length, required, reserve, notice, minimum_suffix=1
 
 
 def shift_protected(state, start, count):
+    # Validate every overlap before changing any position.
     for key in PROTECTED_SPANS:
         span = state.get(key)
         if span and start < span["end"] and start + count > span["start"]:
             raise ValueError("retirement would remove protected tokens")
+    for key in PROTECTED_SPANS:
+        span = state.get(key)
         if span and start + count <= span["start"]:
             state[key] = {"start": span["start"] - count, "end": span["end"] - count}
+    mark = state.get("working_memory_mark")
+    if mark and mark.get("position") is not None:
+        if start + count <= mark["position"]:
+            state["working_memory_mark"] = {"position": mark["position"] - count}
+        else:
+            # A marker alone is not protection. Never silently select a broken trajectory.
+            state["working_memory_mark"] = {"position": None, "invalidated_by_retirement": True}
     span = state.get("protected_protocol")
     if span and span["start"] == state["keep_prefix"]:
         state["keep_prefix"] = span["end"]

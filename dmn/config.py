@@ -59,8 +59,11 @@ class Config:
     max_pending_messages: int = 128
     max_pending_messages_per_participant: int = 16
     max_protected_action_tokens: int = 4096
+    working_memory_tokens: int = 0  # Optional shared allowance for model-selected raw context and notes.
 
     def __post_init__(self):
+        if type(self.working_memory_tokens) is not int or not 0 <= self.working_memory_tokens <= self.n_ctx:
+            raise ValueError("working_memory_tokens must be an integer between 0 and n_ctx")
         if type(self.idle_enabled) is not bool:
             raise ValueError("idle_enabled must be a boolean")
         if type(self.idle_max_burst_tokens) is not int or self.idle_max_burst_tokens < 1:

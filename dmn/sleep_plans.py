@@ -72,7 +72,7 @@ def implementation_identity():
     from .backend import sha256_file
     return {name: sha256_file(Path(__file__).with_name(name)) for name in (
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
-        "runtime.py", "protocol.py", "prompts.py", "learning.py", "training.py", "training_worker.py",
+        "runtime.py", "protocol.py", "prompts.py", "working_memory.py", "learning.py", "training.py", "training_worker.py",
         "training_executor.py", "training_models.py", "base_provenance.py", "provenance_native.py", "worker_limits.py",
         "gpu_recipe.py", "gpu_training_worker.py", "exact_base_provenance.py", "safetensor_stream.py", "qlora_prepare.py",
         "gpu_training_executor.py", "gpu_conversion_worker.py", "training_artifacts.py", "sleep_service.py", "gpu_monitor.py",

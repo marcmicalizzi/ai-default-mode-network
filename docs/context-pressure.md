@@ -39,7 +39,9 @@ attempting normal generation past the native limit.
 
 This display is additive; updating files does not reload an already-running
 Python process. Existing instances acquire the status fields at their next
-agreed restart. The retirement algorithm itself is unchanged.
+agreed restart. Optional [working memory](working-memory.md) additionally lets
+the instance protect a note and a selected raw-token interval. Retirement works
+around those pins while retaining the same native recent-window requirement.
 
 Run a new experiment directory:
 

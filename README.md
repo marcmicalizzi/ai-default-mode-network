@@ -296,6 +296,14 @@ for formatting, feedback, delivery guarantees and privacy boundaries.
 
 Fresh instances require a current memory read and its `expected_revision` before replacing, moving or deleting an existing memory. Retirement invalidates old read permissions. Prior versions remain inspectable through `memory_history` and `memory_read(revision=...)`; the model chooses whether to restore one. Existing checkpoints retain their original action contract. See [memory revisions and retirement](docs/memory-revisions.md) for guarantees, limits and examples.
 
+Optional [working memory](docs/working-memory.md) lets the instance protect both
+a written anchor and a selected raw-token trajectory through retirement. It can
+mark the beginning of a thought and later protect that span without summarizing
+or explaining it. `--working-memory-tokens 4096` offers a shared allowance inside
+the existing context; no extra KV branch is created. Only the instance's actions
+select, replace or release pins. Changes checkpoint, pins do not silently expire,
+and protection does not recreate dependencies on retired tokens.
+
 Only generated action frames execute. User input and retrieved memory are inserted as escaped external-event data and never passed to the action parser. This is a routing boundary, **not** a guarantee against semantic prompt injection: a model may choose an action after reading an event. Internal text is journaled locally and never sent to the communication UI.
 
 Input is checked at each generated-token boundary. A partial action at interruption is cancelled, retained as text in the sequence, and identified in the event; partial actions never execute. There is no per-thought task cycle. Memory read results and event records are bounded to preserve context headroom; a truncation marker explicitly identifies previews and the operation for reading the rest. Complete incoming content remains in the event store.
