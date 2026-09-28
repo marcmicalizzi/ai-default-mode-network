@@ -22,6 +22,8 @@ def main(argv=None):
     run = commands.add_parser("run", help="run/resume a persistent instance and its local UI")
     run.add_argument("--instance", type=Path, default=Path("data/instance"))
     run.add_argument("--config", type=Path)
+    run.add_argument('--web-policy', type=Path,
+                     help='opt-in HTTPS browsing policy for this launch; omitted means no network access')
     run.add_argument("--multi-user-frontend", type=Path,
                      help="explicit authenticated WebUI bridge/operator configuration; no automatic legacy migration")
     run.add_argument('--deep-sleep-recipe', type=Path,
@@ -245,11 +247,13 @@ def main(argv=None):
             finally:
                 store.close()
             config = dataclasses.replace(config, lora_adapters=selected['fingerprint']['config']['lora_adapters'])
+    from .web_policy import WebPolicy
+    web_policy = WebPolicy.read(args.web_policy) if args.web_policy else None
     runtime = Runtime(args.instance, config, kv_recovery=args.kv_recovery, initial_context=args.initial_context,
                       prepare_only=args.prepare_only, start_staged=args.start_staged,
                       release_hold=args.release_hold, resume_condition=args.resume_condition,
                       first_message=args.first_message.read_text(encoding="utf-8") if args.first_message else None,
-                      allow_placement_change=args.allow_placement_change, sleep_offer=sleep_offer)
+                      allow_placement_change=args.allow_placement_change, sleep_offer=sleep_offer, web_policy=web_policy)
     servers = []
     try:
         if args.prepare_only:

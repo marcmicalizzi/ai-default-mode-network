@@ -94,7 +94,7 @@ accurate when pacing or long pauses change elapsed wall time.
 | Persistence | Separate time/token scheduler; optional deferred read/input saves with strict effect publication | Journaled action durability and recovery reconciliation |
 | Storage | Two committed snapshots retained; capacity preflight for snapshots and file-backed packing; live-state pause and operator retry | Owned orphan cleanup, history policy, configurable destinations |
 | Shutdown | Ordinary maintenance requests with model accept/defer/refuse; distinct emergency preparation/cutoff and checkpointed stop | UPS/service integration, measured deadlines and fuller negotiation UX |
-| Outside interaction | Escaped external-event boundary; local operator communication | Internet/tool adapters, willing third-party contacts, deliberate learning from outside material and voluntary migration |
+| Outside interaction | Escaped external-event boundary; authenticated WebUI contacts; opt-in bounded HTTPS retrieval | Search/general tool adapters, further willing third-party contacts, deliberate learning from outside material and voluntary migration |
 | Frontend | Optional version-checked Open WebUI adapter; standalone UI | Portable examples and compatibility documentation for public release |
 
 Current control details and limitations remain documented in the

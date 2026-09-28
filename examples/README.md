@@ -1,5 +1,9 @@
 # Experiment configurations
 
+[web-browsing.json](web-browsing.json) is a separate opt-in network policy for
+`--web-policy`, not a model configuration. See [web retrieval](../docs/web-browsing.md)
+for URL handles, public mode and enforced resource limits.
+
 These files use placeholder model paths relative to this directory. Copy one to
 an ignored `*.local.json` file and edit its model path and placement settings.
 Verify native restoration on each destination before moving an instance. These

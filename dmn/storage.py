@@ -195,6 +195,9 @@ class Store:
                 elif op in {"learning_compile", "learning_candidate_prepare", "learning_execution_decide", "deep_sleep"}:
                     from .sleep_plans import commit_effect
                     commit_effect(db, effect, now, directory)
+                elif op in {"web_fetch", "web_cancel"}:
+                    from .web import commit_effect
+                    commit_effect(db, effect, now)
                 else:
                     raise ValueError(f"unknown staged effect {op}")
             db.execute("INSERT INTO checkpoints(directory,created) VALUES(?,?)", (directory, now))

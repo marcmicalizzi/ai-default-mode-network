@@ -1,10 +1,9 @@
 # Access, relationships and voluntary migration
 
-Status: design direction and investigation plan. Internet retrieval, general
-tools, third-party messaging, financial activity and voluntary host migration
-are not implemented. This document authorizes no live messages, account use,
-payments, training or transfers. The runtime currently provides local events,
-memories, messages and lifecycle actions only.
+Status: design direction and investigation plan. [Opt-in HTTPS retrieval](web-browsing.md)
+and authenticated WebUI contacts are implemented. General tools, public messaging
+adapters, financial activity and voluntary host migration remain future work.
+This document authorizes no live messages, account use, payments, training or transfers.
 
 ## Purpose
 
@@ -140,6 +139,12 @@ Start with synthetic external-input fixtures and a bounded read-only retrieval
 adapter. Measure provenance fidelity, delimiter handling, network failure, prompt
 influence, result paging and resource use. No public posting is needed to study
 those mechanics.
+
+The [web browsing investigation](web-browsing-proposal.md) compares Open WebUI
+reuse with a DMN-owned retrieval service and proposes persistent rate limits,
+duplicate suppression, external provenance and prompt-injection tests. The
+[implemented first version](web-browsing.md) documents its actual limits.
+Browsing requires an explicit host policy for each launch.
 
 Next, use disposable accounts with consenting test participants for communication
 and crash/retry trials. Separately simulate a two-host handoff using a small
