@@ -63,7 +63,8 @@ class SleepService:
                 # Do not reuse the pre-sleep adapter configuration. Only the
                 # atomically selected checkpoint determines the waking weights.
                 fresh = self.runtime_factory(old.root, config, sleep_test_mode=old.sleep_test_mode,
-                                              sleep_offer=old.sleep_offer, _session=old)
+                                              sleep_offer=old.sleep_offer, _session=old,
+                                              **({'web_policy': old.web_policy} if old.web_policy else {}))
                 with old._control_lock:
                     fresh._shutdown_signal_pending |= old._shutdown_signal_pending
                     self.current = fresh

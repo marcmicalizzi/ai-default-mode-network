@@ -36,6 +36,7 @@ from .attachments import (ImagePermissions, EphemeralImages, CONTRACT as IMAGE_C
 from .image_input import ImageInputMixin
 from .conversations import (Conversations, OPERATIONS as CONVERSATION_OPERATIONS,
                             CONTRACT as CONVERSATION_CONTRACT, plan_action as plan_conversation_action)
+from .web import OPERATIONS as WEB_OPERATIONS
 
 
 class ContextFull(RuntimeError):
@@ -51,7 +52,7 @@ class Runtime(ImageInputMixin):
     def __init__(self, root: Path, config: Config, backend=None, now=time.time, kv_recovery="strict", initial_context=None,
                  monotonic=time.monotonic, prepare_only=False, start_staged=False,
                  release_hold=None, resume_condition=None, first_message=None, allow_placement_change=False,
-                 sleep_test_mode=False, _session=None, sleep_offer=None):
+                 sleep_test_mode=False, _session=None, sleep_offer=None, web_policy=None, web_transport=None):
         if kv_recovery not in {"strict", "fallback", "rebuild"}:
             raise ValueError("unknown KV recovery policy")
         if config.multi_user and initial_context:
@@ -63,6 +64,14 @@ class Runtime(ImageInputMixin):
             raise ValueError('runtime replacement requires the same stopped owner with its backend released')
         self.sleep_test_mode = sleep_test_mode
         self.sleep_offer = sleep_offer
+        # Network authority is supplied for each launch, never recovered from a
+        # model/KV fingerprint or an archived config.
+        from .web_policy import WebPolicy
+        if web_policy is not None and not isinstance(web_policy, WebPolicy):
+            raise ValueError('web_policy must be a validated WebPolicy')
+        self.web_policy, self._web_transport = web_policy, web_transport
+        self.web, self._web_initialized = None, False
+        self._web_boundary = False
         self.monotonic = monotonic
         self.pacer = ActivityPacer(monotonic)
         self._sleep_save_due = None
@@ -334,6 +343,37 @@ class Runtime(ImageInputMixin):
             self.state['protected_learning'] = {'start': start, 'end': len(self.backend.tokens)}
             self.state['sleep_service_notice'] = marker
             self.checkpoint(reason='sleep_service_availability')
+
+    def _setup_web(self):
+        if self._web_initialized or self.state.get('pending_restore'):
+            return
+        from .web import WebService, CONTRACT
+        from .web_policy import identity
+        enabled = self.web_policy is not None
+        if not enabled and not self.state.get('web_notice'):
+            self._web_initialized = True
+            return
+        notice = {'enabled': enabled, 'policy_revision': identity(json_text(self.web_policy.to_dict())) if enabled else None,
+                  'mode': self.web_policy.mode if enabled else None,
+                  'contract': CONTRACT if enabled else 'Web fetching is unavailable in this launch. Retained web documents remain external data.'}
+        marker = identity(json_text(notice))
+        self.web = WebService(self.store, self.state['instance_id'], self.web_policy,
+            now=self.now, monotonic=self.monotonic, wake=self.wake,
+            **({'transport': self._web_transport} if self._web_transport else {}))
+        if self.state.get('web_notice') != marker or not self.state.get('protected_web'):
+            tokens = self.backend.tokenize(event_text('web_availability', notice, self.now(), resume_cognition=True))
+            self._ensure_space(len(tokens))
+            if self.suspend_requested.is_set() or self._end_requested or self.state.get('hold'):
+                self.web.close()
+                self.web = None
+                return
+            start = len(self.backend.tokens)
+            self._eval(tokens)
+            self.state['protected_web'] = {'start': start, 'end': len(self.backend.tokens)}
+            self.state['web_notice'] = marker
+            self.checkpoint(reason='web_availability')
+        self._web_initialized = True
+        self.publish_status()
 
     def _announce_conversations(self):
         if not self.conversations:
@@ -689,6 +729,8 @@ class Runtime(ImageInputMixin):
             if action == "shutdown":
                 self.exit_requested.set()
             self.suspend_requested.set()
+            if self.web:
+                self.web.set_allowed(False, self.state.get('event_cursor', 0))
 
     def _announce_cache_migration(self):
         if not self.state.get("cache_migration_notice_pending"):
@@ -705,6 +747,13 @@ class Runtime(ImageInputMixin):
         return delivered
 
     def _event_tokens(self, kind, payload, delivery=None):
+        if kind == 'web_result' or (kind == 'action_result' and
+                (payload.get('op') in WEB_OPERATIONS or payload.get('source_kind') == 'web')):
+            from .web import fit_event
+            tokens = fit_event(self, kind, payload)
+            if delivery is not None:
+                delivery['complete'] = True
+            return tokens
         marked = self.state.get("event_format") == "cognition_v2"
         text = event_text(kind, payload, self.now(), resume_cognition=marked)
         tokens = self.backend.tokenize(text)
@@ -926,7 +975,7 @@ class Runtime(ImageInputMixin):
         # all their effects with one state, never only the first half of a token.
         effects, results = [], []
         for action in actions:
-            if action.get("op") in ({"activity", "end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS | CONVERSATION_OPERATIONS | WORKING_MEMORY_OPERATIONS) and len(actions) != 1:
+            if action.get("op") in ({"activity", "end_instance", "maintenance_reply", "prompt_propose", "prompt_decide", "prompt_read", "prompt_current", "hold_instance"} | LEARNING_OPERATIONS | SLEEP_OPERATIONS | IMAGE_OPERATIONS | CONVERSATION_OPERATIONS | WORKING_MEMORY_OPERATIONS | WEB_OPERATIONS) and len(actions) != 1:
                 result, effect = {"op": action["op"], "ok": False,
                                   "error": "Issue this operation alone and await its result"}, None
             else:
@@ -1055,6 +1104,9 @@ class Runtime(ImageInputMixin):
                 effect = {"op": "activity", "profile": profile}
             elif op in WORKING_MEMORY_OPERATIONS:
                 return plan_working_memory(self, action)
+            elif op in WEB_OPERATIONS:
+                from .web import plan_action
+                return plan_action(self, action)
             elif op in LEARNING_OPERATIONS:
                 return plan_learning_action(self, action)
             elif op in SLEEP_OPERATIONS:
@@ -1198,6 +1250,10 @@ class Runtime(ImageInputMixin):
                 raw = json_text(event["payload"])
                 offset, limit = self._range(action, 2000)
                 result.update(content=raw[offset:offset + limit], total_characters=len(raw), next_offset=offset + limit)
+                if event['kind'] == 'web_result':
+                    from .web import TRUST
+                    result.update(TRUST, external={'text': result.pop('content')}, offset=offset,
+                                  source_ref=event['payload']['request_id'])
             elif op == "memory_list":
                 offset, limit = self._range(action, 50)
                 prefix = action.get("prefix", "/")
@@ -1291,6 +1347,11 @@ class Runtime(ImageInputMixin):
             self._prompt_reads.pop(value["revision"], None)
 
     def _end_instance(self, mode):
+        if self.web:
+            # A web-ledger write failure must not veto the instance's permanent
+            # end. Stop I/O first; the lifecycle refusal, not a web receipt, is
+            # authoritative from here, including when managed data is erased.
+            self.web.close(record_outcomes=False)
         # The refusal record commits BEFORE optional archival saving or erasure.
         # The decision does not depend on enough space for another full KV save.
         with self._control_lock:
@@ -1381,6 +1442,8 @@ class Runtime(ImageInputMixin):
         if self._end_requested and reason != "instance_ended":
             raise InstanceEnded("This instance has ended; no further checkpoints are permitted")
         started = self.monotonic()
+        if self.web and (state_updates or {}).get('mode') in {'held', 'deep_sleep', 'suspended'}:
+            self._web_boundary = True
         self._checkpoint_metrics["in_progress"] = True
         self.publish_status()
         try:
@@ -1427,6 +1490,9 @@ class Runtime(ImageInputMixin):
             self.publish_status()
             raise
         self.state.update(candidate)
+        self._web_boundary = False
+        if self.web:
+            self.web.committed(effects or [])
         self._sleep_save_due = None
         self._activity_intent_revision = None
         self.last_checkpoint_generated = self.state["generated_tokens"]
@@ -1549,6 +1615,8 @@ class Runtime(ImageInputMixin):
             return self._suspend_deadline is not None and self.monotonic() >= self._suspend_deadline
 
     def tick(self):
+        if self.state['mode'] in {'active', 'sleeping'} and not self.suspend_requested.is_set():
+            self._setup_web()
         with self._control_lock:
             self._prune_images()
         if self.state.get('first_contact_gate'):
@@ -1687,6 +1755,11 @@ class Runtime(ImageInputMixin):
         return True
 
     def publish_status(self):
+        if self.web:
+            self.web.set_allowed(self._web_initialized and self.state.get('mode') in {'active', 'sleeping'}
+                and not self.suspend_requested.is_set() and not self._suspending and not self._end_requested
+                and not self._storage_blocked and not self._web_boundary,
+                self.state.get('event_cursor', 0))
         with self.status_lock:
             self._status = {key: self.state.get(key) for key in (
                 "instance_id", "mode", "created_at", "generated_tokens", "event_cursor", "last_inference_at",
@@ -1705,6 +1778,9 @@ class Runtime(ImageInputMixin):
                 "completed": self.state.get("context_retirements", 0),
             }
             self._status["action_diagnostics"] = dict(self.state.get("action_diagnostics") or {})
+            self._status['web'] = {'available': self.web_policy is not None,
+                'initialized': self._web_initialized, 'mode': self.web_policy.mode if self.web_policy else None,
+                'failure': self.web.failure if self.web else None}
             self._status["activity"] = {**self.pacer.status(), "enabled": self.config.idle_enabled,
                 "idle_max_burst_tokens": self.config.idle_max_burst_tokens,
                 "idle_min_interval_seconds": self.config.idle_min_interval_seconds,
@@ -1770,6 +1846,8 @@ class Runtime(ImageInputMixin):
             limits.append(periodic)
         if self._sleep_save_due is not None and self.state["mode"] in {"active", "sleeping"}:
             limits.append(max(0, self._sleep_save_due - self.monotonic()))
+        if self.web and self.web_policy:
+            limits.append(0.25)
         return min(limits) if limits else 0.25
 
     def run(self):
@@ -1796,12 +1874,16 @@ class Runtime(ImageInputMixin):
             raise
         finally:
             self._running = False
+            if self.web:
+                self.web.close()
             self.stopped.set()
 
     def close(self):
         # Ordinary maintenance obtains model acceptance before closing.
         # Never checkpoint arbitrary failed native state during error cleanup.
         self.stopped.set()
+        if self.web:
+            self.web.close()
         with self._control_lock:
             self.ephemeral_images.entries.clear()
         if self.backend is not None:

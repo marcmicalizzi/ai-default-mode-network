@@ -1,0 +1,14 @@
+{
+  "mode": "handles",
+  "allowed_hosts": ["docs.python.org"],
+  "seeds": ["https://docs.python.org/3/"],
+  "min_interval_seconds": 10,
+  "per_minute": 6,
+  "per_hour": 60,
+  "per_day": 250,
+  "max_body_bytes": 2097152,
+  "daily_body_bytes": 33554432,
+  "cache_bytes": 67108864,
+  "cache_seconds": 900,
+  "timeout_seconds": 20
+}

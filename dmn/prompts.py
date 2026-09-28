@@ -8,7 +8,7 @@ from .storage import json_text
 
 
 PROTECTED_SPANS = ("protected_protocol", "protected_agreement", "protected_activity",
-                   "protected_learning", "protected_conversations", "protected_working_guidance",
+                   "protected_learning", "protected_conversations", "protected_web", "protected_working_guidance",
                    "protected_working_note", "protected_working_raw")
 
 
