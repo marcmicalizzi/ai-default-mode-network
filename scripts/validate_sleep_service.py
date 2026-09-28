@@ -24,10 +24,12 @@ from dmn.runtime import Runtime
 from dmn.sleep_plans import identity, read_record
 from dmn.sleep_service import SleepService
 from dmn.storage import json_text, write_durable
-from dmn.training import GPU_KIND, CHECKS
+from dmn.training import GPU_KIND, GPU_KIND_V2, CHECKS
 
 
-def validate(output, proof_path, training_python, *, full_model=None, projector=None):
+def validate(output, proof_path, training_python, *, full_model=None, projector=None, recipe_kind=GPU_KIND):
+    if recipe_kind not in {GPU_KIND, GPU_KIND_V2}:
+        raise ValueError('unknown validation recipe')
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     proof = json.loads(proof_path.read_text())
     full = full_model is not None
@@ -61,9 +63,10 @@ def validate(output, proof_path, training_python, *, full_model=None, projector=
         'packages': json.loads(subprocess.check_output([str(training_python), '-c',
             'import json,importlib.metadata as m; print(json.dumps({n:m.version(n) for n in ' + repr(PACKAGES) + '}))'], text=True)),
         'provenance_manifest': proof['provenance_manifest'] if full else {'path': str(proof_path), 'sha256': sha256_file(proof_path)},
-        'gpu': {'torch_vram_bytes': (22 if full else 2) * 1024**3, 'max_sequence_tokens': 256, 'max_rank': 2, 'max_steps': 64}}
+        'gpu': {'torch_vram_bytes': ((24 if recipe_kind == GPU_KIND_V2 else 22) if full else 2) * 1024**3,
+                'max_sequence_tokens': 1536 if recipe_kind == GPU_KIND_V2 else 256, 'max_rank': 2, 'max_steps': 64}}
     backend = make_backend(config)
-    recipe = {'schema': 1, 'kind': GPU_KIND, 'parent': identity(backend.fingerprint),
+    recipe = {'schema': 1, 'kind': recipe_kind, 'parent': identity(backend.fingerprint),
               'resources': resources, 'checks': CHECKS, 'trainer': trainer}
     root = output / 'instance'
     with mock.patch('dmn.runtime.PROTOCOL', 'Disposable supervised service test. Injected actions are not model consent.'):
@@ -183,7 +186,7 @@ def validate(output, proof_path, training_python, *, full_model=None, projector=
             'injected_choices_are_not_model_consent':True, 'continuous_service':True,
             'queued_input_preserved':True, 'published_messages_unchanged':True,
             'strict_native_restore_without_replay':True, 'full_model':full, 'projector_loaded':full,
-            'cycles':observations})
+            'recipe_kind':recipe_kind, 'cycles':observations})
     finally:
         service.close()
 
@@ -192,5 +195,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('output', 'proof', 'training-python'):
         parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--recipe-version', choices=('v1', 'v2'), default='v1')
     args = parser.parse_args()
-    validate(args.output.resolve(), args.proof.resolve(), args.training_python.resolve())
+    validate(args.output.resolve(), args.proof.resolve(), args.training_python.resolve(),
+             recipe_kind=GPU_KIND_V2 if args.recipe_version == 'v2' else GPU_KIND)

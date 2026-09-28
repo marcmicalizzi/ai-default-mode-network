@@ -323,6 +323,8 @@ class Runtime(ImageInputMixin):
         from .sleep_plans import DISCOVERY, seal
         enabled = self.sleep_offer is not None
         notice = {'enabled': enabled, 'resources': self.sleep_offer['resources'] if enabled else None,
+                  'recipe_kind': self.sleep_offer.get('kind') if enabled else None,
+                  'gpu_limits': self.sleep_offer.get('trainer', {}).get('gpu') if enabled else None,
                   'contract': LEARNING_CONTRACT + '\n' + DISCOVERY}
         marker = seal(notice)['revision']
         if ((self.state.get('sleep_service_notice') == marker and self.state.get('protected_learning'))

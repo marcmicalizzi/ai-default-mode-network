@@ -1,10 +1,11 @@
 import copy
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from dmn.gpu_recipe import PACKAGES, compile_training, validate_recipe
-from dmn.training import GPU_KIND, CHECKS
+from dmn.training import GPU_KIND, GPU_KIND_V2, CHECKS
 from dmn.storage import write_durable
 from dmn.sleep_plans import identity, read_record
 from tests.test_training import recipe
@@ -100,6 +101,59 @@ class GpuRecipeTest(unittest.TestCase):
         self.assertIn('source changed', result['error'])
         self.assertIsNone(effect)
         self.assertEqual(c.r.store.db.execute('SELECT COUNT(*) FROM sleep_executions').fetchone()[0], 0)
+
+    def test_v2_compiles_full_1536_example_with_explicit_chunked_loss(self):
+        from dmn.sleep_plans import implementation_identity, execution_status
+        self.recipe['kind'] = GPU_KIND_V2
+        self.recipe['trainer']['gpu']['max_sequence_tokens'] = 1536
+        c = self.case
+        c.recipe_id = c.r.offer_learning_recipe(self.recipe)['revision']
+        c.plan['examples'][0].update(input='Prefix: ', target='x' * 1528)
+        value = self.compiled()
+        self.assertEqual(len(value['examples'][0]['tokens']), 1536)
+        self.assertEqual(value['examples'][0]['labels'][:8], [-100] * 8)
+        self.assertEqual(value['training']['loss_computation'],
+                         {'implementation': 'checkpointed_vocabulary_chunks_v1', 'output_chunk_tokens': 64})
+        self.assertIn('chunked_loss.py', implementation_identity())
+        self.assertNotEqual(execution_status(c.r.store, value['revision']), 'approved')
+        oversized = copy.deepcopy(value)
+        oversized['examples'][0]['tokens'].append(1)
+        before = copy.deepcopy(oversized['examples'])
+        with self.assertRaisesRegex(ValueError, 'no truncation or splitting'):
+            compile_training(oversized)
+        self.assertEqual(oversized['examples'], before)
+        self.recipe['trainer']['gpu']['max_sequence_tokens'] = 1537
+        with self.assertRaisesRegex(ValueError, 'envelope'):
+            validate_recipe(self.recipe)
+
+    def test_v2_lower_host_cap_is_enforced_and_versions_cannot_substitute(self):
+        from dmn.config import Config
+        from dmn.sleep_host import guard
+        from dmn.gpu_training_worker import recipe_loss, loss_for
+        from dmn.chunked_loss import loss_for as chunked
+        value = self.compiled()
+        self.assertIs(recipe_loss(value), loss_for)
+        value['recipe']['kind'] = GPU_KIND_V2
+        self.assertIs(recipe_loss(value), chunked)
+        config = Config(backend='llama', n_ctx=4096, experimental_compact_swa=True,
+                        pack_checkpoints=True, swa_full=False, flash_attn=True,
+                        type_k='q8_0', type_v='q8_0')
+        with mock.patch('dmn.sleep_host.os', SimpleNamespace(name='nt')), self.assertRaisesRegex(ValueError, 'recipe version'):
+            guard(config, value, self.recipe)
+        value['recipe']['trainer']['gpu']['max_sequence_tokens'] = 1024
+        value['examples'][0]['tokens'] = [1] * 1025
+        with self.assertRaisesRegex(ValueError, 'offered NF4 length'):
+            compile_training(value)
+
+    def test_worker_rejects_mismatched_reviewed_loss_before_loading(self):
+        from dmn.gpu_training_worker import request
+        from dmn.sleep_plans import seal
+        value = self.compiled()
+        value['training']['loss_computation'] = {'implementation': 'wrong', 'output_chunk_tokens': 64}
+        value = seal({k: v for k, v in value.items() if k != 'revision'})
+        write_durable(self.root / 'input.json', value)
+        with self.assertRaisesRegex(ValueError, 'compiled loss differs'):
+            request(self.root)
 
 
 class GpuWorkerGateTest(unittest.TestCase):

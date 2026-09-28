@@ -1,8 +1,11 @@
 # Longer training examples: resource experiments
 
-The disposable experiments investigate 512 through 2048 tokens. The current
-production recipe still rejects examples above 256 tokens; this document does
-not change that limit. Longer execution times are acceptable within an explicit
+The disposable experiments investigate 512 through 2048 tokens. The original
+v1 recipe still rejects examples above 256 tokens. A September 28 CPU integration
+pass added [the separately offered v2 recipe](reviewed-nf4-training.md), using the
+same chunked loss and permitting up to 1536 tokens. This report records the
+September 27 research runs; it is not a new GPU service rehearsal.
+Longer execution times are acceptable within an explicit
 host time allowance and an instance-reviewed plan. Additional time does not by
 itself remove a peak-memory allocation requirement.
 
@@ -184,8 +187,9 @@ Windows shared-GPU-memory observations are not a substitute for testing it.
 
 ## Research chunked loss
 
-`--loss chunked` selects `scripts/chunked_training_loss.py`; the default retains
-the original production loss. The decoder still receives the entire example
+`--loss chunked` selects the shared `dmn/chunked_loss.py` implementation through
+the research helper; v2 uses it directly. The default research loss and v1 retain
+the original full-logit loss. The decoder still receives the entire example
 with the same attention implementation and no cache. Its final hidden states
 are projected to vocabulary logits in chunks of at most 64 positions. Each
 chunk preserves Gemma's final logit soft-cap and shifted target mask, sums the
@@ -205,7 +209,8 @@ Opt-in CPU tests compare full-context loss and all LoRA gradients on small text
 and wrapped Gemma models, with soft-capping, irregular masks, uneven chunks and
 decoder gradient checkpointing. The GPU comparison above tests the actual NF4
 31B model. Exact equality in that one gradient check is not a universal numerical
-guarantee. The production trainer has not adopted this alternative.
+guarantee. The separately offered v2 recipe now uses this implementation; v1
+continues to use full logits.
 
 Local validation ran the full standard-library suite (486 tests, 35 optional
 skips) and the three opt-in CPU numerical tests in the isolated training

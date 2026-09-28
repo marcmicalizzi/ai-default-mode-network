@@ -36,7 +36,8 @@ def plan(source, length, budget, loss_mode='full', compare_full=False):
             'implementation': {str(p.relative_to(ROOT)): sha256_file(p) for p in (
                 Path(__file__), ROOT/'dmn/gpu_training_worker.py', ROOT/'dmn/qlora_prepare.py',
                 ROOT/'dmn/safetensor_stream.py', ROOT/'dmn/training_artifacts.py',
-                ROOT/'scripts/probe_qlora_31b.py', ROOT/'scripts/chunked_training_loss.py')}}
+                ROOT/'scripts/probe_qlora_31b.py', ROOT/'scripts/chunked_training_loss.py',
+                ROOT/'dmn/chunked_loss.py')}}
 
 
 def worker(folder):

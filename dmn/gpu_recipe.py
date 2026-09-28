@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .backend import sha256_file
 from .learning import _fields
-from .training import (GPU_KIND, KIND_V2, PACKAGES as CPU_PACKAGES, CHECKS,
+from .training import (GPU_KIND, GPU_KIND_V2, GPU_KINDS, KIND_V2, PACKAGES as CPU_PACKAGES, CHECKS,
                        parent_adapter_config, verify_tree)
 from .training_models import model_profile
 from .worker_limits import WorkerLimits
@@ -23,9 +23,17 @@ PACKAGES = (*CPU_PACKAGES, "bitsandbytes", "accelerate")
 SCOPE = "reviewed_nf4_training_v1"
 
 
+def loss_contract(kind):
+    if kind == GPU_KIND:
+        return {"implementation": "full_logits_v1", "output_chunk_tokens": None}
+    if kind == GPU_KIND_V2:
+        return {"implementation": "checkpointed_vocabulary_chunks_v1", "output_chunk_tokens": 64}
+    raise ValueError("unknown NF4 recipe loss")
+
+
 def validate_recipe(value):
     _fields(value, "schema kind parent resources checks trainer", "NF4 recipe")
-    if value["schema"] != 1 or value["kind"] != GPU_KIND or value["checks"] != CHECKS:
+    if value["schema"] != 1 or value["kind"] not in GPU_KINDS or value["checks"] != CHECKS:
         raise ValueError("unsupported NF4 recipe or checks")
     trainer = value["trainer"]
     gpu = trainer.get("gpu")
@@ -33,7 +41,8 @@ def validate_recipe(value):
     for key, limit in gpu.items():
         if type(limit) is not int or limit < 1:
             raise ValueError("GPU recipe limits must be positive integers")
-    if (gpu["max_sequence_tokens"] > 256 or gpu["max_steps"] > 64 or gpu["max_rank"] > 2 or
+    max_tokens = 1536 if value["kind"] == GPU_KIND_V2 else 256
+    if (gpu["max_sequence_tokens"] > max_tokens or gpu["max_steps"] > 64 or gpu["max_rank"] > 2 or
             gpu["torch_vram_bytes"] > 24 * 1024**3):
         raise ValueError("NF4 recipe exceeds the supported workload envelope")
     if set(trainer.get("packages", {})) != set(PACKAGES):
@@ -109,6 +118,7 @@ def compile_training(value):
             "allocator_configuration": ALLOCATOR, "torch_vram_bytes": gpu["torch_vram_bytes"],
             "max_sequence_tokens": gpu["max_sequence_tokens"], "source_loader": "bounded_tensor_stream_v1",
             "loss": "mean_cross_entropy_on_shifted_target_labels_only; no padding/truncation",
+            "loss_computation": loss_contract(recipe["kind"]),
             "evaluation": "selected-example loss at training and deployment scale; no heldout or benefit guarantee",
             "base_provenance": {"revision": proof["revision"], "method": proof["method"]}})
     return value

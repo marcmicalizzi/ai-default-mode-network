@@ -15,15 +15,18 @@ if __name__ == '__main__':
     for name in ('output', 'proof', 'training-python', 'model', 'projector'):
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--worker', action='store_true')
+    parser.add_argument('--recipe-version', choices=('v1', 'v2'), default='v1')
     args = parser.parse_args()
     if args.worker:
         from scripts.validate_sleep_service import validate
+        from dmn.training import GPU_KIND, GPU_KIND_V2
         validate(args.output.resolve()/'trial', args.proof.resolve(), args.training_python.resolve(),
-                 full_model=args.model.resolve(), projector=args.projector.resolve())
+                 full_model=args.model.resolve(), projector=args.projector.resolve(),
+                 recipe_kind=GPU_KIND_V2 if args.recipe_version == 'v2' else GPU_KIND)
     else:
         output = args.output.resolve()
         output.mkdir(parents=True, exist_ok=False)
-        command = [str(Path(__file__).resolve()), '--worker']
+        command = [str(Path(__file__).resolve()), '--worker', '--recipe-version', args.recipe_version]
         for name in ('output', 'proof', 'training_python', 'model', 'projector'):
             command += ['--'+name.replace('_','-'), str(getattr(args,name).resolve())]
         process = run_monitored_gpu_worker(Path(sys.executable), command, cwd=ROOT, log=output/'service.log',

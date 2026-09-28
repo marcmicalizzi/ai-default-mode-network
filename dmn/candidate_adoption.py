@@ -5,14 +5,14 @@ import copy
 from .deep_sleep import read_run
 from .sleep_plans import read_record, seal, identity, implementation_identity
 from .learning import read_plan
-from .training import GPU_KIND
+from .training import GPU_KINDS
 
 
 def original(store, run_id, parent, instance_id):
     run = read_run(store, run_id)
     compiled = read_record(store, 'sleep_executions', run['execution'])
     if (run['phase'] != 'WakeCommitted' or run['report'].get('outcome') != 'review_candidate_under_original_weights' or
-            compiled['recipe']['kind'] != GPU_KIND or compiled.get('candidate_reuse') or
+            compiled['recipe']['kind'] not in GPU_KINDS or compiled.get('candidate_reuse') or
             compiled['parent'] != parent or compiled['instance_id'] != instance_id or
             compiled['preferences']['adoption'] != 'review_first'):
         raise ValueError('candidate is not a completed review-first result for these unchanged parent weights')

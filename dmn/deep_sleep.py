@@ -224,10 +224,10 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
         if run["phase"] == "Stopped":
             raise SleepPending("this plan chose to remain stopped after failure; ordinary launch cannot release it")
         compiled = read_record(store, "sleep_executions", run["execution"])
-        from .training import SCOPE, KINDS, GPU_KIND
+        from .training import SCOPE, KINDS, GPU_KINDS
         from .gpu_recipe import SCOPE as GPU_SCOPE
-        training = ((compiled["execution_scope"] == SCOPE and compiled["recipe"]["kind"] in KINDS - {GPU_KIND}) or
-                    (compiled["execution_scope"] == GPU_SCOPE and compiled["recipe"]["kind"] == GPU_KIND))
+        training = ((compiled["execution_scope"] == SCOPE and compiled["recipe"]["kind"] in KINDS - GPU_KINDS) or
+                    (compiled["execution_scope"] == GPU_SCOPE and compiled["recipe"]["kind"] in GPU_KINDS))
         if compiled["execution_scope"] != "disposable_mechanics_fixture_only" and not training:
             raise ValueError("no production trainer or resource enforcement is implemented")
         if compiled["implementation"] != implementation_identity():
@@ -255,7 +255,7 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
         folder.mkdir(exist_ok=True)
         _owned(folder, folder.parent)
         if executor is None:
-            if training and compiled["recipe"]["kind"] == GPU_KIND:
+            if training and compiled["recipe"]["kind"] in GPU_KINDS:
                 from .gpu_training_executor import GpuTrainingExecutor
                 executor = GpuTrainingExecutor(folder, cancelled, contained_wake=_contained_wake)
             elif training:
@@ -312,7 +312,7 @@ def run_fixture_sleep(root, run_id, *, executor=None, fault=lambda _: None, canc
             if cancelled():
                 raise ValueError("sleep cycle cancelled")
             size = sum((source / name).stat().st_size for name in manifest["files"])
-            workspace = size * 2 + (1024 if compiled['recipe']['kind'] == GPU_KIND else 32 if training else 1) * 1024 * 1024
+            workspace = size * 2 + (1024 if compiled['recipe']['kind'] in GPU_KINDS else 32 if training else 1) * 1024 * 1024
             if workspace > compiled["resources"]["max_disk_bytes"]:
                 raise ValueError("sleep workspace exceeds reviewed disk ceiling")
             check_space(root, workspace, config.checkpoint_reserve_bytes, "sleep integration")

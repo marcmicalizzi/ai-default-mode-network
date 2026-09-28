@@ -111,7 +111,7 @@ plans, and finish pending transitions before updating that implementation.
 
 ## Sleep resource offer
 
-`--deep-sleep-recipe` names a local `peft_gemma4_nf4_v1` recipe with verified base,
+`--deep-sleep-recipe` names a local `peft_gemma4_nf4_v1` or `peft_gemma4_nf4_v2` recipe with verified base,
 converter and provenance manifests, interpreter hash, pinned package versions,
 GPU workload limits and resource ceilings. This is an offer, not training input
 or approval. Use the [NF4 contract](reviewed-nf4-training.md) and local validation
@@ -181,4 +181,6 @@ note and a model-selected raw-token span inside the existing context. The
 retirement without a separate KV branch or automatic summary. Offer this during
 agreed maintenance; changing checked implementation files while the instance is
 running can invalidate reviewed learning plans. This option does not change the
-current 256-token per-example training limit.
+selected recipe's training limit. The v1 ceiling is 256 tokens; v2 offers up to
+1536 with the [reviewed chunked-loss recipe](reviewed-nf4-training.md). Working
+memory and training-example budgets remain separate.

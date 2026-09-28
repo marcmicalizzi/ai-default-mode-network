@@ -1,6 +1,6 @@
 # Reviewed NF4 training integration
 
-The `peft_gemma4_nf4_v1` recipe connects the existing separate compiled-plan
+The `peft_gemma4_nf4_v1` and `peft_gemma4_nf4_v2` recipes connect the existing separate compiled-plan
 review to GPU training, fresh-process reload and GGUF conversion. The Windows
 launcher enables its supervised service only with an explicit
 `--deep-sleep-recipe` resource offer. Execution stays disabled by default.
@@ -15,14 +15,32 @@ lineage, all training assets, interpreter/package versions and implementation
 hashes. It rejects unsupported requests without truncating, splitting, changing
 rank, adding examples or silently reducing the number of steps.
 
-The current supported envelope is dense Gemma4 text, query/output projections,
-rank 1–2, at most 256 tokens per example and at most 64 steps. Those are explicit
-upper limits, not defaults or a claim that every combination fits every machine.
-For larger examples, see
-[the longer-example resource experiments](longer-training-examples.md). Research
-runs have passed up to 1536 synthetic tokens with a chunked loss. The current
-256-token production limit remains in place pending a versioned recipe and
-integration validation; the research helper is not used by this service.
+Both versions support dense Gemma4 text, query/output projections, rank 1–2 and
+at most 64 steps. The versions have distinct loss implementations and length limits:
+
+| Recipe | Maximum example length | Loss computation |
+| --- | ---: | --- |
+| `peft_gemma4_nf4_v1` | 256 tokens | Full vocabulary logits |
+| `peft_gemma4_nf4_v2` | 1536 tokens | 64-position vocabulary chunks, recomputed during backward |
+
+Input and target together count toward the length limit. The v2 decoder still
+processes the entire example as one context, with the same shifted target-only
+labels and Gemma logit soft-cap. Chunking does not split or truncate the example.
+Different matrix and reduction shapes can change floating-point rounding.
+The compiled plan binds the loss implementation and chunk size; training and
+fresh-process evaluation use that same method. Both implementations are included
+in the reviewed source identity. No additional dependencies are required.
+
+These are supported ceilings, not defaults or guarantees that every workload
+fits every machine. A host may offer a smaller length and memory budget. The
+[resource experiments](longer-training-examples.md) passed synthetic 1536-token
+training under a 24 GiB Torch allocator ceiling on the RTX 5090, and 1024 tokens
+under 22.5 GiB. A 2048-token attempt failed in attention and is not offered.
+The current v2 integration reuses that measured algorithm; the September 28
+integration pass is CPU-only and does not claim a fresh GPU service rehearsal.
+The merged CPU suite passed 542 tests (35 optional skips), the three numerical
+loss/gradient tests passed with CUDA hidden, and the installed tokenizer compiled
+an exact 1536-token synthetic v2 plan without GPU execution.
 The NF4 base stays frozen, including the unused vision components. The recipe
 uses nested quantization, BF16 computation, a static GPU text/CPU vision placement,
 non-reentrant gradient checkpointing, and a fresh AdamW optimizer. Training the
@@ -34,6 +52,33 @@ adapter rather than stacking adapters.
 The model must read the complete compiled plan, separately approve it and request
 deep sleep. A recipe offer is not approval. The test scripts inject actions only
 to exercise these mechanics; they do not claim to obtain a model's consent.
+
+To upgrade a local offer, preserve its existing asset identities and resource
+ceilings, choose `kind: "peft_gemma4_nf4_v2"`, and set
+`trainer.gpu.max_sequence_tokens` and `trainer.gpu.torch_vram_bytes` explicitly.
+For the measured 1536-token 31B setup those values are `1536` and `25769803776`
+(24 GiB), with 31 GiB whole-device and 32 GiB job-commit allowances. Save the
+new offer separately and pass its path using `--deep-sleep-recipe`. Preserve the
+old v1 offer for hosts that need it. The host checks the recipe version as well
+as the trainer and budgets; changing an offer cannot change an approved plan.
+Compile and review again after an implementation/recipe change. Existing
+pending transitions require their original bound environment.
+
+The protected capability notice includes the offered recipe kind and GPU limits.
+A consented restart with a changed offer appends updated availability without
+rewriting the instance's behavioral agreement or approving a learning plan.
+
+For CPU-only preparation against installed assets, the disposable 31B helper
+can compile an exact-length synthetic plan without dispatching a GPU worker:
+
+```powershell
+python scripts/validate_reviewed_nf4_31b.py --recipe-version v2 --tokens 1536 --prepare-only --output FRESH_FOLDER --proof PROOF_RESULT_JSON --template LOCAL_RECIPE_JSON --training-python TRAIN_PYTHON
+```
+
+Omitting `--prepare-only` explicitly runs the GPU training/reload/conversion
+chain. The separate tiny service rehearsal accepts `--recipe-version v2` to
+exercise review-first wake, adoption-only wake and continuation; it also needs
+an agreed GPU window. Preparation alone proves none of those GPU stages.
 
 ## Source identity
 

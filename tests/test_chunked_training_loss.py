@@ -42,7 +42,7 @@ class ChunkedTrainingLossTests(unittest.TestCase):
 
     def test_full_context_loss_and_all_adapter_gradients_match(self):
         import torch
-        from scripts.chunked_training_loss import loss_for
+        from dmn.chunked_loss import loss_for
         row = {'tokens': [1] + [3 + (i * 13) % 250 for i in range(78)]}
         row['labels'] = [t if i >= 19 and i % 5 != 0 else -100 for i, t in enumerate(row['tokens'])]
         for wrapped, cap in ((False, None), (False, 9.), (True, 9.)):
@@ -71,7 +71,7 @@ class ChunkedTrainingLossTests(unittest.TestCase):
                 torch.testing.assert_close(loss_for(model, row), full, atol=2e-6, rtol=2e-6)
 
     def test_empty_target_and_invalid_chunk_are_rejected(self):
-        from scripts.chunked_training_loss import loss_for
+        from dmn.chunked_loss import loss_for
         model = self.model(False, 9.)
         for size in (0, 257, True):
             with self.assertRaises(ValueError):

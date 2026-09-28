@@ -17,7 +17,9 @@ KIND = "peft_gemma4_cpu_v1"
 CONTINUE_KIND = "peft_gemma4_cpu_continue_v1"
 KIND_V2 = "peft_gemma4_cpu_v2"
 GPU_KIND = "peft_gemma4_nf4_v1"
-KINDS = {KIND, CONTINUE_KIND, KIND_V2, GPU_KIND}
+GPU_KIND_V2 = "peft_gemma4_nf4_v2"
+GPU_KINDS = {GPU_KIND, GPU_KIND_V2}
+KINDS = {KIND, CONTINUE_KIND, KIND_V2} | GPU_KINDS
 SCOPE = "reviewed_cpu_training_test_only"
 CHECKS = ["artifact_integrity", "retained_tokens_and_rng", "tokenizer_parity",
           "base_unchanged", "adapter_roundtrip", "finite_training"]
@@ -93,7 +95,7 @@ def verify_tree(reference, *, base=False, adapter=False, adapter_limit_bytes=4 *
 
 
 def validate_recipe(value):
-    if isinstance(value, dict) and value.get("kind") == GPU_KIND:
+    if isinstance(value, dict) and value.get("kind") in GPU_KINDS:
         from .gpu_recipe import validate_recipe as validate_gpu
         return validate_gpu(value)
     _fields(value, "schema kind parent resources checks trainer", "CPU recipe")
@@ -171,7 +173,7 @@ def parent_adapter_config(path, *, targets=None):
 
 def compile_training(value):
     """Add executable semantics before the immutable plan is sealed/reviewed."""
-    if value["recipe"]["kind"] == GPU_KIND:
+    if value["recipe"]["kind"] in GPU_KINDS:
         from .gpu_recipe import compile_training as compile_gpu
         return compile_gpu(value)
     prefs = value["preferences"]
@@ -243,7 +245,7 @@ def validate_examples(examples, tokenizer, vocab_size, max_length):
 
 
 def read_completion(folder, compiled):
-    if compiled.get("recipe", {}).get("kind") == GPU_KIND:
+    if compiled.get("recipe", {}).get("kind") in GPU_KINDS:
         from .gpu_recipe import read_completion as read_gpu_completion
         return read_gpu_completion(folder, compiled)
     from .sleep_plans import seal

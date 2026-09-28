@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from .training import GPU_KIND
+from .training import GPU_KINDS
 
 
 def read_offer(path):
@@ -32,9 +32,11 @@ def guard(config, compiled, offer):
     if (config.n_ctx > 60160 or not config.experimental_compact_swa or not config.pack_checkpoints or
             config.type_k != 'q8_0' or config.type_v != 'q8_0'):
         raise ValueError('live sleep requires the validated compact packed Q8 context envelope (at most 60160 tokens)')
-    if compiled['execution_scope'] != SCOPE or compiled['recipe']['kind'] != GPU_KIND:
+    if compiled['execution_scope'] != SCOPE or compiled['recipe']['kind'] not in GPU_KINDS:
         raise ValueError('live service only executes reviewed NF4 recipes')
     recipe = compiled['recipe']
+    if recipe['kind'] != offer['kind']:
+        raise ValueError('approved recipe version differs from the enabled host offer')
     if any(compiled['resources'][k] > v for k, v in offer['resources'].items()):
         raise ValueError('approved plan exceeds the current host resource offer')
     # Continuation changes only the exact parent adapter manifest. It cannot

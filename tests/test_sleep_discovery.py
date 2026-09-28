@@ -112,6 +112,21 @@ class SleepDiscoveryTest(ActivityFixture):
         r._consolidate(1)
         self.assertIn("unavailable in this launch", self.protected_text(r))
 
+    def test_new_recipe_length_is_announced_without_changing_the_agreement(self):
+        self.offer.update(kind='peft_gemma4_nf4_v1', trainer={'gpu': {'max_sequence_tokens': 256}})
+        r = self.create()
+        before = r.backend.tokens.copy()
+        agreement = copy.deepcopy(r.state['agreement'])
+        self.offer = copy.deepcopy(self.offer)
+        self.offer['kind'] = 'peft_gemma4_nf4_v2'
+        self.offer['trainer']['gpu']['max_sequence_tokens'] = 1536
+        r = self.reopen(r, b'quiet ')
+        self.assertEqual(r.backend.tokens[:len(before)], before)
+        self.assertEqual(r.state['agreement'], agreement)
+        self.assertIn('peft_gemma4_nf4_v2', self.protected_text(r))
+        self.assertIn('1536', self.protected_text(r))
+        self.assertEqual(r.store.db.execute('SELECT COUNT(*) FROM sleep_runs').fetchone()[0], 0)
+
     def test_recovered_sleep_defers_new_notice_until_actual_wake(self):
         script = frames({"op": "sleep"}) + b"after sleep"
         offer, self.offer = self.offer, None

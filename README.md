@@ -135,7 +135,10 @@ Later [length/resource experiments](docs/longer-training-examples.md) passed
 1536 tokens with a research-only chunked vocabulary loss. The 1024-token path
 also passed under 22.5 GiB; 2048 hit the 24 GiB ceiling in decoder attention.
 The report separates dedicated/shared GPU memory, host commit and runtime.
-These synthetic experiments do not raise the live recipe's 256-token limit.
+The versioned `peft_gemma4_nf4_v2` recipe now exposes the tested chunked loss
+with an explicit host limit up to 1536 tokens. The v1 recipe retains its 256-token
+limit. Updating an offer requires new plan compilation and model approval;
+the integration follow-up used CPU tests, without another GPU rehearsal.
 Complete tensor-payload, vocabulary and inference-setting
 checks now match the pinned source; the source/published chat templates differ
 and are preserved explicitly. Full-size native

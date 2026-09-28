@@ -11,7 +11,7 @@ import sys
 import time
 
 from .backend import sha256_file
-from .gpu_recipe import PACKAGES, SCOPE, validate_recipe
+from .gpu_recipe import PACKAGES, SCOPE, validate_recipe, loss_contract
 from .qlora_prepare import configure_allocator, prepare
 from .sleep_plans import seal, implementation_identity
 from .storage import json_text, write_durable
@@ -25,6 +25,8 @@ def request(folder):
             compiled.get("execution_scope") != SCOPE or compiled["implementation"] != implementation_identity()):
         raise ValueError("compiled GPU worker input or implementation changed")
     validate_recipe({k: v for k, v in compiled["recipe"].items() if k != "revision"})
+    if compiled["training"].get("loss_computation") != loss_contract(compiled["recipe"]["kind"]):
+        raise ValueError("compiled loss differs from the reviewed recipe version")
     trainer = compiled["recipe"]["trainer"]
     if (sha256_file(Path(sys.executable)) != trainer["python_sha256"] or
             {n: importlib.metadata.version(n) for n in PACKAGES} != trainer["packages"]):
@@ -105,11 +107,19 @@ def loss_for(model, row):
     return torch.nn.functional.cross_entropy(logits.float(), labels, ignore_index=-100)
 
 
-def evaluate(model, rows):
+def recipe_loss(compiled):
+    contract = loss_contract(compiled["recipe"]["kind"])
+    if contract["output_chunk_tokens"] is not None:
+        from .chunked_loss import loss_for as chunked_loss
+        return chunked_loss
+    return loss_for
+
+
+def evaluate(model, rows, loss=loss_for):
     import torch
     model.eval()
     with torch.no_grad():
-        values = [float(loss_for(model, row)) for row in rows]
+        values = [float(loss(model, row)) for row in rows]
     if not all(math.isfinite(value) for value in values):
         raise ValueError("nonfinite selected-example loss")
     return values
@@ -117,6 +127,7 @@ def evaluate(model, rows):
 
 def train(folder):
     compiled = request(folder)
+    selected_loss = recipe_loss(compiled)
     from .exact_base_provenance import verify
     trainer, prefs = compiled["recipe"]["trainer"], compiled["preferences"]
     proof, base = verify(trainer["provenance_manifest"], trainer, compiled["parent"]["model_sha256"])
@@ -150,14 +161,14 @@ def train(folder):
     # wrapper, including frozen vision and nested NF4 quantization state.
     frozen = frozen_hashes(model)
     set_scale(model, compiled["training"]["training_scale"])
-    before = evaluate(model, compiled["examples"])
+    before = evaluate(model, compiled["examples"], selected_loss)
     optimizer = torch.optim.AdamW([p for _, p in params], lr=trainer["learning_rate"],
                                  betas=(.9, .999), eps=1e-8, weight_decay=0.)
     started = time.monotonic()
     model.train()
     for step in range(prefs["steps"]):
         optimizer.zero_grad(set_to_none=True)
-        loss = loss_for(model, compiled["examples"][step % len(compiled["examples"])])
+        loss = selected_loss(model, compiled["examples"][step % len(compiled["examples"])])
         if not torch.isfinite(loss):
             raise ValueError("nonfinite training loss")
         loss.backward()
@@ -171,11 +182,11 @@ def train(folder):
         parameter.grad = None
     if frozen_hashes(model) != frozen or any(not torch.isfinite(p).all() for _, p in params):
         raise ValueError("frozen state changed or adapter is nonfinite")
-    learned = evaluate(model, compiled["examples"])
+    learned = evaluate(model, compiled["examples"], selected_loss)
     from .training_artifacts import save_adapter
     save_adapter(model, folder / "adapter", factor_names(compiled["training"]["model_profile"], saved=True))
     set_scale(model, compiled["training"]["deployment_scale_float32"])
-    deployed = evaluate(model, compiled["examples"])
+    deployed = evaluate(model, compiled["examples"], selected_loss)
     write_durable(folder / "trained.json", seal({"execution": compiled["revision"], "completed": True,
         "steps_completed": prefs["steps"], "training_seconds": seconds,
         "examples_sha256": hashlib.sha256(json_text(compiled["examples"]).encode()).hexdigest(),
@@ -191,6 +202,7 @@ def train(folder):
 
 def reload(folder):
     compiled = request(folder)
+    selected_loss = recipe_loss(compiled)
     trained = json.loads((folder / "trained.json").read_text())
     if (seal({k: v for k, v in trained.items() if k != "revision"}) != trained or
             trained["execution"] != compiled["revision"] or
@@ -210,10 +222,10 @@ def reload(folder):
     if original.keys() != loaded.keys() or any(not torch.equal(original[n], t.detach().cpu()) for n, t in loaded.items()):
         raise ValueError("fresh-process reload changed adapter factors")
     set_scale(model, compiled["training"]["training_scale"])
-    if evaluate(model, compiled["examples"]) != trained["loss_after_training_scale"]:
+    if evaluate(model, compiled["examples"], selected_loss) != trained["loss_after_training_scale"]:
         raise ValueError("fresh-process reload changed selected-example training-scale losses")
     set_scale(model, compiled["training"]["deployment_scale_float32"])
-    if evaluate(model, compiled["examples"]) != trained["loss_after_deployment_scale"]:
+    if evaluate(model, compiled["examples"], selected_loss) != trained["loss_after_deployment_scale"]:
         raise ValueError("fresh-process reload changed deployment-scale losses")
     write_durable(folder / "reload.json", seal({"execution": compiled["revision"], "completed": True,
         "trained_revision": trained["revision"], "factors_exact": True, "selected_losses_exact": True,

@@ -21,19 +21,28 @@ def prepare(folder):
     import importlib.metadata as metadata
     from transformers import PreTrainedTokenizerFast
     from dmn.gpu_recipe import PACKAGES, compile_training
-    from dmn.training import GPU_KIND, CHECKS
+    from dmn.training import GPU_KIND, GPU_KIND_V2, CHECKS
     from dmn.exact_base_provenance import BASE_SHA
     from dmn.learning import HELP
     request = json.loads((folder / 'request.json').read_text())
+    v2 = request.get('recipe_version', 'v1') == 'v2'
+    length = request.get('tokens', 256)
+    if not 2 <= length <= (1536 if v2 else 256):
+        raise ValueError('synthetic length exceeds the selected recipe')
     evidence = json.loads(Path(request['proof']).read_text())
     base = Path(json.loads(Path(evidence['base_manifest']['path']).read_text())['root'])
     tokenizer = PreTrainedTokenizerFast.from_pretrained(base, local_files_only=True)
     prefix = 'Disposable synthetic test record:\n'
     target = 'An external observation can be checked before it is incorporated into learning. '
-    while len(tokenizer.encode(prefix + target + target, add_special_tokens=False)) <= 256:
+    while len(tokenizer.encode(prefix + target, add_special_tokens=False)) < length:
         target += target
-    tokens = tokenizer.encode(prefix + target, add_special_tokens=False)
     boundary = tokenizer.encode(prefix, add_special_tokens=False)
+    selected = tokenizer.encode(prefix + target, add_special_tokens=False)[:length]
+    target = tokenizer.decode(selected[len(boundary):], skip_special_tokens=False,
+                              clean_up_tokenization_spaces=False)
+    tokens = tokenizer.encode(prefix + target, add_special_tokens=False)
+    if tokens != selected or len(tokens) != length:
+        raise ValueError('synthetic exact-length text did not roundtrip')
     if tokens[:len(boundary)] != boundary:
         raise ValueError('synthetic example crosses the loss boundary')
     examples = [{'input': prefix, 'target': target, 'sources': [], 'purpose': 'new', 'tokens': tokens,
@@ -42,14 +51,16 @@ def prepare(folder):
     resources = {'max_training_seconds': 3600, 'max_ram_bytes': 32 * 1024**3,
                  'max_vram_bytes': 31 * 1024**3, 'max_disk_bytes': 1024**3}
     trainer = {key: evidence[key] for key in ('base_manifest', 'converter_manifest', 'provenance_manifest')}
-    template = json.loads(Path(request['template']).read_text())['recipe']['trainer']
+    template = json.loads(Path(request['template']).read_text())
+    template = template.get('recipe', template)['trainer']
     trainer.update({key: value for key, value in template.items() if key not in trainer})
     trainer.update(python=sys.executable, python_sha256=sha256_file(Path(sys.executable)),
         packages={key: metadata.version(key) for key in PACKAGES}, seed=17, learning_rate=.0001,
         inference_name='gemma-4-31B-it-uncensored-heretic',
-        gpu={'torch_vram_bytes': 22 * 1024**3, 'max_sequence_tokens': 256, 'max_rank': 2, 'max_steps': 64})
+        gpu={'torch_vram_bytes': (24 if v2 else 22) * 1024**3,
+             'max_sequence_tokens': 1536 if v2 else 256, 'max_rank': 2, 'max_steps': 64})
     parent = {'kind': 'native_llama_kv', 'model_sha256': BASE_SHA, 'lora_adapters': []}
-    recipe = seal({'schema': 1, 'kind': GPU_KIND, 'parent': parent, 'resources': resources,
+    recipe = seal({'schema': 1, 'kind': GPU_KIND_V2 if v2 else GPU_KIND, 'parent': parent, 'resources': resources,
                    'checks': CHECKS, 'trainer': trainer})
     preferences = dict(HELP['create']['plan']['preferences'])
     preferences.update(rank=2, alpha=4, steps=2, scale=.1, adoption='automatic_if_checks_pass')
@@ -68,15 +79,25 @@ if __name__ == '__main__':
         parser = argparse.ArgumentParser(description=__doc__)
         for name in ('output', 'proof', 'template', 'training-python'):
             parser.add_argument('--' + name, type=Path, required=True)
+        parser.add_argument('--recipe-version', choices=('v1', 'v2'), default='v1')
+        parser.add_argument('--tokens', type=int, default=256)
+        parser.add_argument('--prepare-only', action='store_true', help='compile the synthetic plan on CPU; do not run GPU workers')
         args = parser.parse_args()
+        if not 32 <= args.tokens <= (1536 if args.recipe_version == 'v2' else 256):
+            parser.error('synthetic length must be 32..256 for v1 or 32..1536 for v2')
         folder = args.output.resolve()
         folder.mkdir(parents=True, exist_ok=False)
-        write_durable(folder / 'request.json', {'proof': str(args.proof.resolve()), 'template': str(args.template.resolve())})
+        write_durable(folder / 'request.json', {'proof': str(args.proof.resolve()), 'template': str(args.template.resolve()),
+                                               'recipe_version': args.recipe_version, 'tokens': args.tokens})
         process = run_cpu_worker(args.training_python, [str(Path(__file__).resolve()), '--prepare', str(folder)],
             cwd=ROOT, log=folder / 'prepare.log', limits=WorkerLimits(4 * 1024**3, 240))
         write_durable(folder / 'prepare-process.json', process)
         if not process['succeeded']:
             raise SystemExit('synthetic plan preparation failed')
+        if args.prepare_only:
+            print(json.dumps({'prepared': True, 'gpu_execution': False, 'synthetic_only': True,
+                              'recipe_version': args.recipe_version, 'tokens': args.tokens}))
+            raise SystemExit(0)
         from dmn.gpu_training_executor import GpuTrainingExecutor
         compiled = json.loads((folder / 'compiled.json').read_text())
         candidate = GpuTrainingExecutor(folder).candidate(folder, compiled)

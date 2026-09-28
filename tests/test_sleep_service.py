@@ -74,6 +74,41 @@ class SleepServiceTests(unittest.TestCase):
         transition.assert_not_called()
         factory.assert_not_called()
 
+    def test_web_offer_survives_sleep_and_old_worker_closes_before_transition(self):
+        from dmn.web_policy import WebPolicy
+        c = self.case
+        policy = WebPolicy(mode='public')
+        c.r.close()
+        c.r = Runtime(c.root, c.config, c.factory(c.config), sleep_test_mode=True, web_policy=policy)
+        c.r._setup_web()
+        self.assertIsNotNone(c.r.web)
+        self.prepare()
+        old = c.r
+        closed = []
+        close = old.web.close
+
+        def close_web():
+            close()
+            closed.append(True)
+
+        def transition(root, run_id, **kwargs):
+            self.assertTrue(closed)
+            self.assertIsNone(old.backend)
+            return run_fixture_sleep(root, run_id, executor=c.executor, **kwargs)
+
+        def factory(root, config, **kwargs):
+            self.assertEqual(kwargs['web_policy'], policy)
+            fresh = Runtime(root, config, c.factory(config), **kwargs)
+            self.assertEqual(fresh.web_policy, policy)
+            self.assertIsNot(fresh.web, old.web)
+            self.assertIs(fresh.store, old.store)
+            c.r = fresh
+            fresh.run = lambda: fresh.state.update(mode='suspended')
+            return fresh
+
+        with mock.patch.object(old.web, 'close', side_effect=close_web):
+            SleepService(old, transition=transition, runtime_factory=factory).run()
+
     def test_stopped_failure_policy_does_not_restart_or_retrain(self):
         c = self.case
         self.prepare()

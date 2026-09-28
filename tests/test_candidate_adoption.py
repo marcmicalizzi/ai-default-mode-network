@@ -14,11 +14,15 @@ from tests import test_gpu_recipe
 
 
 class CandidateAdoptionTests(unittest.TestCase):
+    recipe_kind = 'peft_gemma4_nf4_v1'
+
     def setUp(self):
         self.fixture = test_gpu_recipe.GpuRecipeTest()
         self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown)
         c = self.fixture.case
+        self.fixture.recipe['kind'] = self.recipe_kind
+        c.recipe_id = c.r.offer_learning_recipe(self.fixture.recipe)['revision']
         c.plan['preferences']['adoption'] = 'review_first'
         self.old = self.fixture.compiled()
         self.candidate = {'adapters': [], 'training_performed': True, 'receipt': 'a' * 64}
@@ -121,6 +125,10 @@ class CandidateAdoptionTests(unittest.TestCase):
         self.assertEqual(self.fixture.recipe, original)
         self.assertEqual(offered['trainer']['parent_adapter_manifest']['path'],
                          str(work / 'continuation-manifest.json'))
+
+
+class ChunkedCandidateAdoptionTests(CandidateAdoptionTests):
+    recipe_kind = 'peft_gemma4_nf4_v2'
 
 
 if __name__ == '__main__':

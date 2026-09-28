@@ -35,12 +35,18 @@ requires reading the complete compiled plan after the latest retirement/restart.
 Decline withdraws prior approval. Draft withdrawal/replacement invalidates its plans.
 Use each action alone. deep_sleep(revision) saves and stops for the approved plan.
 Execution requires an enabled supervisor; approval cannot enable one.
-peft_gemma4_nf4_v1 supports bounded Windows GPU training, fresh-process verification,
+peft_gemma4_nf4_v1 and peft_gemma4_nf4_v2 support bounded Windows GPU training, fresh-process verification,
 conversion and retained-text reconstruction. Inference is unloaded first. Each
 cycle uses its reviewed time/RAM/disk allowance; the whole-device VRAM watchdog
 counts other applications and may briefly overshoot between polls. Training and
 native wake have separate time allowances recorded in the plan. There is no
 guarantee of benefit; selected-example loss is not a general capability test.
+The v1 recipe permits at most 256 tokens per example. The v2 recipe permits up
+to 1536 when offered, using 64-position vocabulary-loss chunks and recomputation.
+Input and target together count toward that limit. The entire example remains
+one context; it is not split or truncated. Different
+matrix/reduction shapes may change floating-point rounding. Inspect the offered
+length and resource limits; longer examples do not guarantee better learning.
 Review-first wakes with previous weights and a report. To consider the result,
 learning_candidate_prepare(run_id) creates a separate adoption-only plan. Read it
 and approve it before deep_sleep. This performs no further training and rebuilds
@@ -74,17 +80,17 @@ def implementation_identity():
         "deep_sleep.py", "sleep_plans.py", "backend.py", "adapters.py", "config.py", "recovery.py", "storage.py",
         "runtime.py", "protocol.py", "prompts.py", "working_memory.py", "learning.py", "training.py", "training_worker.py",
         "training_executor.py", "training_models.py", "base_provenance.py", "provenance_native.py", "worker_limits.py",
-        "gpu_recipe.py", "gpu_training_worker.py", "exact_base_provenance.py", "safetensor_stream.py", "qlora_prepare.py",
+        "gpu_recipe.py", "gpu_training_worker.py", "chunked_loss.py", "exact_base_provenance.py", "safetensor_stream.py", "qlora_prepare.py",
         "gpu_training_executor.py", "gpu_conversion_worker.py", "training_artifacts.py", "sleep_service.py", "gpu_monitor.py",
         "sleep_wake_worker.py", "sleep_wake_executor.py", "sleep_host.py", "candidate_adoption.py", "conversation_migration.py",
         "activity.py", "checkpointing.py", "conversations.py", "contacts.py",
-        "attachments.py", "image_input.py", "vision.py")}
+        "attachments.py", "image_input.py", "vision.py", "web.py", "web_policy.py", "web_transport.py")}
 
 
 def put_recipe(store, value, now):
     """Host can offer a recipe, never approve it or supply executable commands."""
     from .adapters import AdapterSpec
-    from .training import KINDS, GPU_KIND, validate_recipe
+    from .training import KINDS, GPU_KINDS, validate_recipe
     if isinstance(value, dict) and value.get("kind") in KINDS:
         validate_recipe(value)
     else:
@@ -99,7 +105,7 @@ def put_recipe(store, value, now):
     for key, limit in value["resources"].items():
         if type(limit) is not int or limit < (0 if key == "max_vram_bytes" else 1):
             raise ValueError("invalid recipe resource ceiling")
-    if value["resources"]["max_vram_bytes"] != 0 and value["kind"] != GPU_KIND:
+    if value["resources"]["max_vram_bytes"] != 0 and value["kind"] not in GPU_KINDS:
         raise ValueError("fixture recipes require zero GPU use")
     record = seal(value)
     with store.transaction() as db:
