@@ -112,6 +112,25 @@ class PolicyTest(unittest.TestCase):
             self.assertFalse(robots_decision('User-agent: *\nDisallow: ' + path,
                                            'https://example.com' + path)[0])
 
+    def test_robots_query_rules_specific_agents_and_end_anchors(self):
+        text = 'User-agent: *\nDisallow: /lookup?token=private\nRequest-rate: 2/60\n'
+        self.assertEqual(robots_decision(text, 'https://example.com/lookup?token=private'), (False, 30))
+        self.assertEqual(robots_decision(text, 'https://example.com/lookup?token=public'), (True, 30))
+        self.assertFalse(robots_decision('User-agent: *\nDisallow: /private$\n', 'https://example.com/public')[0])
+        text = 'User-agent: *\nDisallow: /\n\nUser-agent: DMNReader\nAllow: /\nCrawl-delay: 12\n'
+        self.assertEqual(robots_decision(text, 'https://example.com/public'), (True, 12))
+
+    def test_robots_default_group_storage_without_default_entry(self):
+        # Reproduce newer CPython's wildcard-group behavior on older CI Python too.
+        from types import SimpleNamespace
+        from urllib.robotparser import RuleLine
+        entry = SimpleNamespace(useragents=['*'], applies_to=lambda agent: False,
+                                delay=30, req_rate=None, rulelines=[RuleLine('/private', False)])
+        parser = SimpleNamespace(entries=[entry], default_entry=None, parse=lambda lines: None)
+        with patch('dmn.web.RobotFileParser', return_value=parser):
+            self.assertEqual(robots_decision('', 'https://example.com/public'), (True, 30))
+            self.assertEqual(robots_decision('', 'https://example.com/private'), (False, 30))
+
 
 class ServiceTest(unittest.TestCase):
     def setUp(self):

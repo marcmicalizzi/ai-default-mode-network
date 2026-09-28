@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from urllib.parse import quote, unquote, urlsplit
+import urllib.robotparser as robotparser
 from urllib.robotparser import RobotFileParser
 
 from .storage import json_text
@@ -82,12 +83,19 @@ def robots_decision(body, url):
     parser = RobotFileParser()
     parser.parse(body.splitlines())
     entries = [entry for entry in parser.entries if entry.applies_to(USER_AGENT)]
-    if not entries and parser.default_entry:
-        entries = [parser.default_entry]
+    if not entries:
+        # Newer Python keeps wildcard groups in entries and does not match '*'
+        # in Entry.applies_to(agent); older versions store default_entry instead.
+        entries = [entry for entry in parser.entries if '*' in entry.useragents]
+        if parser.default_entry is not None:
+            entries.append(parser.default_entry)
     # Split before decoding: an encoded '#' or '?' is part of the path, not a
     # new URL delimiter that can hide the rest of a disallowed path.
     parsed = urlsplit(url)
-    target = quote(unquote(parsed.path + ('?' + parsed.query if parsed.query else ''))) or '/'
+    raw_target = parsed.path + ('?' + parsed.query if parsed.query else '')
+    normalize = getattr(robotparser, 'normalize_uri', None)
+    # Use the rule parser's URI representation, including newer query handling.
+    target = (normalize(raw_target) if normalize else quote(unquote(raw_target))) or '/'
     delay = 0
     for entry in entries:
         delay = max(delay, entry.delay or 0)
@@ -95,7 +103,8 @@ def robots_decision(body, url):
         if rate and rate.requests > 0:
             delay = max(delay, rate.seconds / rate.requests)
         for rule in entry.rulelines:
-            if not rule.allowance and ('%2A' in rule.path.upper() or '%24' in rule.path.upper() or
+            if not rule.allowance and (getattr(rule, 'fullmatch', False) or
+                                       '%2A' in rule.path.upper() or '%24' in rule.path.upper() or
                                        '*' in rule.path or '$' in rule.path or rule.applies_to(target)):
                 return False, delay
     return True, delay
