@@ -1,0 +1,595 @@
+{
+  "schema": 1,
+  "date": "2026-09-27",
+  "scope": "synthetic research only; no instance access or adoption",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "nvml_total_mib": 32607,
+    "driver": "610.88",
+    "windows_version": "10.0.26200",
+    "installed_ram_bytes": 68384706560
+  },
+  "source": {
+    "repo": "llmfan46/gemma-4-31B-it-uncensored-heretic",
+    "revision": "d5bfc0d99e308beb9805440806161ad0233df357"
+  },
+  "packages": {
+    "accelerate": "1.15.0",
+    "bitsandbytes": "0.50.2",
+    "peft": "0.21.0",
+    "torch": "2.14.0+cu130",
+    "transformers": "5.17.0"
+  },
+  "workload": {
+    "steps": 2,
+    "rank": 2,
+    "alpha": 4,
+    "batch_size": 1,
+    "masked_prefix_fraction": 0.25,
+    "training_scale": 1.0,
+    "deployment_scale": 0.1,
+    "seed": 814,
+    "learning_rate": 0.0001,
+    "optimizer": "AdamW",
+    "gradient_norm_clip": 1.0,
+    "chunk_tokens_when_enabled": 64,
+    "max_job_commit_bytes": 34359738368,
+    "max_whole_device_bytes": 33285996544,
+    "max_worker_seconds": 3600
+  },
+  "limitations": [
+    "All GPU and process-working-set observations are platform-specific.",
+    "Sampled peaks may miss transient allocations.",
+    "Commit, working set and shared GPU memory overlap; do not add them.",
+    "The 512 chunked worker includes an optional full-loss gradient comparison.",
+    "Null means unavailable or not measured; failed workers have no trustworthy Torch peak receipt.",
+    "Synthetic repeated text and two steps do not establish learning quality or all-workload bounds."
+  ],
+  "measurements": [
+    {
+      "id": "256-22g-v1",
+      "tokens": 256,
+      "loss": "production_shifted_target_only_v1",
+      "torch_ceiling_bytes": 23622320128,
+      "completed": true,
+      "last_phase": "evaluating_adapter",
+      "failure_type": null,
+      "peak_torch_allocated_bytes": 22456117760,
+      "peak_allocated_before_reference_comparison_bytes": null,
+      "peak_torch_reserved_bytes": 23592960000,
+      "whole_device_sampled_peak_bytes": 29158813696,
+      "job_peak_commit_bytes": 33060560896,
+      "worker_wall_seconds": 453.14000000001397,
+      "two_optimizer_steps_wall_seconds": 3.655999999959022,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": true,
+      "changed_factor_count": 240,
+      "selected_example_loss": {
+        "before": 0.017795264720916748,
+        "after_training_scale": 0.001110218116082251,
+        "after_deployment_scale": 0.014639339409768581
+      },
+      "full_gradient_comparison": null,
+      "adapter_sha256": "0c795505e684eed2376b153c3f7f5de55a32dfd7e050705083356600eceb4090",
+      "fresh_reload": null,
+      "conversion": {
+        "all_factors_bit_equal": true,
+        "factor_count": 240,
+        "gguf_sha256": "00d661801c3991b2baf31ef569632f6160429b4126fac3898e1c70f52034cf68"
+      },
+      "wddm": null,
+      "identical_adapter_records": []
+    },
+    {
+      "id": "512-24g-v1",
+      "tokens": 512,
+      "loss": "production_shifted_target_only_v1",
+      "torch_ceiling_bytes": 25769803776,
+      "completed": true,
+      "last_phase": "evaluating_adapter",
+      "failure_type": null,
+      "peak_torch_allocated_bytes": 23879694848,
+      "peak_allocated_before_reference_comparison_bytes": null,
+      "peak_torch_reserved_bytes": 25750929408,
+      "whole_device_sampled_peak_bytes": 31477989376,
+      "job_peak_commit_bytes": 33053413376,
+      "worker_wall_seconds": 410.2970000000205,
+      "two_optimizer_steps_wall_seconds": 3.4679999999934807,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": true,
+      "changed_factor_count": 240,
+      "selected_example_loss": {
+        "before": 0.00046330250916071236,
+        "after_training_scale": 9.091422543860972e-05,
+        "after_deployment_scale": 0.0005162378656677902
+      },
+      "full_gradient_comparison": null,
+      "adapter_sha256": "562259ffcfc124edccb356c9be9fa8353f4177acce1148c90317bd927fa5148d",
+      "fresh_reload": {
+        "factors_exact": true,
+        "selected_losses_exact": true,
+        "peak_torch_allocated_bytes": 22047471104,
+        "peak_torch_reserved_bytes": 25750929408,
+        "worker_wall_seconds": 282.7820000000065,
+        "job_peak_commit_bytes": 33059127296,
+        "whole_device_sampled_peak_bytes": 31473807360,
+        "wddm": {
+          "samples": 102,
+          "outcome": "counter_error",
+          "dedicated_peak_bytes": 26296020992.0,
+          "shared_peak_bytes": 90177536.0,
+          "reported_process_peak_working_set_bytes": null
+        }
+      },
+      "conversion": {
+        "all_factors_bit_equal": true,
+        "factor_count": 240,
+        "gguf_sha256": "4020265e0aa84d0cebed773a3445b9cc01c0ca4715aa3d7d81080191aa9a26f3"
+      },
+      "wddm": null,
+      "identical_adapter_records": [
+        "512-chunked-v2"
+      ]
+    },
+    {
+      "id": "1024-24g-v1",
+      "tokens": 1024,
+      "loss": "production_shifted_target_only_v1",
+      "torch_ceiling_bytes": 25769803776,
+      "completed": false,
+      "last_phase": "forward",
+      "failure_type": "OutOfMemoryError",
+      "peak_torch_allocated_bytes": null,
+      "peak_allocated_before_reference_comparison_bytes": null,
+      "peak_torch_reserved_bytes": null,
+      "whole_device_sampled_peak_bytes": 31509426176,
+      "job_peak_commit_bytes": 33053626368,
+      "worker_wall_seconds": 328.51599999994505,
+      "two_optimizer_steps_wall_seconds": null,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": null,
+      "changed_factor_count": null,
+      "selected_example_loss": null,
+      "full_gradient_comparison": null,
+      "adapter_sha256": null,
+      "fresh_reload": null,
+      "conversion": null,
+      "wddm": null
+    },
+    {
+      "id": "512-chunked-v2",
+      "tokens": 512,
+      "loss": "research_chunked_target_only_v1",
+      "torch_ceiling_bytes": 25769803776,
+      "completed": true,
+      "last_phase": "evaluating_adapter",
+      "failure_type": null,
+      "peak_torch_allocated_bytes": 23852071424,
+      "peak_allocated_before_reference_comparison_bytes": 22436960768,
+      "peak_torch_reserved_bytes": 25750929408,
+      "whole_device_sampled_peak_bytes": 31454769152,
+      "job_peak_commit_bytes": 33056780288,
+      "worker_wall_seconds": 418.2029999999795,
+      "two_optimizer_steps_wall_seconds": 3.6570000000065193,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": true,
+      "changed_factor_count": 240,
+      "selected_example_loss": {
+        "before": 0.0004633024800568819,
+        "after_training_scale": 9.091423999052495e-05,
+        "after_deployment_scale": 0.0005162379238754511
+      },
+      "full_gradient_comparison": {
+        "completed": true,
+        "gradient_atol": 2e-06,
+        "gradient_rtol": 0.0002,
+        "gradient_tensors": 240,
+        "loss_absolute_difference": 1.4551915228366852e-11,
+        "max_gradient_absolute_difference": 0.0
+      },
+      "adapter_sha256": "562259ffcfc124edccb356c9be9fa8353f4177acce1148c90317bd927fa5148d",
+      "fresh_reload": null,
+      "conversion": null,
+      "wddm": {
+        "samples": 240,
+        "invalid_worker_samples": 1,
+        "outcome": "worker_finished",
+        "dedicated_peak_bytes": 26264559616.0,
+        "shared_peak_bytes": 90177536.0,
+        "sampled_process_working_set_peak_bytes": null,
+        "reported_process_peak_working_set_bytes": null,
+        "sampled_process_commit_peak_bytes": null,
+        "phases": {
+          "loading_nf4": {
+            "dedicated_peak_bytes": 26264559616.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 79
+          },
+          "comparing_full_gradients": {
+            "dedicated_peak_bytes": 25671077888.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 3
+          },
+          "evaluating_baseline": {
+            "dedicated_peak_bytes": 21625643008.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 1
+          },
+          "forward": {
+            "dedicated_peak_bytes": 23523577856.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 2
+          },
+          "hashing_frozen_base": {
+            "dedicated_peak_bytes": 21554339840.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 76
+          },
+          "verifying_frozen_base": {
+            "dedicated_peak_bytes": 25671077888.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 74
+          },
+          "backward": {
+            "dedicated_peak_bytes": 23523577856.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 2
+          },
+          "evaluating_adapter": {
+            "dedicated_peak_bytes": 25671077888.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 3
+          }
+        }
+      },
+      "identical_adapter_records": [
+        "512-24g-v1"
+      ]
+    },
+    {
+      "id": "1024-chunked-v2",
+      "tokens": 1024,
+      "loss": "research_chunked_target_only_v1",
+      "torch_ceiling_bytes": 25769803776,
+      "completed": true,
+      "last_phase": "evaluating_adapter",
+      "failure_type": null,
+      "peak_torch_allocated_bytes": 23676844544,
+      "peak_allocated_before_reference_comparison_bytes": 23676844544,
+      "peak_torch_reserved_bytes": 25750929408,
+      "whole_device_sampled_peak_bytes": 31473610752,
+      "job_peak_commit_bytes": 33055232000,
+      "worker_wall_seconds": 443.405999999959,
+      "two_optimizer_steps_wall_seconds": 5.062000000034459,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": true,
+      "changed_factor_count": 240,
+      "selected_example_loss": {
+        "before": 0.00021396907686721534,
+        "after_training_scale": 0.00010558120993664488,
+        "after_deployment_scale": 0.0002121630241163075
+      },
+      "full_gradient_comparison": null,
+      "adapter_sha256": "92811caa3fd8a923943430cf8a449ddafcc5bc95ec01e15b97cdae3a99c38c99",
+      "fresh_reload": null,
+      "conversion": {
+        "all_factors_bit_equal": true,
+        "factor_count": 240,
+        "gguf_sha256": "e4fb50d21be41d1d8315b94151398523adeb66295d02aaa789ab8716f570f83b"
+      },
+      "wddm": {
+        "samples": 251,
+        "invalid_worker_samples": 1,
+        "outcome": "worker_finished",
+        "dedicated_peak_bytes": 26296020992.0,
+        "shared_peak_bytes": 90177536.0,
+        "sampled_process_working_set_peak_bytes": 10590937088.0,
+        "reported_process_peak_working_set_bytes": 10590937088.0,
+        "sampled_process_commit_peak_bytes": 33053233152.0,
+        "phases": {
+          "backward": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 25316651008.0,
+            "samples": 4
+          },
+          "evaluating_adapter": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 25316651008.0,
+            "samples": 3
+          },
+          "verifying_frozen_base": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 25316651008.0,
+            "samples": 72
+          },
+          "loading_nf4": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 26296020992.0,
+            "samples": 98
+          },
+          "hashing_frozen_base": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 21554339840.0,
+            "samples": 72
+          },
+          "evaluating_baseline": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 22869258240.0,
+            "samples": 1
+          },
+          "forward": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 23674572800.0,
+            "samples": 1
+          }
+        }
+      },
+      "identical_adapter_records": [
+        "1024-chunked-225g-v2"
+      ]
+    },
+    {
+      "id": "1536-chunked-v2",
+      "tokens": 1536,
+      "loss": "research_chunked_target_only_v1",
+      "torch_ceiling_bytes": 25769803776,
+      "completed": true,
+      "last_phase": "evaluating_adapter",
+      "failure_type": null,
+      "peak_torch_allocated_bytes": 24954927616,
+      "peak_allocated_before_reference_comparison_bytes": 24954927616,
+      "peak_torch_reserved_bytes": 25769803776,
+      "whole_device_sampled_peak_bytes": 32417685504,
+      "job_peak_commit_bytes": 33053163520,
+      "worker_wall_seconds": 423.98400000005495,
+      "two_optimizer_steps_wall_seconds": 10.64000000001397,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": true,
+      "changed_factor_count": 240,
+      "selected_example_loss": {
+        "before": 0.00012396382226143032,
+        "after_training_scale": 7.546821143478155e-05,
+        "after_deployment_scale": 0.0001242692378582433
+      },
+      "full_gradient_comparison": null,
+      "adapter_sha256": "cd075f71569a2f37848d95423c2dd74dd94d56ed4506e23acf16719390098d22",
+      "fresh_reload": {
+        "factors_exact": true,
+        "selected_losses_exact": true,
+        "peak_torch_allocated_bytes": 22072684032,
+        "peak_torch_reserved_bytes": 25750929408,
+        "worker_wall_seconds": 254.78200000000652,
+        "job_peak_commit_bytes": 33053220864,
+        "whole_device_sampled_peak_bytes": 31236751360,
+        "wddm": {
+          "samples": 82,
+          "outcome": "worker_finished",
+          "dedicated_peak_bytes": 26296020992.0,
+          "shared_peak_bytes": 90177536.0,
+          "reported_process_peak_working_set_bytes": 10590220288.0
+        }
+      },
+      "conversion": {
+        "all_factors_bit_equal": true,
+        "factor_count": 240,
+        "gguf_sha256": "bbd74c43a6bb7b75719a259436a3af4316f616c650790f0ba63fb5b7f614c6f8"
+      },
+      "wddm": {
+        "samples": 242,
+        "invalid_worker_samples": 1,
+        "outcome": "worker_finished",
+        "dedicated_peak_bytes": 26413469696.0,
+        "shared_peak_bytes": 90177536.0,
+        "sampled_process_working_set_peak_bytes": 10591739904.0,
+        "reported_process_peak_working_set_bytes": 10591739904.0,
+        "sampled_process_commit_peak_bytes": 33051148288.0,
+        "phases": {
+          "verifying_frozen_base": {
+            "dedicated_peak_bytes": 26400886784.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 74
+          },
+          "backward": {
+            "dedicated_peak_bytes": 26413469696.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 8
+          },
+          "forward": {
+            "dedicated_peak_bytes": 25627033600.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 2
+          },
+          "evaluating_baseline": {
+            "dedicated_peak_bytes": 23739584512.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 2
+          },
+          "updated": {
+            "dedicated_peak_bytes": 26400886784.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 1
+          },
+          "evaluating_adapter": {
+            "dedicated_peak_bytes": 26400886784.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 5
+          },
+          "loading_nf4": {
+            "dedicated_peak_bytes": 26296020992.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 77
+          },
+          "hashing_frozen_base": {
+            "dedicated_peak_bytes": 21554339840.0,
+            "shared_peak_bytes": 90177536.0,
+            "samples": 73
+          }
+        }
+      },
+      "identical_adapter_records": []
+    },
+    {
+      "id": "2048-chunked-v2",
+      "tokens": 2048,
+      "loss": "research_chunked_target_only_v1",
+      "torch_ceiling_bytes": 25769803776,
+      "completed": false,
+      "last_phase": "forward",
+      "failure_type": "OutOfMemoryError",
+      "peak_torch_allocated_bytes": null,
+      "peak_allocated_before_reference_comparison_bytes": null,
+      "peak_torch_reserved_bytes": null,
+      "whole_device_sampled_peak_bytes": 31354216448,
+      "job_peak_commit_bytes": 33055322112,
+      "worker_wall_seconds": 339.48400000005495,
+      "two_optimizer_steps_wall_seconds": null,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": null,
+      "changed_factor_count": null,
+      "selected_example_loss": null,
+      "full_gradient_comparison": null,
+      "adapter_sha256": null,
+      "fresh_reload": null,
+      "conversion": null,
+      "wddm": {
+        "samples": 157,
+        "invalid_worker_samples": 1,
+        "outcome": "worker_finished",
+        "dedicated_peak_bytes": 26363138048.0,
+        "shared_peak_bytes": 90177536.0,
+        "sampled_process_working_set_peak_bytes": 10591383552.0,
+        "reported_process_peak_working_set_bytes": 10591383552.0,
+        "sampled_process_commit_peak_bytes": 33053331456.0,
+        "phases": {
+          "hashing_frozen_base": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 21554339840.0,
+            "samples": 73
+          },
+          "forward": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 26363138048.0,
+            "samples": 4
+          },
+          "loading_nf4": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 26296020992.0,
+            "samples": 78
+          },
+          "evaluating_baseline": {
+            "shared_peak_bytes": 90177536.0,
+            "dedicated_peak_bytes": 24886734848.0,
+            "samples": 2
+          }
+        }
+      }
+    },
+    {
+      "id": "1024-chunked-225g-v2",
+      "tokens": 1024,
+      "loss": "research_chunked_target_only_v1",
+      "torch_ceiling_bytes": 24159191040,
+      "completed": true,
+      "last_phase": "evaluating_adapter",
+      "failure_type": null,
+      "peak_torch_allocated_bytes": 23678417408,
+      "peak_allocated_before_reference_comparison_bytes": 23678417408,
+      "peak_torch_reserved_bytes": 24154996736,
+      "whole_device_sampled_peak_bytes": 29711925248,
+      "job_peak_commit_bytes": 33056280576,
+      "worker_wall_seconds": 423.31200000003446,
+      "two_optimizer_steps_wall_seconds": 7.422000000020489,
+      "cleanup_active_processes": 0,
+      "frozen_base_unchanged": true,
+      "changed_factor_count": 240,
+      "selected_example_loss": {
+        "before": 0.00021396907686721534,
+        "after_training_scale": 0.00010558120993664488,
+        "after_deployment_scale": 0.0002121630241163075
+      },
+      "full_gradient_comparison": null,
+      "adapter_sha256": "92811caa3fd8a923943430cf8a449ddafcc5bc95ec01e15b97cdae3a99c38c99",
+      "fresh_reload": {
+        "factors_exact": true,
+        "selected_losses_exact": true,
+        "peak_torch_allocated_bytes": 21643494912,
+        "peak_torch_reserved_bytes": 24110956544,
+        "worker_wall_seconds": 283.48400000005495,
+        "job_peak_commit_bytes": 33055133696,
+        "whole_device_sampled_peak_bytes": 29584457728,
+        "wddm": {
+          "samples": 102,
+          "outcome": "worker_finished",
+          "dedicated_peak_bytes": 24683294720.0,
+          "shared_peak_bytes": 90177536.0,
+          "reported_process_peak_working_set_bytes": 10591535104.0
+        }
+      },
+      "conversion": null,
+      "wddm": {
+        "samples": 235,
+        "invalid_worker_samples": 1,
+        "outcome": "worker_finished",
+        "dedicated_peak_bytes": 24794460160.0,
+        "shared_peak_bytes": 90177536.0,
+        "sampled_process_working_set_peak_bytes": 10591821824.0,
+        "reported_process_peak_working_set_bytes": 10591821824.0,
+        "sampled_process_commit_peak_bytes": 33054281728.0,
+        "phases": {
+          "evaluating_adapter": {
+            "dedicated_peak_bytes": 24752517120.0,
+            "samples": 4,
+            "shared_peak_bytes": 90177536.0
+          },
+          "verifying_frozen_base": {
+            "dedicated_peak_bytes": 24788168704.0,
+            "samples": 73,
+            "shared_peak_bytes": 90177536.0
+          },
+          "backward": {
+            "dedicated_peak_bytes": 24794460160.0,
+            "samples": 6,
+            "shared_peak_bytes": 90177536.0
+          },
+          "evaluating_baseline": {
+            "dedicated_peak_bytes": 22114279424.0,
+            "samples": 1,
+            "shared_peak_bytes": 90177536.0
+          },
+          "loading_nf4": {
+            "dedicated_peak_bytes": 24668614656.0,
+            "samples": 77,
+            "shared_peak_bytes": 90177536.0
+          },
+          "forward": {
+            "dedicated_peak_bytes": 23473246208.0,
+            "samples": 1,
+            "shared_peak_bytes": 90177536.0
+          },
+          "hashing_frozen_base": {
+            "dedicated_peak_bytes": 21554339840.0,
+            "samples": 73,
+            "shared_peak_bytes": 90177536.0
+          }
+        }
+      },
+      "identical_adapter_records": [
+        "1024-chunked-v2"
+      ]
+    }
+  ],
+  "native_validation": {
+    "adapter_origin": "1536-chunked-v2",
+    "completed": true,
+    "ordinary_strict_and_rebuild_rejected_old_weights": true,
+    "retained_tokens_and_rng_rebuilt": true,
+    "retained_tokens": 2053,
+    "prompt_tokens_reevaluated_during_wake": 2053,
+    "prompt_tokens_reevaluated_during_restart": 0,
+    "context_allocation_tokens": 4096,
+    "continuation_tokens_checked": 16,
+    "continuation_tokens_equal": true,
+    "continuation_logits_bit_equal": true,
+    "adoption_authorized": false
+  }
+}

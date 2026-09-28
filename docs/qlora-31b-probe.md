@@ -35,8 +35,10 @@ The experiment hashes both source shards against the pinned LFS digests before
 loading them. It uses rank two with alpha four on the exact text q/o projection
 paths, non-reentrant gradient checkpointing, BF16 NF4 computation and one AdamW
 step at a learning rate of 0.0001 by default. The default input remains limited
-to 32 tokens. Explicit `--sequence-tokens 128|256|512|1024` and `--steps 1|2|3|4`
+to 32 tokens. Explicit `--sequence-tokens 128|256|512|1024|1536|2048` and `--steps 1|2|3|4`
 select longer, repeated synthetic workloads. They do not raise resource limits.
+For later target-only/chunked-loss measurements, dedicated/shared memory, and
+the separate reproduction harness, see [longer training examples](longer-training-examples.md).
 Frozen base, vision and quantization state are hashed before and after updates.
 
 ## Measured result

@@ -130,6 +130,12 @@ The [pinned 31B NF4 probe](docs/qlora-31b-probe.md) completed two rank-two updat
 on 256 synthetic tokens on Windows/RTX 5090, peaking at 20.91 GiB of Torch
 allocations. Its fresh-process PEFT reload reproduced the reference logits
 exactly. A 512-token attempt hit the unchanged 22 GiB allocator limit.
+Later [length/resource experiments](docs/longer-training-examples.md) passed
+512 tokens with the current loss and a 24 GiB allocator budget, then 1024 and
+1536 tokens with a research-only chunked vocabulary loss. The 1024-token path
+also passed under 22.5 GiB; 2048 hit the 24 GiB ceiling in decoder attention.
+The report separates dedicated/shared GPU memory, host commit and runtime.
+These synthetic experiments do not raise the live recipe's 256-token limit.
 Complete tensor-payload, vocabulary and inference-setting
 checks now match the pinned source; the source/published chat templates differ
 and are preserved explicitly. Full-size native

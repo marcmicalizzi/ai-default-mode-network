@@ -26,8 +26,8 @@ REVISION = 'd5bfc0d99e308beb9805440806161ad0233df357'
 
 
 def inspect(source, *, sequence_tokens=None, steps=1):
-    if sequence_tokens is not None and (type(sequence_tokens) is not int or sequence_tokens not in (128, 256, 512, 1024)):
-        raise ValueError('workload length must be 128, 256, 512 or 1024 synthetic tokens')
+    if sequence_tokens is not None and (type(sequence_tokens) is not int or sequence_tokens not in (128, 256, 512, 1024, 1536, 2048)):
+        raise ValueError('workload length must be 128, 256, 512, 1024, 1536 or 2048 synthetic tokens')
     if type(steps) is not int or not 1 <= steps <= 4:
         raise ValueError('research workload permits one to four steps')
     source = source.resolve()
@@ -208,7 +208,7 @@ def main():
     parser.add_argument('--torch-vram-mib', type=int, default=22528)
     parser.add_argument('--max-ram-mib', type=int, default=32768)
     parser.add_argument('--max-seconds', type=int, default=1200)
-    parser.add_argument('--sequence-tokens', type=int, choices=(128, 256, 512, 1024))
+    parser.add_argument('--sequence-tokens', type=int, choices=(128, 256, 512, 1024, 1536, 2048))
     parser.add_argument('--steps', type=int, choices=(1, 2, 3, 4), default=1)
     args = parser.parse_args()
     if args.worker:

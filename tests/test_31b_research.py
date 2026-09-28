@@ -12,7 +12,7 @@ from scripts.convert_qlora_31b_probe import validate
 
 class ResearchEnvelopeTest(unittest.TestCase):
     def test_out_of_bounds_workloads_reject_before_asset_access(self):
-        for length in (True, 16, 257, 2048, '256', 256.0):
+        for length in (True, 16, 257, 1537, 2049, 4096, '256', 256.0):
             with self.subTest(length=length), self.assertRaisesRegex(ValueError, 'workload length'):
                 inspect(Path('not-accessed'), sequence_tokens=length)
         for steps in (True, 0, 5, '2', 2.0):
