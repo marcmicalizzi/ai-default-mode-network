@@ -131,6 +131,19 @@ class PolicyTest(unittest.TestCase):
             self.assertEqual(robots_decision('', 'https://example.com/public'), (True, 30))
             self.assertEqual(robots_decision('', 'https://example.com/private'), (False, 30))
 
+    def test_robots_blank_lines_and_comments_do_not_end_group(self):
+        text = ('\ufeffUser-agent: *\n\n# A separate section, still the same group.\n'
+                'Disallow: /private\n\nCrawl-delay: 30\n\nDisallow: /also-private\n')
+        self.assertEqual(robots_decision(text, 'https://example.com/public'), (True, 30))
+        for path in ('/private', '/also-private'):
+            with self.subTest(path=path):
+                self.assertEqual(robots_decision(text, 'https://example.com' + path), (False, 30))
+
+    def test_robots_new_agent_still_ends_previous_group(self):
+        text = ('User-agent: *\n\nDisallow: /\n\nUser-agent: DMNReader\n'
+                '# Keep this group distinct.\n\nAllow: /\nCrawl-delay: 12\n')
+        self.assertEqual(robots_decision(text, 'https://example.com/public'), (True, 12))
+
 
 class ServiceTest(unittest.TestCase):
     def setUp(self):

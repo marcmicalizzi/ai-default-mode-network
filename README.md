@@ -160,8 +160,10 @@ disabled by default; an offered recipe never supplies the instance's approval.
 
 [Internet access, relationships and voluntary migration](docs/outside-interaction.md)
 record the direction beyond interaction with a single operator. Authenticated
-WebUI contacts and [opt-in web retrieval](docs/web-browsing.md) are implemented;
-general tools and autonomous migration to another host remain future work.
+WebUI contacts and [opt-in web retrieval](docs/web-browsing.md) are implemented.
+the [starter browsing collection](docs/web-browsing-starter.md) supplies checked
+reference, research, literature, reporting and small-web search destinations.
+General tools and autonomous migration to another host remain future work.
 Web retrieval has persistent request limits, duplicate suppression and labeled,
 paged external content. Enable it per launch with `--web-policy`; it does not
 enable Open WebUI's RAG/tool pipeline or guarantee semantic injection resistance.

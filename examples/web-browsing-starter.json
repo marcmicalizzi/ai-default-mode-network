@@ -1,0 +1,40 @@
+{
+  "mode": "public",
+  "allowed_hosts": [
+    "en.wikipedia.org",
+    "arxiv.org",
+    "plato.stanford.edu",
+    "www.gutenberg.org",
+    "en.wikibooks.org",
+    "docs.python.org",
+    "science.nasa.gov",
+    "www.quantamagazine.org",
+    "www.sciencenews.org",
+    "www.sciencedaily.com",
+    "www.propublica.org",
+    "wiby.me"
+  ],
+  "seeds": [
+    "https://en.wikipedia.org/wiki/Main_Page",
+    "https://arxiv.org/list/cs.AI/recent",
+    "https://plato.stanford.edu/contents.html",
+    "https://www.gutenberg.org/ebooks/84",
+    "https://en.wikibooks.org/wiki/Main_Page",
+    "https://docs.python.org/3/",
+    "https://science.nasa.gov/",
+    "https://www.quantamagazine.org/",
+    "https://www.sciencenews.org/",
+    "https://www.sciencedaily.com/",
+    "https://www.propublica.org/",
+    "https://wiby.me/?q=science"
+  ],
+  "min_interval_seconds": 15,
+  "per_minute": 4,
+  "per_hour": 60,
+  "per_day": 250,
+  "max_body_bytes": 2097152,
+  "daily_body_bytes": 33554432,
+  "cache_bytes": 67108864,
+  "cache_seconds": 900,
+  "timeout_seconds": 20
+}

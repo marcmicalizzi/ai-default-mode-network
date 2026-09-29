@@ -81,7 +81,10 @@ def robots_decision(body, url):
     disallows are refused rather than accidentally treated as literal paths.
     """
     parser = RobotFileParser()
-    parser.parse(body.splitlines())
+    # RFC 9309 groups end at the next user-agent after rules, not at whitespace.
+    # Older stdlib versions drop the rest of a group's rules after a blank line.
+    parser.parse([line for line in body.lstrip('\ufeff').splitlines()
+                  if line.split('#', 1)[0].strip()])
     entries = [entry for entry in parser.entries if entry.applies_to(USER_AGENT)]
     if not entries:
         # Newer Python keeps wildcard groups in entries and does not match '*'

@@ -8,6 +8,11 @@ records the architectural comparison and broader acceptance goals.
 
 ## Offer access for one launch
 
+The [starter collection](web-browsing-starter.md) provides a checked host allowlist
+covering reference, research, literature, reporting and lightweight search. It uses
+public URL selection constrained to those hosts. The smaller example below uses
+seed/link handles instead.
+
 Copy [the example policy](../examples/web-browsing.json), choose seed URLs and
 permitted hostnames, and pass it explicitly on each launch:
 
