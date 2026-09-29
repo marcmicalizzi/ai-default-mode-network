@@ -17,6 +17,8 @@ returned HTTP 200 with readable static text through its anonymous HTTPS transpor
 The checks used `DMNReader/1.0`; rules for another crawler can differ. Robots files
 and availability can change, and each launch still enforces the normal runtime
 robots checks, pacing, budgets and refusal behavior.
+Separate sample articles from ProPublica, Science News and Quanta also returned
+readable, untruncated text through the reader after the parser correction.
 
 | Host | What it adds | Practical limits |
 | --- | --- | --- |

@@ -36,8 +36,10 @@ fits every machine. A host may offer a smaller length and memory budget. The
 [resource experiments](longer-training-examples.md) passed synthetic 1536-token
 training under a 24 GiB Torch allocator ceiling on the RTX 5090, and 1024 tokens
 under 22.5 GiB. A 2048-token attempt failed in attention and is not offered.
-The current v2 integration reuses that measured algorithm; the September 28
-integration pass is CPU-only and does not claim a fresh GPU service rehearsal.
+The v2 integration reuses that measured algorithm. The September 28 integration
+pass was CPU-only; the [September 29 GPU rehearsal](nf4-v2-validation.md) then
+passed the complete tiny-model service lifecycle and the separate 1,536-token
+31B training/reload/conversion chain.
 The merged CPU suite passed 542 tests (35 optional skips), the three numerical
 loss/gradient tests passed with CUDA hidden, and the installed tokenizer compiled
 an exact 1536-token synthetic v2 plan without GPU execution.

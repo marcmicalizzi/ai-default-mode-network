@@ -5,6 +5,8 @@ v1 recipe still rejects examples above 256 tokens. A September 28 CPU integratio
 pass added [the separately offered v2 recipe](reviewed-nf4-training.md), using the
 same chunked loss and permitting up to 1536 tokens. This report records the
 September 27 research runs; it is not a new GPU service rehearsal.
+The later [September 29 validation](nf4-v2-validation.md) records the integrated
+v2 GPU checks separately.
 Longer execution times are acceptable within an explicit
 host time allowance and an instance-reviewed plan. Additional time does not by
 itself remove a peak-memory allocation requirement.
