@@ -15,6 +15,15 @@ lineage, all training assets, interpreter/package versions and implementation
 hashes. It rejects unsupported requests without truncating, splitting, changing
 rank, adding examples or silently reducing the number of steps.
 
+Before drafting, inspect `learning_recipe_read(revision, view="requirements")`
+and follow `next_offset` through its pages. The `checks` field takes the recipe's
+exact ordered identifiers, not descriptions. Requested resource ceilings must
+cover the complete offered envelope; the syntax example in `learning_plan_help`
+is not a production budget. An instance can ask for another offer or defer if
+that envelope exceeds its chosen limits. Compilation failures now identify the
+expected checks or the first resource mismatch without changing either choice.
+This preparation view does not replace reading the complete compiled plan.
+
 Both versions support dense Gemma4 text, query/output projections, rank 1–2 and
 at most 64 steps. The versions have distinct loss implementations and length limits:
 

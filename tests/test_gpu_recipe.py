@@ -60,6 +60,33 @@ class GpuRecipeTest(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertIsNone(effect)
 
+    def test_requirements_expose_gpu_envelope_without_loading_training_assets(self):
+        summary = self.case.read_recipe(view='requirements')
+        self.assertEqual(summary['gpu_limits'], self.recipe['trainer']['gpu'])
+        self.assertEqual(summary['checks'], CHECKS)
+        self.assertEqual(summary['resources'], self.recipe['resources'])
+        self.assertNotIn('trainer', summary)
+        self.verify.assert_not_called()
+
+    def test_six_check_error_and_vram_failure_fit_feedback_without_compiling(self):
+        import json
+        from dmn.learning import list_plans, _fits
+        c = self.case
+        for mismatch in ('checks', 'vram'):
+            with self.subTest(mismatch=mismatch):
+                c.plan['checks'] = list(reversed(CHECKS)) if mismatch == 'checks' else CHECKS
+                if mismatch == 'vram':
+                    c.plan['resources'] = {**c.plan['resources'], 'max_vram_bytes': 0}
+                c.generate({'op': 'learning_plan_create', 'plan': c.plan})
+                draft = list_plans(c.r.store, 0, 50)[-1]['revision']
+                result, effect = c.r._plan_action({'op': 'learning_compile', 'draft_revision': draft,
+                                                 'recipe_revision': c.recipe_id}, [])
+                self.assertFalse(result['ok'])
+                self.assertIn(json.dumps(CHECKS) if mismatch == 'checks' else 'max_vram_bytes', result['error'])
+                self.assertTrue(_fits(c.r, result))
+                self.assertIsNone(effect)
+                self.verify.assert_not_called()
+
     def test_oversized_examples_steps_and_rank_are_rejected_without_repair(self):
         original = self.compiled()
         for change in ('rank', 'steps', 'tokens'):

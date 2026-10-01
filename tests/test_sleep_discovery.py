@@ -1,6 +1,7 @@
 import copy
 import dataclasses
 import json
+from unittest import mock
 
 from dmn.backend import DemoBackend
 from dmn.prompts import shift_protected
@@ -99,6 +100,21 @@ class SleepDiscoveryTest(ActivityFixture):
         before = r.backend.tokens.copy()
         r = self.reopen(r, b"quiet ")
         self.assertNotIn("deep_sleep_availability", "".join(map(chr, r.backend.tokens[len(before):])))
+
+    def test_updated_contract_is_appended_once_with_current_guidance(self):
+        with mock.patch('dmn.sleep_plans.DISCOVERY', 'Previous learning discovery instructions.'):
+            r = self.create()
+        before = r.backend.tokens.copy()
+        agreement = copy.deepcopy(r.state['agreement'])
+        r = self.reopen(r, b'quiet ')
+        self.assertEqual(r.backend.tokens[:len(before)], before)
+        self.assertEqual(r.state['agreement'], agreement)
+        self.assertIn('requirements', self.protected_text(r))
+        self.assertIn('checks must match in order', self.protected_text(r))
+        self.assertEqual(''.join(map(chr, r.backend.tokens[len(before):])).count('deep_sleep_availability'), 1)
+        before = r.backend.tokens.copy()
+        r = self.reopen(r, b'quiet ')
+        self.assertNotIn('deep_sleep_availability', ''.join(map(chr, r.backend.tokens[len(before):])))
 
     def test_disabled_launch_replaces_protected_availability_notice(self):
         r = self.create()

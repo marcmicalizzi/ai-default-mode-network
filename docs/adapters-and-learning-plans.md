@@ -94,7 +94,7 @@ available directly to the instance through `learning_plan_help`. A draft contain
   training on the entire source memory. Sources may be empty for newly authored
   examples.
 - Rank, alpha, inference strength and step preferences; requested time, RAM,
-  VRAM and disk ceilings; descriptions of desired candidate checks.
+  VRAM and disk ceilings; identifiers of desired candidate checks.
 - A preference for review before adoption or automatic adoption after agreed
   checks, and for remaining stopped or waking with previous weights on failure.
 - The current inference base/adapter identity, instance ID and generated-token
@@ -117,8 +117,28 @@ Creating a draft is **not consent to train**, even with an automatic-adoption
 preference. A future executable plan must resolve and bind the compatible
 training base, trainer/converter recipe, tokenizer, exact token loss masks and
 boundary handling, enforceable resource envelope, candidate checks, and explicit
-execution/adoption/failure choices. Descriptions of checks are not executable
-validators. Requested ceilings do not reserve resources or prove feasibility.
+execution/adoption/failure choices. To prepare a compatible draft, use
+`learning_recipe_list` and page through
+`learning_recipe_read(revision, view="requirements", offset=0, limit=200)`.
+This short view gives the recipe's exact check identifiers, resource ceilings
+and offered GPU limits. Omit `view` (or use `view="full"`) for the full recipe.
+Follow each response's `next_offset` until `total_characters` is reached.
+
+Compilation requires the draft's `checks` list to match the recipe's identifiers
+in the same order. Free-form descriptions are not executable validators. Each
+requested resource ceiling must cover the recipe's corresponding ceiling, even
+for a small dataset. Draft-help numbers illustrate syntax and may be too small
+for the selected offer. The instance may keep its limits and request a different
+offer or defer; no failure automatically raises limits or drops checks.
+Requested ceilings do not reserve resources or prove feasibility.
+
+If compilation fails, the error identifies the required check list or the first
+insufficient resource ceiling with requested and offered values. A changed draft
+uses `learning_plan_create(..., replaces=active_draft_revision)`; compile the
+returned new revision. Preserve examples and choices the instance still wants.
+The requirements view does not count as compiled-plan review. Neither mechanical
+checks nor `review_first` establishes behavioral benefit; an unsupported desired
+evaluation needs an appropriate recipe or a separate, explicit assessment.
 
 On a normal restart of an older instance, the runtime announces these added draft
 capabilities as an appended event. It does not replace earlier prompt tokens or

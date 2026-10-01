@@ -24,7 +24,7 @@ only; citing a source does not train on its text. Nothing here authorizes traini
 
 
 HELP = {
-    "status": "Drafts do not authorize execution. Read learning_execution_help for this launch's availability and review workflow; learning_recipe_list lists host offers.",
+    "status": "Drafts do not authorize execution. First use learning_recipe_list and learning_recipe_read(revision, view=\"requirements\") to inspect an offer's checks and resource ceilings. Read learning_execution_help for availability and review steps.",
     "create": {"op": "learning_plan_create", "plan": {
         "intent": "What I want to learn",
         "uncertainties": "What remains uncertain (may be empty)",
@@ -37,16 +37,18 @@ HELP = {
                         "adoption": "review_first", "failure": "remain_stopped"},
         "resources": {"max_training_seconds": 300, "max_ram_bytes": 1073741824,
                       "max_vram_bytes": 0, "max_disk_bytes": 1073741824},
-        "checks": ["Describe the checks I want before adoption"]}, "replaces": None},
+        "checks": ["COPY_SELECTED_RECIPE_CHECK_IDS_IN_ORDER"]}, "replaces": None},
     "data_guidance": DATA_GUIDANCE,
     "semantics": [
         "The example values above illustrate syntax, not recommended training parameters.",
+        "For compilation, checks must equal the selected recipe's exact identifiers in the same order, not free-form descriptions. Inspect the recipe before choosing them. Unsupported checks are rejected, never silently dropped.",
+        "If you want a check the recipe does not implement, you can defer and request it; mechanical checks do not establish behavioral benefit. review_first also does not add behavioral evaluation.",
         "sources may be empty for newly authored examples. Revisions are exact; selected text and its SHA-256 are frozen in the draft.",
         "provenance: self, external, mixed, or uncertain; declarations are not a trust verdict.",
         "Each example references source indices; purpose is new or replay. Only target text is intended for loss, never input text or entire source memories.",
         "Exact token IDs, tokenizer identity, boundary handling and token loss masks still require a compiled recipe and explicit review before execution.",
         "adoption: review_first or automatic_if_checks_pass; failure: remain_stopped or wake_previous. These are draft preferences, not execution consent.",
-        "Resources are requested ceilings, not reservations or measured feasibility. A compiled execution plan must also respect host resource limits.",
+        "Each requested resource ceiling must cover the offered recipe's corresponding ceiling, not just your expected consumption. The illustrative values above may be too small. Keep your own limits: you may request a smaller host offer or defer instead of increasing them. Neither ceilings nor compilation reserve resources or prove feasibility.",
         "replaces optionally names an active draft revision to supersede atomically. Withdraw with learning_plan_withdraw(revision). Both preserve history.",
         "Plans are immutable, private local records; they are included in instance packaging and removed by managed erasure. Machine owners can access them.",
         "Read with learning_plan_read(revision, offset=0, limit=200); list with learning_plan_list(offset=0, limit=20).",
@@ -117,7 +119,7 @@ def create_plan(plan, store, fingerprint, instance_id, generated_token, max_byte
         if type(value) is not int or value < (0 if key == "max_vram_bytes" else 1):
             raise ValueError(key + " must be a positive integer (VRAM may be zero)")
     if not isinstance(plan["checks"], list) or not plan["checks"]:
-        raise ValueError("checks must be a nonempty list of descriptions")
+        raise ValueError("checks must be a nonempty list of check identifiers")
     for item in plan["checks"]:
         _text(item, "check", True)
     if replaces is not None:

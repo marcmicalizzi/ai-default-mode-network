@@ -12,7 +12,7 @@ from unittest import mock
 from dmn.backend import DemoBackend
 from dmn.config import Config
 from dmn.deep_sleep import FixtureExecutor, SleepPending, read_run, run_fixture_sleep
-from dmn.learning import HELP, list_plans
+from dmn.learning import HELP, list_plans, read_plan, _fits
 from dmn.runtime import Runtime
 from dmn.sleep_plans import CHECKS, compile_plan, execution_status, identity, read_record
 from dmn.storage import Store, json_text
@@ -115,6 +115,79 @@ class SleepTest(unittest.TestCase):
         result, effect = self.r._plan_action({"op": "deep_sleep", "revision": revision}, [])
         self.assertFalse(result["ok"])
         self.assertIsNone(effect)
+
+    def read_recipe(self, **options):
+        content, offset = "", 0
+        while True:
+            result, effect = self.r._plan_action({"op": "learning_recipe_read", "revision": self.recipe_id,
+                                                "offset": offset, "limit": 2000, **options}, [])
+            self.assertTrue(result["ok"], result)
+            self.assertIsNone(effect)
+            self.assertTrue(_fits(self.r, result))
+            content += result["content"]
+            self.assertGreater(result["next_offset"], offset)
+            offset = result["next_offset"]
+            if offset == result["total_characters"]:
+                return json.loads(content)
+
+    def test_recipe_requirements_are_paged_without_changing_full_view_or_granting_review(self):
+        revision = self.compile()
+        full = read_record(self.r.store, "sleep_recipes", self.recipe_id)
+        self.assertEqual(self.read_recipe(), full)
+        self.assertEqual(self.read_recipe(view="full"), full)
+        summary = self.read_recipe(view="requirements")
+        for key in ("revision", "kind", "checks", "resources"):
+            self.assertEqual(summary[key], full[key])
+        self.assertIsNone(summary["gpu_limits"])
+        self.assertNotIn("candidate", summary)
+        self.assertEqual(self.r._learning_reads, {})
+        result, effect = self.r._plan_action({"op": "learning_execution_decide", "revision": revision,
+                                            "decision": "approve"}, [])
+        self.assertFalse(result["ok"])
+        self.assertIsNone(effect)
+        self.assertEqual(execution_status(self.r.store, revision), "awaiting_review")
+        for view in ("unknown", None, []):
+            result, effect = self.r._plan_action({"op": "learning_recipe_read", "revision": self.recipe_id,
+                                                "view": view}, [])
+            self.assertFalse(result["ok"])
+            self.assertIn("view must be", result["error"])
+            self.assertIsNone(effect)
+
+    def test_check_mismatch_identifies_exact_order_without_repairing_or_publishing(self):
+        for checks in (list(reversed(CHECKS)), ["Desired behavioral improvement"], CHECKS + ["extra"]):
+            with self.subTest(checks=checks):
+                self.plan["checks"] = checks
+                self.generate({"op": "learning_plan_create", "plan": self.plan})
+                draft = list_plans(self.r.store, 0, 50)[-1]["revision"]
+                before = read_plan(self.r.store, draft)
+                result, effect = self.r._plan_action({"op": "learning_compile", "draft_revision": draft,
+                                                    "recipe_revision": self.recipe_id}, [])
+                self.assertFalse(result["ok"])
+                self.assertIn(json.dumps(CHECKS), result["error"])
+                self.assertIn("in order", result["error"])
+                self.assertTrue(_fits(self.r, result))
+                self.assertIsNone(effect)
+                self.assertEqual(read_plan(self.r.store, draft), before)
+                self.assertEqual(self.r.store.db.execute("SELECT COUNT(*) FROM sleep_executions").fetchone()[0], 0)
+
+    def test_resource_failure_identifies_values_without_widening_or_publishing(self):
+        for key in ("max_training_seconds", "max_ram_bytes", "max_disk_bytes"):
+            with self.subTest(key=key):
+                self.plan["resources"] = copy.deepcopy(self.recipe["resources"])
+                offered = self.plan["resources"][key]
+                self.plan["resources"][key] -= 1
+                self.generate({"op": "learning_plan_create", "plan": self.plan})
+                draft = list_plans(self.r.store, 0, 50)[-1]["revision"]
+                before = read_plan(self.r.store, draft)
+                result, effect = self.r._plan_action({"op": "learning_compile", "draft_revision": draft,
+                                                    "recipe_revision": self.recipe_id}, [])
+                self.assertFalse(result["ok"])
+                self.assertIn(key, result["error"])
+                self.assertIn(f"requested={offered - 1}, offered={offered}", result["error"])
+                self.assertTrue(_fits(self.r, result))
+                self.assertIsNone(effect)
+                self.assertEqual(read_plan(self.r.store, draft), before)
+                self.assertEqual(self.r.store.db.execute("SELECT COUNT(*) FROM sleep_executions").fetchone()[0], 0)
 
     def test_deep_sleep_full_handoff_overrides_ordinary_sleep_cooldown(self):
         self.r.close()

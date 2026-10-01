@@ -20,6 +20,9 @@ learning_execution_help(offset=0, limit=200): read this launch's availability an
 the compiled-plan review contract; follow next_offset until the complete text is read.
 learning_recipe_list(): discover offered recipes, including NF4/QLoRA when enabled.
 learning_recipe_read(revision, offset=0, limit=200): inspect a recipe.
+Use view="requirements" for its exact check IDs, resource ceilings and GPU limits
+before drafting. Follow next_offset; checks must match in order, and requested
+ceilings must cover the offer. You may request a different offer or defer.
 After choosing a learning draft, learning_compile(draft_revision, recipe_revision)
 prepares an execution plan. Read it completely with learning_execution_read,
 then choose learning_execution_decide(revision, decision). Only your separate
@@ -27,7 +30,19 @@ deep_sleep(revision) request starts an approved plan through an enabled supervis
 An offer or draft is not approval; ordinary sleep() never trains.'''
 CONTRACT = '''Compiled learning plans require separate review and choice.
 learning_recipe_list(): list offered recipes. learning_recipe_read(revision, offset=0,
-limit=200): inspect one. learning_compile(draft_revision, recipe_revision): bind exact
+limit=200, view="full"): inspect one. view="requirements" gives a short, paged
+projection of its revision, kind, checks, resources and offered GPU limits.
+Choose checks using the exact recipe identifiers in the same order, not prose.
+Each requested resource ceiling must cover the corresponding offered ceiling;
+small examples can still require the full offered envelope. Draft-help numbers
+illustrate syntax, not a suitable budget. You may request a smaller host offer
+or defer instead of raising your limits. Unsupported checks require a different
+recipe; mechanical checks do not establish behavioral benefit. Neither the
+requirements view nor review_first supplies a behavioral evaluation or replaces
+full compiled-plan review. If changing a saved draft, learning_plan_create with
+replaces=its_revision supersedes it; preserve any examples and choices you still
+want. Compile the new revision, not the superseded one.
+learning_compile(draft_revision, recipe_revision): bind exact
 token IDs, target-only loss masks, parent weights and recipe to an immutable plan.
 learning_execution_read(revision, offset=0, limit=200): inspect consecutive pages.
 learning_execution_decide(revision, decision): approve, decline or defer. Approval
@@ -137,9 +152,14 @@ def compile_plan(runtime, draft_revision, recipe_revision):
         raise ValueError("draft or recipe is stale for the current parent weights")
     plan = draft["draft"]["plan"]
     if plan["checks"] != recipe["checks"]:
-        raise ValueError("requested checks are not implemented by this recipe; none were silently dropped")
-    if any(recipe["resources"][k] > v for k, v in plan["resources"].items()):
-        raise ValueError("recipe exceeds a requested resource ceiling")
+        raise ValueError("checks must match recipe IDs in order: " + json.dumps(recipe["checks"])
+                         + "; no checks changed")
+    for key, offered in recipe["resources"].items():
+        requested = plan["resources"][key]
+        if offered > requested:
+            raise ValueError(f"recipe exceeds requested {key}: requested={requested}, offered={offered}. "
+                             "Inspect learning_recipe_read(view=\"requirements\"); keep or revise your limit, "
+                             "or request another offer. No limits changed.")
     if recipe.get("candidate"):
         import ctypes
         if ctypes.c_float(recipe["candidate"]["scale"]).value != ctypes.c_float(plan["preferences"]["scale"]).value:
@@ -270,7 +290,16 @@ def plan_action(runtime, action):
             raw = json_text(read_run(runtime.store, action["run_id"]))
         else:
             table = "sleep_recipes" if op == "learning_recipe_read" else "sleep_executions"
-            raw = json_text(read_record(runtime.store, table, action["revision"]))
+            value = read_record(runtime.store, table, action["revision"])
+            if op == "learning_recipe_read":
+                view = action.get("view", "full")
+                if view not in ("full", "requirements"):
+                    raise ValueError("recipe view must be full or requirements")
+                if view == "requirements":
+                    value = {**{key: value[key] for key in ("revision", "kind", "checks", "resources")},
+                             "gpu_limits": value.get("trainer", {}).get("gpu"),
+                             "scope": "Draft preparation only; full compiled-plan review is still required."}
+            raw = json_text(value)
         return page(runtime, result, raw, action), None
     if not _fits(runtime, result):
         raise ValueError("result needs a larger event budget; no change committed")
