@@ -318,6 +318,12 @@ the existing context; no extra KV branch is created. Only the instance's actions
 select, replace or release pins. Changes checkpoint, pins do not silently expire,
 and protection does not recreate dependencies on retired tokens.
 
+[Episodic recall and protected context regions](docs/episodic-recall-and-context-regions.md)
+researches a private recall archive, optional CPU indexing/summarization, and a
+rolling recent window around instance-selected working material. It distinguishes
+retention from changing attention or editing earlier KV. These additions are
+proposed, not implemented; current retirement does not create automatic summaries.
+
 Only generated action frames execute. User input and retrieved memory are inserted as escaped external-event data and never passed to the action parser. This is a routing boundary, **not** a guarantee against semantic prompt injection: a model may choose an action after reading an event. Internal text is journaled locally and never sent to the communication UI.
 
 Input is checked at each generated-token boundary. A partial action at interruption is cancelled, retained as text in the sequence, and identified in the event; partial actions never execute. There is no per-thought task cycle. Memory read results and event records are bounded to preserve context headroom; a truncation marker explicitly identifies previews and the operation for reading the rest. Complete incoming content remains in the event store.
