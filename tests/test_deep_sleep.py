@@ -244,19 +244,178 @@ class SleepTest(unittest.TestCase):
                 self.generate({"op": "learning_execution_decide", "revision": revision, "decision": "approve"})
         self.assertEqual(execution_status(self.r.store, revision), "awaiting_review")
 
-    def test_review_credit_expires_after_retirement_and_restart(self):
-        revision = self.compile()
-        self.review(revision)
+    def retire(self):
         self.r._eval([120] * (self.r.backend.n_ctx - self.r.config.turnover_reserve - len(self.r.backend.tokens)))
         self.r._ensure_space(100)
-        self.assertEqual(self.r._learning_reads, {})
-        self.generate({"op": "learning_execution_decide", "revision": revision, "decision": "approve"})
+
+    def test_partial_review_survives_retirement_and_saved_restart_without_approval(self):
+        revision = self.compile()
+        self.generate({"op": "learning_execution_read", "revision": revision})
+        first = self.r._learning_reads[revision]
+        self.assertGreater(first, 0)
+        self.retire()
+        self.assertEqual(self.r._learning_reads[revision], first)
+        self.r.close()
+        self.r = Runtime(self.root, self.config, self.factory(self.config), sleep_test_mode=True)
+        self.assertEqual(self.r._learning_reads[revision], first)
+        result, _ = self.r._plan_action({"op": "learning_execution_decide", "revision": revision,
+                                        "decision": "approve"}, [])
+        self.assertIn(f"next unread offset={first}", result["error"])
+        self.assertTrue(_fits(self.r, result))
+        self.generate({"op": "learning_execution_read", "revision": revision})
+        self.assertGreater(self.r._learning_reads[revision], first)
+        self.review(revision)
+        self.retire()
+        result, _ = self.r._plan_action({"op": "learning_execution_read", "revision": revision}, [])
+        self.assertTrue(result["review_complete"])
+        self.assertEqual(result["review_offset"], result["total_characters"])
+        self.assertEqual(result["content"], "")
+        self.assertTrue(_fits(self.r, result))
         self.assertEqual(execution_status(self.r.store, revision), "awaiting_review")
+        self.assertEqual(self.r.store.db.execute("SELECT COUNT(*) FROM sleep_runs").fetchone()[0], 0)
+        self.generate({"op": "learning_execution_decide", "revision": revision, "decision": "approve"})
+        self.assertEqual(execution_status(self.r.store, revision), "approved")
+        self.assertEqual(self.r.store.db.execute("SELECT COUNT(*) FROM sleep_runs").fetchone()[0], 0)
+
+    def test_review_can_finish_across_many_retirements(self):
+        revision = self.compile()
+        length = len(json_text(read_record(self.r.store, "sleep_executions", revision)))
+        pages = 0
+        while self.r._learning_reads.get(revision, 0) < length:
+            before = self.r._learning_reads.get(revision, 0)
+            self.generate({"op": "learning_execution_read", "revision": revision})
+            self.assertGreater(self.r._learning_reads.get(revision, 0), before)
+            pages += 1
+            if pages % 8 == 0:
+                self.retire()
+        self.assertGreater(self.r.state["context_retirements"], 1)
+        self.generate({"op": "learning_execution_decide", "revision": revision, "decision": "approve"})
+        self.assertEqual(execution_status(self.r.store, revision), "approved")
+
+    def test_skipped_previewed_and_external_pages_do_not_grant_review_credit(self):
+        revision = self.compile()
+        self.r.enqueue(frames({"op": "learning_execution_read", "revision": revision}).decode())
+        self.r.tick()
+        self.assertEqual(self.r._learning_reads, {})
+        self.generate({"op": "learning_execution_read", "revision": revision, "offset": 1000})
+        self.assertEqual(self.r._learning_reads, {})
+        result, _ = self.r._plan_action({"op": "learning_execution_read", "revision": revision,
+                                        "offset": 1000}, [])
+        self.assertEqual(result["review_offset"], 0)
+        self.assertFalse(result["review_complete"])
+        length = len(json_text(read_record(self.r.store, "sleep_executions", revision)))
+        result, _ = self.r._plan_action({"op": "learning_execution_read", "revision": revision,
+                                        "offset": length - 1}, [])
+        self.assertEqual(result["next_offset"], length)
+        self.assertEqual(result["review_offset"], 0)
+        self.assertFalse(result["review_complete"])
+        # Simulate a delivery-time preview; planning a page is not receiving it.
+        with mock.patch.object(self.r, "_append_event", side_effect=lambda *a, **kw: kw["delivery"].update(complete=False)):
+            self.generate({"op": "learning_execution_read", "revision": revision})
+        self.assertEqual(self.r._learning_reads, {})
+        self.generate({"op": "learning_execution_read", "revision": revision, "limit": 20})
+        self.assertEqual(self.r._learning_reads[revision], 20)
+        self.generate({"op": "learning_execution_read", "revision": revision, "offset": 0, "limit": 10})
+        self.assertEqual(self.r._learning_reads[revision], 20)
+        self.generate({"op": "learning_execution_read", "revision": revision, "offset": 10, "limit": 20})
+        self.assertEqual(self.r._learning_reads[revision], 30)
+
+    def test_failed_save_restores_only_previously_checkpointed_review_progress(self):
+        revision = self.compile()
+        self.generate({"op": "learning_execution_read", "revision": revision, "limit": 20})
+        self.r.checkpoint()
+        saved = self.r.store.latest()
+        self.generate({"op": "learning_execution_read", "revision": revision, "limit": 20})
+        self.assertEqual(self.r._learning_reads[revision], 40)
+        with mock.patch.object(self.r.backend, "save", side_effect=OSError("failed review save")):
+            with self.assertRaises(OSError):
+                self.r.checkpoint()
+        self.assertEqual(self.r.store.latest(), saved)
+        self.r.close()
+        self.r = Runtime(self.root, self.config, self.factory(self.config), sleep_test_mode=True)
+        self.assertEqual(self.r._learning_reads[revision], 20)
+        self.assertEqual(execution_status(self.r.store, revision), "awaiting_review")
+
+    def test_stale_implementation_cannot_reuse_review_or_approval(self):
+        revision = self.compile()
         self.review(revision)
         self.r.checkpoint()
         self.r.close()
+        with mock.patch('dmn.sleep_plans.implementation_identity', return_value={'changed': 'implementation'}):
+            self.r = Runtime(self.root, self.config, self.factory(self.config), sleep_test_mode=True)
+            self.assertEqual(self.r._learning_reads, {})
+            result, effect = self.r._plan_action({'op': 'learning_execution_read', 'revision': revision}, [])
+            self.assertTrue(result['ok'])
+            self.assertFalse(result['review_current'])
+            self.assertIn('implementation changed', result['review_blocker'])
+            self.assertTrue(_fits(self.r, result))
+            self.assertIsNone(effect)
+            self.generate({'op': 'learning_execution_read', 'revision': revision})
+            self.assertEqual(self.r._learning_reads, {})
+            result, effect = self.r._plan_action({'op': 'learning_execution_decide', 'revision': revision,
+                                                'decision': 'approve'}, [])
+            self.assertIn('implementation changed', result['error'])
+            self.assertIsNone(effect)
+        self.assertEqual(execution_status(self.r.store, revision), 'awaiting_review')
+
+    def test_saved_receipts_cannot_cross_instance_weights_or_plan_integrity(self):
+        from dmn.sleep_plans import restore_review_progress
+        revision = self.compile()
+        self.generate({'op': 'learning_execution_read', 'revision': revision, 'limit': 20})
+        for field, changed in (('instance_id', 'another instance'), ('parent', {'kind': 'changed weights'}),
+                               ('preferences', {'changed': 'not the reviewed payload'})):
+            with self.subTest(field=field):
+                value = read_record(self.r.store, 'sleep_executions', revision)
+                value[field] = changed
+                # Deliberately corrupt the stored payload without resealing it.
+                payload = self.r.store.db.execute('SELECT payload FROM sleep_executions WHERE revision=?',
+                                                  (revision,)).fetchone()[0]
+                with self.r.store.transaction() as db:
+                    db.execute('UPDATE sleep_executions SET payload=? WHERE revision=?', (json_text(value), revision))
+                self.r.state['learning_reads'] = {revision: 20}
+                self.assertEqual(restore_review_progress(self.r), {})
+                with self.r.store.transaction() as db:
+                    db.execute('UPDATE sleep_executions SET payload=? WHERE revision=?', (payload, revision))
+        for attribute, value in (('instance_id', 'another instance'), ('parent', {'kind': 'changed weights'})):
+            with self.subTest(attribute=attribute):
+                self.r.state['learning_reads'] = {revision: 20}
+                target = self.r.state if attribute == 'instance_id' else self.r.backend.fingerprint
+                changes = {'instance_id': value} if attribute == 'instance_id' else value
+                with mock.patch.dict(target, changes):
+                    self.assertEqual(restore_review_progress(self.r), {})
+
+    def test_new_plan_cannot_borrow_old_review_and_withdrawal_still_invalidates(self):
+        original = self.compile()
+        self.review(original)
+        self.plan['examples'][0]['target'] = 'Another selected example'
+        newer = self.compile()
+        self.assertNotEqual(original, newer)
+        result, effect = self.r._plan_action({'op': 'learning_execution_decide', 'revision': newer,
+                                            'decision': 'approve'}, [])
+        self.assertIn('next unread offset=0', result['error'])
+        self.assertIsNone(effect)
+        source = read_record(self.r.store, 'sleep_executions', original)['draft_revision']
+        self.generate({'op': 'learning_plan_withdraw', 'revision': source})
+        self.r.close()
         self.r = Runtime(self.root, self.config, self.factory(self.config), sleep_test_mode=True)
         self.assertEqual(self.r._learning_reads, {})
+        result, effect = self.r._plan_action({'op': 'learning_execution_decide', 'revision': original,
+                                            'decision': 'approve'}, [])
+        self.assertIn('withdrawn or superseded', result['error'])
+        self.assertIsNone(effect)
+
+    def test_legacy_checkpoint_and_invalid_receipts_do_not_infer_review(self):
+        revision = self.compile()
+        for receipts in (None, {revision: True}, {revision: -1}, {revision: 10**9}, {'missing': 100}):
+            with self.subTest(receipts=receipts):
+                if receipts is None:
+                    self.r.state.pop('learning_reads', None)
+                else:
+                    self.r.state['learning_reads'] = receipts
+                self.r.checkpoint()
+                self.r.close()
+                self.r = Runtime(self.root, self.config, self.factory(self.config), sleep_test_mode=True)
+                self.assertEqual(self.r._learning_reads, {})
 
     def test_sleep_save_failure_publishes_neither_phase_nor_stop(self):
         revision = self.compile()

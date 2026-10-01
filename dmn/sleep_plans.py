@@ -24,7 +24,12 @@ Use view="requirements" for its exact check IDs, resource ceilings and GPU limit
 before drafting. Follow next_offset; checks must match in order, and requested
 ceilings must cover the offer. You may request a different offer or defer.
 After choosing a learning draft, learning_compile(draft_revision, recipe_revision)
-prepares an execution plan. Read it completely with learning_execution_read,
+prepares an execution plan. awaiting_review waits for YOUR review, not an operator.
+learning_execution_read(revision) resumes at the next unread character; it requests
+up to 2000 characters and returns review_offset. Review progress survives retirement
+and checkpoint restore for the same current plan. Changed code/weights or a new
+plan requires fresh review; after an update, compile your saved draft again.
+Read the plan completely with learning_execution_read,
 then choose learning_execution_decide(revision, decision). Only your separate
 deep_sleep(revision) request starts an approved plan through an enabled supervisor.
 An offer or draft is not approval; ordinary sleep() never trains.'''
@@ -44,9 +49,22 @@ replaces=its_revision supersedes it; preserve any examples and choices you still
 want. Compile the new revision, not the superseded one.
 learning_compile(draft_revision, recipe_revision): bind exact
 token IDs, target-only loss masks, parent weights and recipe to an immutable plan.
-learning_execution_read(revision, offset=0, limit=200): inspect consecutive pages.
+learning_execution_read(revision, limit=2000): resume at the next unread character.
+Explicit offset lets you reread or inspect another page. next_offset identifies
+the following page; review_offset is the end of the consecutive prefix delivered
+so far. Skipping ahead does not grant credit across unread gaps; rereading does
+not erase progress. Omit offset to resume, even after retirement or a saved restart.
+Page sizes shrink to fit the event budget. review_complete means all plan pages
+were delivered, not that you approved them or that their contents remain in KV.
+Obsolete plans remain readable with review_current=false and a review_blocker;
+reading them cannot grant credit for approval. Follow next_offset to inspect them.
 learning_execution_decide(revision, decision): approve, decline or defer. Approval
-requires reading the complete compiled plan after the latest retirement/restart.
+requires reading the complete current compiled plan. Review receipts are saved
+with checkpoints and survive automatic retirement. A crash can lose pages since
+the last checkpoint. Changed implementation/weights or a new plan requires fresh
+review. Compile your existing draft again after code updates; do not recreate
+its examples merely to do that. awaiting_review means YOUR review and decision,
+not a wait for operator approval. You may reread, decline or defer at any time.
 Decline withdraws prior approval. Draft withdrawal/replacement invalidates its plans.
 Use each action alone. deep_sleep(revision) saves and stops for the approved plan.
 Execution requires an enabled supervisor; approval cannot enable one.
@@ -206,20 +224,58 @@ def validate_approved(runtime, revision):
     value = read_record(runtime.store, "sleep_executions", revision)
     if execution_status(runtime.store, revision) != "approved":
         raise ValueError("compiled plan has not been explicitly approved")
+    validate_current(runtime, value)
+    return value
+
+
+def validate_current(runtime, value, implementation=None):
     if value["instance_id"] != runtime.state["instance_id"] or value["parent"] != identity(runtime.backend.fingerprint):
         raise ValueError("compiled plan belongs to a different instance or parent weights")
     if read_plan(runtime.store, value["draft_revision"])["status"] != "draft":
         raise ValueError("source draft was withdrawn or superseded")
-    if value["implementation"] != implementation_identity():
-        raise ValueError("sleep implementation changed; compile and review a new plan")
-    return value
+    if value["implementation"] != (implementation if implementation is not None else implementation_identity()):
+        raise ValueError("sleep implementation changed; compile your saved draft again and review the new plan")
 
 
-def page(runtime, result, raw, action):
+def restore_review_progress(runtime):
+    """Restore only receipts for intact, still-current, unconsumed plans.
+
+    Receipts are checkpoint state, so a failed save cannot publish newly read
+    pages. Old checkpoints without receipts start at zero; no review is inferred.
+    """
+    saved = runtime.state.get("learning_reads", {})
+    restored = {}
+    if isinstance(saved, dict) and saved:
+        implementation = implementation_identity()
+        for revision, offset in saved.items():
+            if not isinstance(revision, str) or type(offset) is not int or offset <= 0:
+                continue
+            try:
+                value = read_record(runtime.store, "sleep_executions", revision)
+                if execution_status(runtime.store, revision) not in {"awaiting_review", "approved", "deferred", "declined"}:
+                    continue
+                validate_current(runtime, value, implementation)
+                if offset <= len(json_text(value)):
+                    restored[revision] = offset
+            except (ValueError, KeyError, TypeError):
+                # A receipt never repairs a corrupt, withdrawn or stale plan.
+                continue
+    runtime.state["learning_reads"] = restored
+    return restored
+
+
+def page(runtime, result, raw, action, reviewed=None, review_blocker=None):
     offset, limit = runtime._range({"limit": 200, **action}, 2000)
     while True:
         result.update(content=raw[offset:offset + limit], total_characters=len(raw),
                       next_offset=min(len(raw), offset + limit))
+        if reviewed is not None:
+            progress = (result["next_offset"] if not review_blocker and offset <= reviewed <= result["next_offset"]
+                        else reviewed)
+            result.update(offset=offset, review_offset=progress, review_complete=progress == len(raw),
+                          review_current=review_blocker is None)
+            if review_blocker:
+                result["review_blocker"] = review_blocker
         if _fits(runtime, result):
             return result
         limit //= 2
@@ -254,10 +310,12 @@ def plan_action(runtime, action):
         if execution_status(runtime.store, value["revision"]) in {"running", "completed"}:
             raise ValueError("plan has already been executed")
         if decision == "approve":
-            if runtime._learning_reads.get(value["revision"], 0) < len(json_text(value)):
-                raise ValueError("read the complete compiled plan in consecutive pages after retirement/restart")
-            if value["parent"] != identity(runtime.backend.fingerprint) or read_plan(runtime.store, value["draft_revision"])["status"] != "draft":
-                raise ValueError("compiled plan or draft is stale")
+            validate_current(runtime, value)
+            reviewed, total = runtime._learning_reads.get(value["revision"], 0), len(json_text(value))
+            if reviewed < total:
+                raise ValueError(f"review incomplete: {reviewed}/{total} characters; "
+                                 f"next unread offset={reviewed}. learning_execution_read(revision) resumes there; "
+                                 "retirement does not reset progress. Nothing approved.")
         result.update(revision=value["revision"], decision=decision)
         effect = {"op": op, "revision": value["revision"], "decision": decision,
                   "generated_token": runtime.state["generated_tokens"], "instance_id": runtime.state["instance_id"],
@@ -279,6 +337,18 @@ def plan_action(runtime, action):
         result.update(run_id=run_id, status="saved_for_supervisor", training_performed=False)
         effect = {"op": op, "run_id": run_id, "execution": value["revision"]}
     else:
+        if op == "learning_execution_read":
+            value = read_record(runtime.store, "sleep_executions", action["revision"])
+            blocker = None
+            try:
+                validate_current(runtime, value)
+                if execution_status(runtime.store, value["revision"]) in {"running", "completed"}:
+                    blocker = "plan has already been executed; historical inspection only"
+            except ValueError as exc:
+                blocker = str(exc)
+            reviewed = runtime._learning_reads.get(value["revision"], 0) if blocker is None else 0
+            return page(runtime, result, json_text(value), {"offset": reviewed, "limit": 2000, **action},
+                        reviewed=reviewed, review_blocker=blocker), None
         if op == "learning_execution_help":
             # Put current availability on the first page, not after several
             # pages of historical recipe descriptions.

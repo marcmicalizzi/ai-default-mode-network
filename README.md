@@ -110,6 +110,11 @@ now test exact token/loss-mask review, separate approval, durable phases, interr
 candidate/wake recovery and atomic publication. This fixture uses a prebuilt
 adapter and performs no training. The separate supervised NF4 service below
 connects actual learning to the same durable transition engine.
+Compiled-plan review now resumes at the next unread page by default. Delivery
+receipts survive context retirement and saved restarts for the same current
+plan, so lengthy plans need not fit in one context window. Approval and the
+request to train remain separate model decisions; changes to the bound code or
+weights require a new compilation and review.
 A [Windows CPU worker experiment](docs/worker-containment.md) now runs real tiny
 training, conversion and native wake/restart inside an OS-enforced committed-memory
 limit, with timeout/cancellation and process-tree cleanup. It is an offline

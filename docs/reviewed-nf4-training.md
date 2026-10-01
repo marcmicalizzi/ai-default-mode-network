@@ -64,6 +64,17 @@ The model must read the complete compiled plan, separately approve it and reques
 deep sleep. A recipe offer is not approval. The test scripts inject actions only
 to exercise these mechanics; they do not claim to obtain a model's consent.
 
+`awaiting_review` means the instance's review is pending. Calling
+`learning_execution_read(revision)` resumes at the next unread character,
+requesting up to 2000 characters within the event budget. `review_offset` tracks
+the consecutive prefix delivered; explicit offsets allow rereading without
+losing progress. Retirement does not reset these receipts. Checkpoints preserve
+them across restarts for the same current plan, with only uncheckpointed pages
+lost after a crash. A completed read does not approve or start training and does
+not claim that all pages remain in KV. A changed implementation or parent requires
+a new compilation and review; after a code update the instance can compile its
+existing draft again without recreating its examples.
+
 To upgrade a local offer, preserve its existing asset identities and resource
 ceilings, choose `kind: "peft_gemma4_nf4_v2"`, and set
 `trainer.gpu.max_sequence_tokens` and `trainer.gpu.torch_vram_bytes` explicitly.

@@ -146,6 +146,8 @@ class Runtime(ImageInputMixin):
                 if initial_context:
                     raise ValueError("initial-context import requires a fresh instance")
                 self.state, evidence = restore_checkpoint(self.backend, saved, kv_recovery, allow_placement_change)
+                from .sleep_plans import restore_review_progress
+                self._learning_reads = restore_review_progress(self)
                 validate_working_memory(self)
                 self.parser = ActionParser(config.max_action_bytes, self.state["parser"])
                 self._restore_activity()
@@ -220,6 +222,7 @@ class Runtime(ImageInputMixin):
                     "conversation_protocol": 'addressed_v1' if config.multi_user else None,
                     "agreement": bootstrap(config.system_prompt, protocol, "host-supplied provisional bootstrap"),
                     "prompt_decisions": {},
+                    "learning_reads": self._learning_reads,
                 }
                 self.parser = ActionParser(config.max_action_bytes)
                 if initial_context:
@@ -925,7 +928,8 @@ class Runtime(ImageInputMixin):
         discard = ranges[0][1]
         first_start = ranges[0][0]
         self._prompt_reads.clear()
-        self._learning_reads.clear()
+        # Learning receipts describe pages already delivered for an immutable
+        # plan, not text that must all remain simultaneously in the KV window.
         self.state["context_retirements"] += 1
         self.state["memory_reads"] = {}
         cancelled = self._cancel_action("context_retired")
@@ -1064,9 +1068,11 @@ class Runtime(ImageInputMixin):
                     offset = actions[0].get("offset", 0)
                     if offset == self._prompt_reads.get(revision, 0):
                         self._prompt_reads[revision] = result["next_offset"]
-            if len(results) == 1 and results[0]["ok"] and actions[0]["op"] == "learning_execution_read" and delivery["complete"]:
+            if (len(results) == 1 and results[0]["ok"] and actions[0]["op"] == "learning_execution_read"
+                    and results[0]["review_current"] and delivery["complete"]):
                 revision = actions[0]["revision"]
-                if actions[0].get("offset", 0) == self._learning_reads.get(revision, 0):
+                reviewed = self._learning_reads.get(revision, 0)
+                if results[0]["offset"] <= reviewed <= results[0]["next_offset"]:
                     self._learning_reads[revision] = results[0]["next_offset"]
         if self.backend.is_eog(token):
             if self.conversations and self.parser.pending:

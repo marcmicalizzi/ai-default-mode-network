@@ -44,14 +44,26 @@ The workflow is:
 5. The instance reads the complete compiled plan using consecutive
    `learning_execution_read` pages, then uses `learning_execution_decide` with
    `approve`, `decline` or `defer`. Truncated pages do not count as review.
-   Retirement and restart clear review progress. Approval/withdrawal and its
-   audit record commit with a checkpoint. External input cannot supply approval.
+   Omitting `offset` resumes at the next unread character and requests up to
+   2000 characters, reduced to fit the event budget. `review_offset` reports
+   the consecutive prefix delivered; skipping ahead cannot bridge unread gaps.
+   These receipts survive retirement and are saved with checkpoints for the
+   same current plan. A crash can lose progress since the last checkpoint.
+   `review_complete` records delivery, not approval or retention of every page
+   in the current KV window. Approval/withdrawal and its audit record commit
+   with a checkpoint. External input cannot supply review credit or approval.
 6. In the disposable harness only, an approved `deep_sleep(revision)` commits the
    source checkpoint, run ID, `Saved` phase and consumed approval in one
    transaction, then stops generation. Ordinary sleep never takes this path.
 
 A withdrawn or replaced source draft invalidates its compiled plans. A change
 to the bound implementation requires a new compilation and review before sleep.
+The saved draft and examples can be reused when recompiling after a code update.
+Restoring older checkpoints without review receipts starts at zero; the runtime
+does not infer historical review. Changed parent weights, another instance,
+corrupt plans and consumed executions cannot reuse saved receipts.
+Intact obsolete plans remain readable for historical inspection. Their pages
+report `review_current: false` and a `review_blocker` rather than granting credit.
 Once asleep, preserve the implementation bound by the plan for recovery.
 
 The current fixture explicitly says it **will not learn the selected examples**.
